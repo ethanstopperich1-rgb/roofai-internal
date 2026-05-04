@@ -115,16 +115,6 @@ export default function HomePage() {
   const [tiles3dPolygon, setTiles3dPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
-  // Polygon from Claude reviewing 5 multi-angle renders of the 3D mesh
-  // (top-down + 4 obliques). DEMOTED to near-bottom of the priority chain:
-  // when 3D Tiles haven't fully loaded by the time the screenshots fire,
-  // Claude traces a tilted rectangle over the partially-rendered mesh
-  // ("jammed into the house" failure mode). Roof3DViewer pulls the camera
-  // back + waits longer, but it's still less reliable than a roof-trained
-  // segmenter on the 2D satellite tile.
-  const [multiViewPolygon, setMultiViewPolygon] = useState<
-    Array<{ lat: number; lng: number }> | null
-  >(null);
   // Roboflow Hosted Inference — roof-specific instance segmentation on the
   // same satellite tile the rest of the pipeline uses. Bake-off in
   // scripts/eval-roboflow.ts picked Satellite Rooftop Map (v3) — nailed a
@@ -210,7 +200,6 @@ export default function HomePage() {
     return polygonIsNearAddress(poly, address.lat, address.lng, 15) ? poly : null;
   };
 
-  const validMultiView = useMemo(() => validateAtAddress(multiViewPolygon), [multiViewPolygon, address?.lat, address?.lng]);
   const validTiles3d = useMemo(() => validateAtAddress(tiles3dPolygon), [tiles3dPolygon, address?.lat, address?.lng]);
   const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng]);
   const validRoboflow = useMemo(() => validateAtAddress(roboflowPolygon), [roboflowPolygon, address?.lat, address?.lng]);
@@ -228,10 +217,16 @@ export default function HomePage() {
   //                        but useful for ridge/valley counting)
   //   5. SAM 2 + OSM     — point-prompted SAM with OSM building clip
   //   6. OSM             — human-traced building outline (~50-60% US)
-  //   7. tiles3d-vision  — Claude on multi-angle 3D mesh renders. DEMOTED
-  //                        from #1 because partial-LOD captures consistently
-  //                        produced wrong-angle rectangles.
-  //   8. Claude vision   — last-resort AI trace on the satellite tile
+  //   7. Claude vision   — Claude on the 2D satellite tile. Less precise
+  //                        than the segmenters above; rep should usually
+  //                        review and edit before pricing.
+  //
+  // tiles3d-vision (Claude on multi-angle 3D mesh renders) was REMOVED —
+  // it consistently produced over-traced rectangles even after camera
+  // pull-back + verification pass. Claude's general vision can't reliably
+  // pixel-trace eaves; roof-specific segmenters are needed for that
+  // accuracy class.
+  //
   // Each source goes through the wrong-house guard above before being
   // considered — a polygon that doesn't contain (or live very near to) the
   // geocoded address is dropped on the floor regardless of source.
@@ -243,7 +238,6 @@ export default function HomePage() {
     | "solar"
     | "sam"
     | "osm"
-    | "tiles3d-vision"
     | "ai"
     | "none"
   >(() => {
@@ -254,7 +248,6 @@ export default function HomePage() {
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
     if (validSam) return "sam";
     if (validOsm) return "osm";
-    if (validMultiView) return "tiles3d-vision";
     if (validClaude) return "ai";
     return "none";
   }, [
@@ -266,7 +259,6 @@ export default function HomePage() {
     solar?.segmentCount,
     validSam,
     validOsm,
-    validMultiView,
     validClaude,
   ]);
 
@@ -283,7 +275,6 @@ export default function HomePage() {
       return solar.segmentPolygonsLatLng;
     if (validSam) return [validSam];
     if (validOsm) return [validOsm];
-    if (validMultiView) return [validMultiView];
     if (validClaude) return [validClaude];
     return undefined;
   }, [
@@ -294,7 +285,6 @@ export default function HomePage() {
     solar?.segmentCount,
     validSam,
     validOsm,
-    validMultiView,
     validClaude,
   ]);
 
@@ -457,7 +447,6 @@ export default function HomePage() {
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
     setTiles3dPolygon(null);
-    setMultiViewPolygon(null);
     setLivePolygons(null);
     hasUserEditedRef.current = false;
 
@@ -661,7 +650,6 @@ export default function HomePage() {
     setSolarMaskPolygon(null);
     setRoboflowPolygon(null);
     setTiles3dPolygon(null);
-    setMultiViewPolygon(null);
     hasUserEditedRef.current = false;
   };
 
@@ -675,7 +663,6 @@ export default function HomePage() {
     else if (polygonSource === "roboflow") badges.push("Roof AI");
     else if (polygonSource === "sam") badges.push("SAM 2 refined");
     else if (polygonSource === "osm") badges.push("OSM traced");
-    else if (polygonSource === "tiles3d-vision") badges.push("3D AI verified");
     else if (polygonSource === "ai") badges.push("AI traced");
     else if (samRefining) badges.push("Refining…");
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
@@ -787,9 +774,6 @@ export default function HomePage() {
                 onTilesPolygonDetected={(poly) => {
                   if (!hasUserEditedRef.current) setTiles3dPolygon(poly);
                 }}
-                onMultiViewPolygonDetected={(poly) => {
-                  if (!hasUserEditedRef.current) setMultiViewPolygon(poly);
-                }}
               />
             )}
           </section>
@@ -813,13 +797,11 @@ export default function HomePage() {
                           ? "SAM 2 refined"
                           : polygonSource === "osm"
                             ? "OSM traced"
-                            : polygonSource === "tiles3d-vision"
-                              ? "3D AI verified"
-                              : polygonSource === "ai"
-                                ? "AI traced"
-                                : polygonSource === "edited"
-                                  ? "Edited by hand"
-                                  : undefined
+                            : polygonSource === "ai"
+                              ? "AI traced"
+                              : polygonSource === "edited"
+                                ? "Edited by hand"
+                                : undefined
               }
             />
           )}

@@ -228,7 +228,6 @@ export interface Estimate {
   /** Optional — provenance of the saved polygons. */
   polygonSource?:
     | "edited"
-    | "tiles3d-vision"
     | "tiles3d"
     | "solar-mask"
     | "roboflow"
