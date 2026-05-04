@@ -350,21 +350,22 @@ async function refineAtZoom(opts: {
     );
     return null;
   }
+  // Cap to 20 masks and process in parallel — sequential 51 × 1-2s
+  // exceeded Vercel's function timeout, so all the diagnostic logs after
+  // the URL count silently never fired.
+  const MAX_MASKS = 20;
+  const urlsToProcess = maskUrls.slice(0, MAX_MASKS);
   console.log(
-    `[replicate] zoom=${opts.zoom}: ${maskUrls.length} individual mask URLs`,
+    `[replicate] zoom=${opts.zoom}: ${maskUrls.length} URLs (processing first ${urlsToProcess.length} in parallel)`,
   );
 
-  const candidates: Array<{ polygon: Array<[number, number]>; area: number }> = [];
-  let processed = 0;
-  let nullPolygons = 0;
-  for (const url of maskUrls.slice(0, 30)) {
-    processed++;
+  const t0 = Date.now();
+  const processOne = async (
+    url: string,
+  ): Promise<{ polygon: Array<[number, number]>; area: number } | null> => {
     try {
       const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) {
-        nullPolygons++;
-        continue;
-      }
+      if (!res.ok) return null;
       const buf = Buffer.from(await res.arrayBuffer());
       const { data, info } = await sharp(buf)
         .resize(IMAGE_SIZE_PX, IMAGE_SIZE_PX, { fit: "fill" })
@@ -373,16 +374,20 @@ async function refineAtZoom(opts: {
         .toBuffer({ resolveWithObject: true });
       const mask = new Uint8Array(data.length);
       for (let i = 0; i < data.length; i++) mask[i] = data[i] > 127 ? 1 : 0;
-      const result = maskToPolygon(mask, info.width, info.height);
-      if (result) candidates.push(result);
-      else nullPolygons++;
+      return maskToPolygon(mask, info.width, info.height);
     } catch (err) {
-      nullPolygons++;
       console.warn("[replicate] mask processing failed:", err);
+      return null;
     }
-  }
+  };
+
+  const settled = await Promise.all(urlsToProcess.map(processOne));
+  const candidates = settled.filter(
+    (x): x is { polygon: Array<[number, number]>; area: number } => x !== null,
+  );
+  const nullPolygons = settled.length - candidates.length;
   console.log(
-    `[replicate] zoom=${opts.zoom}: processed ${processed}, ${candidates.length} produced polygons, ${nullPolygons} produced null`,
+    `[replicate] zoom=${opts.zoom}: processed ${urlsToProcess.length} in ${Date.now() - t0}ms, ${candidates.length} produced polygons, ${nullPolygons} produced null`,
   );
 
   console.log(
