@@ -117,6 +117,32 @@ export default function VisionPanel({ vision, loading, error }: Props) {
             </div>
           )}
 
+          {vision.penetrations.length > 0 && (
+            <div>
+              <div className="label mb-2 flex items-center justify-between">
+                <span>Penetrations</span>
+                <span className="font-mono text-[10px] tabular text-slate-500">
+                  {vision.penetrations.length} located on the map
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {vision.penetrations.map((p, i) => (
+                  <span key={i} className="chip">
+                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber/30 text-[9px] font-semibold text-amber">
+                      {i + 1}
+                    </span>
+                    {p.kind}
+                    {p.approxSizeFt ? (
+                      <span className="ml-0.5 font-mono text-[10px] text-slate-500">
+                        ~{p.approxSizeFt}ft
+                      </span>
+                    ) : null}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {vision.salesNotes && (
             <div className="rounded-2xl border border-cy-300/20 bg-cy-300/[0.05] p-3.5">
               <div className="flex items-center gap-1.5 mb-1.5">

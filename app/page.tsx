@@ -399,6 +399,7 @@ export default function HomePage() {
                 lng={address?.lng}
                 address={address?.formatted}
                 segments={activePolygons}
+                penetrations={vision?.penetrations}
                 metaBadges={mapBadges}
               />
               {address?.lat && (

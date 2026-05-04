@@ -123,6 +123,111 @@ export function generatePdf(e: Estimate) {
     y += 8;
   }
 
+  // ---------- Roof measurements (EagleView-style Length Diagram) ----------
+  if (e.lengths) {
+    if (y > H - 200) { doc.addPage(); y = MARGIN; }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Roof Measurements", MARGIN, y);
+    y += 16;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+
+    const measurements: Array<[string, string]> = [
+      ["Ridges", `${e.lengths.ridgesLf} ft`],
+      ["Hips", `${e.lengths.hipsLf} ft`],
+      ["Valleys", `${e.lengths.valleysLf} ft`],
+      ["Rakes", `${e.lengths.rakesLf} ft`],
+      ["Eaves", `${e.lengths.eavesLf} ft`],
+      ["Drip edge", `${e.lengths.dripEdgeLf} ft`],
+      ["Flashing", `${e.lengths.flashingLf} ft`],
+      ["Step flashing", `${e.lengths.stepFlashingLf} ft`],
+      ["Ice & water shield", `${e.lengths.iwsSqft.toLocaleString()} sqft`],
+    ];
+    // 2-column grid
+    const colW = (W - MARGIN * 2) / 2;
+    measurements.forEach(([k, v], i) => {
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const xK = MARGIN + col * colW;
+      const xV = xK + colW - 8;
+      doc.text(k, xK, y + row * 14);
+      doc.text(v, xV, y + row * 14, { align: "right" });
+    });
+    y += Math.ceil(measurements.length / 2) * 14 + 6;
+    doc.setFontSize(8);
+    doc.setTextColor(120, 120, 120);
+    const sourceLabel =
+      e.lengths.source === "polygons"
+        ? "Computed from refined roof polygons."
+        : e.lengths.source === "footprint"
+          ? "Estimated from building footprint."
+          : "Approximated from sqft + complexity.";
+    doc.text(sourceLabel, MARGIN, y);
+    doc.setTextColor(20, 20, 20);
+    y += 14;
+  }
+
+  // ---------- Penetrations summary ----------
+  if (e.vision?.penetrations && e.vision.penetrations.length > 0) {
+    if (y > H - 100) { doc.addPage(); y = MARGIN; }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text(`Penetrations (${e.vision.penetrations.length})`, MARGIN, y);
+    y += 16;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    e.vision.penetrations.forEach((p, i) => {
+      const sizeStr = p.approxSizeFt ? ` ~${p.approxSizeFt} ft` : "";
+      doc.text(`#${i + 1}  ${p.kind}${sizeStr}`, MARGIN, y);
+      y += 13;
+    });
+    y += 6;
+  }
+
+  // ---------- Waste calculation table ----------
+  if (e.waste) {
+    if (y > H - 200) { doc.addPage(); y = MARGIN; }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Waste Calculation", MARGIN, y);
+    y += 16;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.text("WASTE %", MARGIN, y);
+    doc.text("AREA (SQFT)", 280, y, { align: "right" });
+    doc.text("SQUARES", W - MARGIN, y, { align: "right" });
+    y += 4;
+    doc.setDrawColor(200);
+    doc.line(MARGIN, y, W - MARGIN, y);
+    y += 10;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    e.waste.rows.forEach((row) => {
+      const tag = row.isMeasured
+        ? "  measured"
+        : row.isSuggested
+          ? "  suggested"
+          : "";
+      doc.setFont(row.isSuggested ? "helvetica" : "helvetica", row.isSuggested ? "bold" : "normal");
+      doc.text(`${row.pct}%${tag}`, MARGIN, y);
+      doc.text(row.areaSqft.toLocaleString(), 280, y, { align: "right" });
+      doc.text(row.squares.toFixed(2), W - MARGIN, y, { align: "right" });
+      y += 13;
+    });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(120, 120, 120);
+    doc.text(
+      "Squares are rounded up to the nearest 1/3. Add ridge / hip / starter materials separately.",
+      MARGIN,
+      y,
+      { maxWidth: 530 },
+    );
+    doc.setTextColor(20, 20, 20);
+    y += 14;
+  }
+
   // ---------- Add-ons ----------
   const enabledAddOns = e.addOns.filter((a) => a.enabled);
   if (enabledAddOns.length) {

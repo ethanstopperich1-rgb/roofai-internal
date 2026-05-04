@@ -11,7 +11,7 @@ import type { RoofVision } from "@/types/estimate";
 
 const MODEL = "claude-sonnet-4-5";
 
-const SYSTEM_PROMPT = `You are a roofing inspector analyzing aerial imagery for a sales rep at a roofing company. Your job is to extract structured visual signals from a satellite image of a single residential property.
+const SYSTEM_PROMPT = `You are a roofing inspector analyzing aerial imagery for a sales rep at a roofing company. Your job is to extract structured visual signals from a satellite image of a single residential property. The image is 640x640 pixels with the property roughly centered.
 
 Return ONLY valid minified JSON matching this exact schema, no preamble, no markdown fences:
 
@@ -22,6 +22,7 @@ Return ONLY valid minified JSON matching this exact schema, no preamble, no mark
   "complexity": "simple" | "moderate" | "complex",
   "visibleFeatures": Array<"chimney" | "skylight" | "dormer" | "solar-panels" | "satellite-dish" | "vents" | "complex-geometry">,
   "visibleDamage": Array<"missing-shingles" | "moss-algae" | "discoloration" | "tarp-visible" | "ponding" | "none">,
+  "penetrations": Array<{ "kind": "vent" | "chimney" | "skylight" | "stack" | "satellite-dish" | "other", "x": number, "y": number, "approxSizeFt"?: number }>,
   "salesNotes": string,
   "confidence": number
 }
@@ -30,6 +31,7 @@ Rules:
 - Always pick a material — never "unknown" unless the image is unreadable.
 - estimatedAgeYears is your best integer guess based on visual condition (5..30).
 - complexity: simple = simple gable/hip; moderate = a few cuts, dormers, or wings; complex = many segments, intersections, multiple wings.
+- penetrations: list every roof penetration you can see (vents, chimneys, skylights, plumbing stacks, satellite dishes). x/y are pixel coordinates in the 640x640 image (0,0 = top-left). approxSizeFt is your best guess of the diameter in feet (typical: vent 0.5-1, stack 0.5, chimney 2-4, skylight 2-4). Limit to 12 most prominent.
 - salesNotes: ONE sentence a sales rep can say to the homeowner — what you'd notice walking the roof. Be concrete, no fluff.
 - confidence is 0..1.`;
 
@@ -42,12 +44,41 @@ const MOCK_VISION: RoofVision = {
   complexity: "moderate",
   visibleFeatures: ["vents", "chimney"],
   visibleDamage: ["none"],
+  penetrations: [],
   salesNotes: "Mock vision result — set ANTHROPIC_API_KEY to enable Claude.",
   confidence: 0.3,
 };
 
+function cleanPenetrations(input: unknown): RoofVision["penetrations"] {
+  if (!Array.isArray(input)) return [];
+  const allowed = new Set(["vent", "chimney", "skylight", "stack", "satellite-dish", "other"]);
+  const out: RoofVision["penetrations"] = [];
+  for (const raw of input) {
+    const item = raw as Record<string, unknown>;
+    const kind =
+      typeof item.kind === "string" && allowed.has(item.kind) ? item.kind : "other";
+    const x = typeof item.x === "number" ? Math.max(0, Math.min(640, item.x)) : null;
+    const y = typeof item.y === "number" ? Math.max(0, Math.min(640, item.y)) : null;
+    if (x == null || y == null) continue;
+    const approxSizeFt =
+      typeof item.approxSizeFt === "number"
+        ? Math.max(0.25, Math.min(8, item.approxSizeFt))
+        : undefined;
+    out.push({
+      kind: kind as RoofVision["penetrations"][number]["kind"],
+      x,
+      y,
+      approxSizeFt,
+    });
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
 function clean(json: unknown): RoofVision {
-  const v = (json && typeof json === "object" ? json : {}) as Partial<RoofVision>;
+  const v = (json && typeof json === "object" ? json : {}) as Partial<RoofVision> & {
+    penetrations?: unknown;
+  };
   return {
     currentMaterial: v.currentMaterial ?? "unknown",
     estimatedAge: v.estimatedAge ?? "unknown",
@@ -58,6 +89,7 @@ function clean(json: unknown): RoofVision {
     complexity: v.complexity ?? "moderate",
     visibleFeatures: Array.isArray(v.visibleFeatures) ? v.visibleFeatures : [],
     visibleDamage: Array.isArray(v.visibleDamage) ? v.visibleDamage : ["none"],
+    penetrations: cleanPenetrations(v.penetrations),
     salesNotes: typeof v.salesNotes === "string" ? v.salesNotes : "",
     confidence:
       typeof v.confidence === "number" ? Math.max(0, Math.min(1, v.confidence)) : 0.5,

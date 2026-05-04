@@ -69,6 +69,13 @@ export interface RoofVision {
   visibleDamage: Array<
     "missing-shingles" | "moss-algae" | "discoloration" | "tarp-visible" | "ponding" | "none"
   >;
+  /** Per-penetration positions (pixel coords on the 640x640 satellite tile) */
+  penetrations: Array<{
+    kind: "vent" | "chimney" | "skylight" | "stack" | "satellite-dish" | "other";
+    x: number;
+    y: number;
+    approxSizeFt?: number;
+  }>;
   salesNotes: string;
   confidence: number;
 }

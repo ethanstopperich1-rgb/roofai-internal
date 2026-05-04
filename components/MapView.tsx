@@ -4,23 +4,63 @@ import { useEffect, useRef } from "react";
 import { loadGoogle } from "@/lib/google";
 import { Satellite, Eye } from "lucide-react";
 
+export interface PenetrationMarker {
+  kind: string;
+  /** Pixel coords on the 640×640 zoom-20 satellite tile that vision analyzed */
+  x: number;
+  y: number;
+  approxSizeFt?: number;
+}
+
 interface Props {
   lat?: number;
   lng?: number;
   address?: string;
   /** Roof segment polygons from Solar API — drawn as overlays */
   segments?: Array<Array<{ lat: number; lng: number }>>;
+  /** Penetrations from Claude vision (rendered as numbered circles) */
+  penetrations?: PenetrationMarker[];
   /** Optional badges shown over the satellite map */
   metaBadges?: string[];
 }
 
-export default function MapView({ lat, lng, address, segments, metaBadges }: Props) {
+/**
+ * Pixel coords on the 640×640 zoom-20 tile → lat/lng we can drop a marker at.
+ */
+function pixelToLatLng(opts: {
+  x: number;
+  y: number;
+  centerLat: number;
+  centerLng: number;
+  imgSize?: number;
+  zoom?: number;
+}): { lat: number; lng: number } {
+  const { x, y, centerLat, centerLng, imgSize = 640, zoom = 20 } = opts;
+  const mPerPx =
+    (156_543.03392 * Math.cos((centerLat * Math.PI) / 180)) / Math.pow(2, zoom);
+  const dx = x - imgSize / 2;
+  const dy = y - imgSize / 2;
+  const dLatDeg = (-dy * mPerPx) / 111_320;
+  const dLngDeg =
+    (dx * mPerPx) / (111_320 * Math.cos((centerLat * Math.PI) / 180));
+  return { lat: centerLat + dLatDeg, lng: centerLng + dLngDeg };
+}
+
+export default function MapView({
+  lat,
+  lng,
+  address,
+  segments,
+  penetrations,
+  metaBadges,
+}: Props) {
   const mapEl = useRef<HTMLDivElement>(null);
   const svEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
   const markerRef = useRef<google.maps.Marker | null>(null);
   const svRef = useRef<google.maps.StreetViewPanorama | null>(null);
   const polysRef = useRef<google.maps.Polygon[]>([]);
+  const penMarkersRef = useRef<google.maps.Marker[]>([]);
 
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) return;
@@ -77,8 +117,42 @@ export default function MapView({ lat, lng, address, segments, metaBadges }: Pro
           polysRef.current.push(poly);
         }
       }
+
+      // Clear & redraw penetration markers (numbered amber circles)
+      for (const m of penMarkersRef.current) m.setMap(null);
+      penMarkersRef.current = [];
+      if (penetrations && penetrations.length && mapRef.current) {
+        penetrations.forEach((p, idx) => {
+          const ll = pixelToLatLng({
+            x: p.x,
+            y: p.y,
+            centerLat: lat,
+            centerLng: lng,
+          });
+          const marker = new g.maps.Marker({
+            position: ll,
+            map: mapRef.current!,
+            label: {
+              text: String(idx + 1),
+              color: "#0a0d12",
+              fontSize: "11px",
+              fontWeight: "700",
+            },
+            title: `${p.kind}${p.approxSizeFt ? ` (~${p.approxSizeFt}ft)` : ""}`,
+            icon: {
+              path: g.maps.SymbolPath.CIRCLE,
+              scale: 9,
+              fillColor: "#f3b14b",
+              fillOpacity: 0.92,
+              strokeColor: "#0a0d12",
+              strokeWeight: 2,
+            },
+          });
+          penMarkersRef.current.push(marker);
+        });
+      }
     });
-  }, [lat, lng, segments]);
+  }, [lat, lng, segments, penetrations]);
 
   if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) {
     return (
