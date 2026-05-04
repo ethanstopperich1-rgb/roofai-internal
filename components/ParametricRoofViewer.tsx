@@ -85,6 +85,9 @@ export default function ParametricRoofViewer({
             "radial-gradient(ellipse at 50% 0%, rgba(103,220,255,0.08) 0%, rgba(11,14,20,0.85) 55%, rgba(7,9,13,1) 100%)",
         }}
       >
+        {/* Always-visible footprint silhouette so the card NEVER reads as
+            blank, even if WebGL hiccups or the canvas is still mounting. */}
+        <FootprintSilhouette mesh={mesh} />
         <Canvas
           shadows
           dpr={[1, 2]}
@@ -186,9 +189,36 @@ function RoofMeshObject({ mesh }: { mesh: RoofMesh }) {
   // Build BufferGeometry. R3F coords: X right / Y up / Z toward camera.
   // Roof math coords: X east / Y north / Z up. Map roof.x→x, roof.z→y, roof.y→-z.
   const geom = useMemo(() => {
-    const positions = new Float32Array(mesh.triangles.length * 3);
+    // Filter degenerate triangles. A bad triangle (NaN coord, two coincident
+    // vertices, ~zero area) causes the entire BufferGeometry to silently
+    // refuse to render — leaving a blank canvas. Pre-filtering here is the
+    // cheap insurance against an off-by-one in the upstream polygon math.
+    const safe: typeof mesh.triangles = [];
+    for (let i = 0; i < mesh.triangles.length; i += 3) {
+      const a = mesh.triangles[i];
+      const b = mesh.triangles[i + 1];
+      const c = mesh.triangles[i + 2];
+      if (!a || !b || !c) continue;
+      const allFinite = [a, b, c].every(
+        (v) => Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z),
+      );
+      if (!allFinite) continue;
+      // 2D area in the XZ plane (top-down). A roof face must have non-zero
+      // ground-projected area, otherwise it's an edge and renders nothing.
+      const ax = b.x - a.x;
+      const ay = b.y - a.y;
+      const bx = c.x - a.x;
+      const by = c.y - a.y;
+      const area = Math.abs(ax * by - ay * bx) * 0.5;
+      if (area < 0.01) continue;
+      safe.push(a, b, c);
+    }
+    if (safe.length < 3) {
+      console.warn("[ParametricRoofViewer] no valid triangles after filter");
+    }
+    const positions = new Float32Array(safe.length * 3);
     let i = 0;
-    for (const v of mesh.triangles) {
+    for (const v of safe) {
       positions[i++] = v.x;
       positions[i++] = v.z;
       positions[i++] = -v.y;
@@ -196,6 +226,7 @@ function RoofMeshObject({ mesh }: { mesh: RoofMesh }) {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     g.computeVertexNormals();
+    g.computeBoundingSphere();
     return g;
   }, [mesh]);
   // Subtle barely-perceptible breathing keeps the surface alive
@@ -318,6 +349,62 @@ function Stat({
         {label}
       </span>
     </div>
+  );
+}
+
+/**
+ * Always-visible SVG silhouette of the polygon footprint. Sits behind the
+ * R3F canvas. If WebGL renders correctly, the canvas covers it. If WebGL
+ * fails for any reason (driver glitch, blank-canvas bug, slow init), the
+ * rep at least sees the polygon outline + sqft instead of a black box.
+ */
+function FootprintSilhouette({ mesh }: { mesh: RoofMesh }) {
+  // 2D polygon outline in XY (top-down)
+  const pts = useMemo(() => {
+    // Pull every other triangle vertex (the polygon edge endpoints). The
+    // first edge of each face triangle is a polygon edge.
+    const out: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i < mesh.triangles.length; i += 3) {
+      const a = mesh.triangles[i];
+      out.push({ x: a.x, y: -a.y });
+    }
+    return out;
+  }, [mesh]);
+  if (pts.length < 3) return null;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const w = maxX - minX || 1;
+  const h = maxY - minY || 1;
+  const PAD = 24;
+  const VBW = 600;
+  const VBH = 360;
+  const innerW = VBW - PAD * 2;
+  const innerH = VBH - PAD * 2;
+  const scale = Math.min(innerW / w, innerH / h);
+  const ox = PAD + (innerW - w * scale) / 2 - minX * scale;
+  const oy = PAD + (innerH - h * scale) / 2 - minY * scale;
+  const path = pts
+    .map((p, i) => `${i === 0 ? "M" : "L"}${p.x * scale + ox},${p.y * scale + oy}`)
+    .join(" ") + " Z";
+  return (
+    <svg
+      viewBox={`0 0 ${VBW} ${VBH}`}
+      className="absolute inset-0 w-full h-full pointer-events-none opacity-40"
+      preserveAspectRatio="xMidYMid meet"
+    >
+      <path
+        d={path}
+        fill="rgba(103,220,255,0.04)"
+        stroke="rgba(103,220,255,0.35)"
+        strokeWidth="1.2"
+        strokeDasharray="4 6"
+      />
+    </svg>
   );
 }
 

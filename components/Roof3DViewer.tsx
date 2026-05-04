@@ -776,11 +776,16 @@ export default function Roof3DViewer({
     // polygon (paints the whole roof blue) + bright glowing outline. AI
     // (Claude) source: dim, no fill — the polygon is usually wrong for AI,
     // and a vivid wonky overlay ruins an otherwise clean photogrammetric view.
+    // Visual treatment per source quality. The 0.35-alpha cyan fill used
+    // to "paint" the entire roof solid — looked fake and hid the actual
+    // photogrammetric texture. Now: thin glowing outline only by default,
+    // so the real roof shows through. High-conf sources get a faint 0.08
+    // tint just to confirm "this is what we measured."
     const isLowConf = polygonSource === "ai";
-    const fillAlpha = isLowConf ? 0 : 0.35;
-    const outlineWidth = isLowConf ? 2 : 4;
-    const outlineAlpha = isLowConf ? 0.45 : 1.0;
-    const glowPower = isLowConf ? 0.15 : 0.35;
+    const fillAlpha = isLowConf ? 0 : 0.08;
+    const outlineWidth = isLowConf ? 2 : 5;
+    const outlineAlpha = isLowConf ? 0.45 : 0.95;
+    const glowPower = isLowConf ? 0.15 : 0.5;
 
     polygons.forEach((poly, idx) => {
       if (!poly || poly.length < 3) return;
