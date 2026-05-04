@@ -296,6 +296,21 @@ async function rotateImageBase64(
  * Project a polygon vertex from a CW-rotated image frame back to the
  * original-orientation frame. Only handles 0/90/180/270 — the rotation
  * matrix is a permutation+sign-flip in those cases (no float precision loss).
+ *
+ * Math (image coords, origin top-left, x right, y down — what the model
+ * returns and what sharp uses):
+ *   90° CW forward:  (x, y) → (N - y, x)
+ *   90° CW inverse:  (x', y') → (y', N - x')   ← what we apply here
+ *   180° forward:    (x, y) → (N - x, N - y)   (self-inverse)
+ *   270° CW forward: (x, y) → (y, N - x)
+ *   270° CW inverse: (x', y') → (N - y', x')
+ *
+ * NOTE: an earlier version of this function had 90° and 270° INVERTED —
+ * the formula labeled "inverse" was actually the forward transform.
+ * Symptom: 90°-rotation predictions ended up at twice the offset from
+ * their true position, slightly off-center; once unioned with the 0°
+ * prediction the result spilled over the roof edge with jagged seams.
+ * Fixed in commit history.
  */
 function unrotatePoint(
   x: number,
@@ -307,14 +322,11 @@ function unrotatePoint(
     case 0:
       return [x, y];
     case 90:
-      // sharp.rotate(90) is CW. Forward (CW) for cont. center: (x,y)→(y, N-x)
-      // Inverse (= 90° CCW): (x',y')→(N-y', x')
-      return [N - y, x];
+      return [y, N - x];
     case 180:
       return [N - x, N - y];
     case 270:
-      // Inverse of 270° CW = 90° CW: (x',y')→(y', N-x')
-      return [y, N - x];
+      return [N - y, x];
     default:
       return [x, y];
   }
