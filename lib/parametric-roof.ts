@@ -279,10 +279,64 @@ export function buildParametricRoof(
   }
 
   // ─── Complexity branch ────────────────────────────────────────────
-  // For multi-bay / reflex / >6-vertex polygons, the single-ridge algorithm
-  // produces overlapping triangles (every edge midpoint projects to the
-  // same ridge segment). Fall back to a centroid-apex hip roof instead.
+  // For multi-bay / reflex / >6-vertex polygons, try a real straight-skeleton
+  // first (proper hip roof matching the building shape). If skeleton bails
+  // (numerical issues, split events we don't handle), fall back to a single-
+  // apex centroid pyramid as a last resort.
   if (isComplexPolygon(pts)) {
+    try {
+      // Late import to avoid circular dep
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const ss = require("./straight-skeleton") as typeof import("./straight-skeleton");
+      const result = ss.buildStraightSkeleton(pts, pitchRad);
+      if (result.ok && result.triangles.length >= 3) {
+        const eaveLfM = result.edges
+          .filter((e) => e.kind === "eave")
+          .reduce(
+            (s, e) =>
+              s +
+              Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y, e.b.z - e.a.z),
+            0,
+          );
+        const hipLfM = result.edges
+          .filter((e) => e.kind === "hip")
+          .reduce(
+            (s, e) =>
+              s +
+              Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y, e.b.z - e.a.z),
+            0,
+          );
+        const ridgeLfM = result.edges
+          .filter((e) => e.kind === "ridge")
+          .reduce(
+            (s, e) =>
+              s +
+              Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y, e.b.z - e.a.z),
+            0,
+          );
+        const footprintM2 = Math.abs(signedArea2D(pts));
+        const surfaceM2 = footprintM2 / Math.cos(pitchRad);
+        return {
+          triangles: result.triangles,
+          edges: result.edges as RoofEdge[],
+          stats: {
+            footprintSqft: Math.round(footprintM2 * SQFT_PER_SQM),
+            roofSurfaceSqft: Math.round(surfaceM2 * SQFT_PER_SQM),
+            ridgeLf: Math.round(ridgeLfM * FT_PER_M),
+            hipLf: Math.round(hipLfM * FT_PER_M),
+            valleyLf: 0,
+            eaveLf: Math.round(eaveLfM * FT_PER_M),
+            rakeLf: 0,
+            ridgeHeightFt: Math.round(result.apexHeight * FT_PER_M * 10) / 10,
+          },
+          origin,
+          localToLatLng: (x, y) => metersToLonLat(x, y, origin),
+        };
+      }
+    } catch (err) {
+      console.warn("[parametric-roof] straight skeleton failed:", err);
+    }
+    // Fallback: centroid-apex pyramid (visually clean even if architecturally simple)
     return buildHipRoofFallback(pts, pitchRad, origin);
   }
 
