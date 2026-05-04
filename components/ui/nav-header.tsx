@@ -107,7 +107,11 @@ const Tab = ({
 const Cursor = ({ position }: { position: CursorPosition }) => {
   return (
     <motion.li
-      animate={position}
+      animate={{
+        left: position.left,
+        width: position.width,
+        opacity: position.opacity,
+      }}
       transition={{ type: "spring", stiffness: 380, damping: 32 }}
       className="absolute z-0 h-7 md:h-9 rounded-full bg-cy-300 shadow-[0_4px_12px_-2px_rgba(103,220,255,0.45)]"
     />
