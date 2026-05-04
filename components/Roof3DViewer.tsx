@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Box, RotateCw, Pause, Play } from "lucide-react";
+import { Loader2, Box, RotateCw, Pause, Play, Crosshair } from "lucide-react";
 
 interface Props {
   lat: number;
@@ -10,6 +10,10 @@ interface Props {
   /** Roof polygon(s) in lat/lng. When supplied, drawn as a glowing outline
    *  draped over the 3D mesh using Cesium's CESIUM_3D_TILE classification. */
   polygons?: Array<Array<{ lat: number; lng: number }>>;
+  /** Provenance — polygons sourced from "ai" (Claude vision) are typically
+   *  inaccurate, so we render their outline at lower opacity to avoid drawing
+   *  attention to a wonky shape. */
+  polygonSource?: "edited" | "solar" | "sam" | "osm" | "ai";
 }
 
 const PALETTE = [
@@ -89,12 +93,13 @@ function loadCesium(): Promise<CesiumGlobal> {
  * Cesium is loaded from CDN at runtime (not bundled). Requires
  * NEXT_PUBLIC_GOOGLE_MAPS_KEY with the Map Tiles API enabled in Google Cloud.
  */
-export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
+export default function Roof3DViewer({ lat, lng, address, polygons, polygonSource }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
   const polygonEntitiesRef = useRef<unknown[]>([]);
   const tickHandlerRef = useRef<(() => void) | null>(null);
   const armTimerRef = useRef<number | null>(null);
+  const recenterRef = useRef<(() => void) | null>(null);
 
   const [status, setStatus] = useState<"loading" | "ready" | "no-coverage" | "error">(
     "loading",
@@ -163,6 +168,12 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
       try {
         const tileset = await Cesium.createGooglePhotorealistic3DTileset();
         if (cancelled) return;
+        // Tighter LOD: the default maximumScreenSpaceError is 16 (low-detail
+        // friendly). At residential property scale that means we get blurry
+        // partially-rendered tiles for several seconds while the camera
+        // settles. Drop to 8 — Google streams higher-resolution tiles
+        // earlier and the "smear" effect resolves much faster.
+        tileset.maximumScreenSpaceError = 8;
         viewer.scene.primitives.add(tileset);
         setStatus("ready");
       } catch (err) {
@@ -171,31 +182,30 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
         return;
       }
 
-      viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(lng, lat - 0.0008, 220),
-        orientation: {
-          heading: 0,
-          pitch: Cesium.Math.toRadians(-40),
-          roll: 0,
-        },
-        duration: 1.6,
-      });
+      // Camera framing: a single lookAtTransform centered on the property at
+      // ground level with a tight 90 m radius and a steep -55° pitch. Reads
+      // as a "drone hovering directly over the rooftop" — clearly shows the
+      // target house, not the whole neighborhood.
+      const recenter = () => {
+        const center = Cesium.Cartesian3.fromDegrees(lng, lat, 0);
+        const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+        viewer.camera.lookAtTransform(
+          transform,
+          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-55), 90),
+        );
+      };
+      recenterRef.current = recenter;
+      recenter();
 
       // Auto-orbit: rotate around the property at constant rate. Click cancels.
       armTimerRef.current = window.setTimeout(() => {
         if (cancelled) return;
-        const center = Cesium.Cartesian3.fromDegrees(lng, lat, 30);
-        const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
-        viewer.camera.lookAtTransform(
-          transform,
-          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-35), 180),
-        );
         const tickHandler = () => {
           if (orbitingRef.current) viewer.camera.rotateRight(0.0018);
         };
         viewer.scene.preRender.addEventListener(tickHandler);
         tickHandlerRef.current = tickHandler;
-      }, 1700);
+      }, 600);
 
       viewer.screenSpaceEventHandler.setInputAction(() => {
         setOrbiting(false);
@@ -240,23 +250,10 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // -------- camera fly when lat/lng changes (without rebuilding viewer) --------
+  // -------- recenter when lat/lng changes (without rebuilding viewer) --------
   useEffect(() => {
-    const viewer = viewerRef.current as
-      | { camera: { flyTo: (opts: unknown) => void } }
-      | null;
-    if (!viewer || status !== "ready") return;
-    const Cesium = window.Cesium;
-    if (!Cesium) return;
-    viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(lng, lat - 0.0008, 220),
-      orientation: {
-        heading: 0,
-        pitch: Cesium.Math.toRadians(-40),
-        roll: 0,
-      },
-      duration: 1.2,
-    });
+    if (status !== "ready") return;
+    recenterRef.current?.();
   }, [lat, lng, status]);
 
   // -------- redraw polygons when they change --------
@@ -283,10 +280,20 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
     // the polygon and paints every 3D Tile surface inside it: roof, walls,
     // ground. That made the 3D viewer look like the WHOLE HOUSE was wrapped
     // in colored film. The outline polyline is enough to mark the roof.
+    // Outline width + opacity track source quality. A confident SAM/OSM/Solar
+    // polygon gets a bright glowing outline (the visual "we measured this").
+    // A Claude AI fallback gets a dim outline — the polygon is usually wrong
+    // for that source, and a glowing wonky outline ruins an otherwise clean
+    // photogrammetric view of the property.
+    const isLowConf = polygonSource === "ai";
+    const outlineWidth = isLowConf ? 2 : 4;
+    const outlineAlpha = isLowConf ? 0.45 : 1.0;
+    const glowPower = isLowConf ? 0.15 : 0.3;
+
     polygons.forEach((poly, idx) => {
       if (!poly || poly.length < 3) return;
       const colorHex = PALETTE[idx % PALETTE.length];
-      const stroke = Cesium.Color.fromCssColorString(colorHex);
+      const stroke = Cesium.Color.fromCssColorString(colorHex).withAlpha(outlineAlpha);
 
       const positions = Cesium.Cartesian3.fromDegreesArray(
         poly.flatMap((v) => [v.lng, v.lat]),
@@ -296,9 +303,9 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
       const outlineEntity = viewer.entities.add({
         polyline: {
           positions: closed,
-          width: 4,
+          width: outlineWidth,
           material: new Cesium.PolylineGlowMaterialProperty({
-            glowPower: 0.3,
+            glowPower,
             color: stroke,
           }),
           clampToGround: true,
@@ -307,7 +314,7 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
       });
       polygonEntitiesRef.current.push(outlineEntity);
     });
-  }, [polygons, status]);
+  }, [polygons, polygonSource, status]);
 
   return (
     <div className="relative rounded-2xl overflow-hidden border border-white/[0.07] bg-black/30 h-full min-h-[280px]">
@@ -346,18 +353,33 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
       )}
 
       {status === "ready" && (
-        <button
-          onClick={() => setOrbiting((v) => !v)}
-          className="absolute top-2.5 right-2.5 z-10 chip chip-accent backdrop-blur-md bg-[#07090d]/65"
-          title={orbiting ? "Pause orbit" : "Resume orbit"}
-        >
-          {orbiting ? <Pause size={11} /> : <Play size={11} />}
-          <span>{orbiting ? "Orbiting" : "Paused"}</span>
-        </button>
+        <div className="absolute top-2.5 right-2.5 z-10 flex gap-1.5">
+          <button
+            onClick={() => {
+              recenterRef.current?.();
+              setOrbiting(true);
+            }}
+            className="chip chip-accent backdrop-blur-md bg-[#07090d]/65"
+            title="Recenter on property"
+          >
+            <Crosshair size={11} /> <span>Recenter</span>
+          </button>
+          <button
+            onClick={() => setOrbiting((v) => !v)}
+            className="chip chip-accent backdrop-blur-md bg-[#07090d]/65"
+            title={orbiting ? "Pause orbit" : "Resume orbit"}
+          >
+            {orbiting ? <Pause size={11} /> : <Play size={11} />}
+            <span>{orbiting ? "Orbiting" : "Paused"}</span>
+          </button>
+        </div>
       )}
       {status === "ready" && polygons && polygons.length > 0 && (
         <div className="absolute bottom-2.5 left-2.5 z-10 chip chip-accent backdrop-blur-md bg-[#07090d]/65">
-          <RotateCw size={10} /> Roof outline projected
+          <RotateCw size={10} />
+          {polygonSource === "ai"
+            ? "Outline (low confidence)"
+            : "Roof outline projected"}
         </div>
       )}
     </div>

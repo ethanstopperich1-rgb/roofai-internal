@@ -100,16 +100,16 @@ export default function MapView({
           mapTypeId: "satellite",
           tilt: 0,
           disableDefaultUI: true,
-          // Lock map pan/zoom so reps can't accidentally drag off the
-          // property — but DON'T set gestureHandling: "none" because that
-          // blocks polygon vertex drag events too. draggable/scrollwheel
-          // false achieves the lock without breaking polygon edits.
+          // Pan / zoom enabled — reps need to look at neighbor reference
+          // points and zoom in to verify polygon vertex placement on tricky
+          // properties. Polygon vertex drag events still bubble correctly
+          // because we never set gestureHandling: "none".
           keyboardShortcuts: false,
           clickableIcons: false,
-          draggable: false,
-          zoomControl: false,
-          scrollwheel: false,
-          disableDoubleClickZoom: true,
+          draggable: true,
+          zoomControl: true,
+          scrollwheel: true,
+          disableDoubleClickZoom: false,
         });
       } else {
         mapRef.current.setCenter(pos);

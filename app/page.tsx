@@ -634,6 +634,7 @@ export default function HomePage() {
                 lng={address.lng}
                 address={address.formatted}
                 polygons={activePolygons}
+                polygonSource={polygonSource === "none" ? undefined : polygonSource}
               />
             )}
           </section>
