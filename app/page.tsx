@@ -81,6 +81,9 @@ export default function HomePage() {
   const [visionError, setVisionError] = useState<string>("");
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [propertyAttomYearBuilt, setPropertyAttomYearBuilt] = useState<number | null>(null);
+  const [osmBuildingPolygon, setOsmBuildingPolygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
 
   // ATTOM yearBuilt → ageYears (rep can still override manually)
   useEffect(() => {
@@ -130,14 +133,25 @@ export default function HomePage() {
     });
   }, [vision?.roofPolygon, address?.lat, address?.lng]);
 
+  // Polygon source priority — best-quality first:
+  //   1. Solar API per-facet polygons (metros only, ~30% of US)
+  //   2. OpenStreetMap building footprint (human-traced, ~50-60% US)
+  //   3. Claude vision polygon (fallback for everywhere else)
+  const polygonSource = useMemo<"solar" | "osm" | "ai" | "none">(() => {
+    if (solar?.segmentPolygonsLatLng?.length) return "solar";
+    if (osmBuildingPolygon) return "osm";
+    if (claudePolygonLatLng) return "ai";
+    return "none";
+  }, [solar?.segmentPolygonsLatLng, osmBuildingPolygon, claudePolygonLatLng]);
+
   const activePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    const solarPolys = solar?.segmentPolygonsLatLng;
-    if (solarPolys && solarPolys.length > 0) return solarPolys;
-    if (claudePolygonLatLng) return [claudePolygonLatLng];
+    if (polygonSource === "solar") return solar!.segmentPolygonsLatLng;
+    if (polygonSource === "osm") return [osmBuildingPolygon!];
+    if (polygonSource === "ai") return [claudePolygonLatLng!];
     return undefined;
-  }, [solar?.segmentPolygonsLatLng, claudePolygonLatLng]);
+  }, [polygonSource, solar, osmBuildingPolygon, claudePolygonLatLng]);
 
   const detailed = useMemo(
     () =>
@@ -189,6 +203,7 @@ export default function HomePage() {
     setSolar(null);
     setVision(null);
     setVisionError("");
+    setOsmBuildingPolygon(null);
 
     if (addr.lat == null || addr.lng == null) {
       setAssumptions((a) => ({
@@ -217,10 +232,29 @@ export default function HomePage() {
         return null;
       });
 
-    const [solarData, visionData] = await Promise.all([solarPromise, visionPromise]);
+    // OSM building footprint — ground truth from human-traced data when
+    // available. Runs in parallel with solar + vision. Cheap (free public
+    // API) and short-circuits the need to trust an AI polygon for the
+    // ~50-60% of US residential properties OSM has data on.
+    const osmPromise = fetch(`/api/building?lat=${addr.lat}&lng=${addr.lng}`)
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const data = (await r.json()) as {
+          latLng?: Array<{ lat: number; lng: number }>;
+        };
+        return data.latLng && data.latLng.length >= 3 ? data.latLng : null;
+      })
+      .catch(() => null);
+
+    const [solarData, visionData, osmData] = await Promise.all([
+      solarPromise,
+      visionPromise,
+      osmPromise,
+    ]);
 
     if (solarData) setSolar(solarData);
     if (visionData) setVision(visionData);
+    if (osmData) setOsmBuildingPolygon(osmData);
     setVisionLoading(false);
 
     setAssumptions((a) => {
@@ -300,7 +334,8 @@ export default function HomePage() {
     const badges: string[] = [];
     if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
-    if (!solar?.segmentPolygonsLatLng?.length && claudePolygonLatLng) badges.push("AI traced");
+    if (polygonSource === "osm") badges.push("OSM traced");
+    else if (polygonSource === "ai") badges.push("AI traced");
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
     if (solar?.pitch) badges.push(`Pitch ${solar.pitch}`);
     return badges;
