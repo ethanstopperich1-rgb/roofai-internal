@@ -421,17 +421,29 @@ async function extractRoofPolygonFromTiles(opts: {
     }
   }
 
-  // Clean (close + hole-fill), isolate the component containing center
+  // Clean (close + hole-fill), isolate the component containing center.
+  // proximityRadiusCells: bumped from 20 → 30 because rural geocoded
+  // addresses are often parcel-centroid or street-frontage points, not
+  // building-center points. A 20-cell (=20m) radius excluded the actual
+  // house when its centroid was 25-30m from the geocoded address, leaving
+  // only a small shed near the address as the "largest nearby" component.
   const cleaned = cleanMask(mask, EXTRACT_GRID, EXTRACT_GRID);
-  const isolated = isolateCenterComponent(cleaned, EXTRACT_GRID, EXTRACT_GRID);
+  const isolated = isolateCenterComponent(cleaned, EXTRACT_GRID, EXTRACT_GRID, 30);
   if (!isolated) {
     console.warn("[Roof3DViewer] no roof component near centerpoint");
     return null;
   }
   let area = 0;
   for (let i = 0; i < isolated.length; i++) if (isolated[i]) area++;
-  if (area < 30) {
-    console.warn(`[Roof3DViewer] roof component too small (${area} cells)`);
+  // Validation gate: residential roofs are at minimum ~80m² (~860 sqft)
+  // for the tiniest tiny-houses. Anything smaller is a shed, gazebo, or
+  // detection noise — REJECT so Roboflow / lower-priority sources can win
+  // instead of shipping a wrong tiny polygon to the rep. (The 30-cell
+  // threshold below was too permissive; many false positives squeaked by.)
+  if (area < 80) {
+    console.warn(
+      `[Roof3DViewer] component too small to be a residence (${area} cells = ~${area}m²); rejecting so Roboflow can win`,
+    );
     return null;
   }
 
