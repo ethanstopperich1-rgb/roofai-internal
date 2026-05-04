@@ -412,18 +412,34 @@ export default function HomePage() {
                 </button>
                 {refineError && (
                   <div
-                    className="max-w-[260px] rounded-lg border px-3 py-2 text-[11px] backdrop-blur"
+                    className="max-w-[280px] rounded-lg border px-3 py-2 text-[11px] backdrop-blur leading-relaxed"
                     style={{
-                      background: "rgba(60, 16, 24, 0.78)",
+                      background: "rgba(60, 16, 24, 0.82)",
                       borderColor: "rgba(244, 63, 94, 0.35)",
                       color: "#fda4af",
                     }}
                   >
-                    {refineError === "no_polygons"
-                      ? "Couldn't extract a clean roof outline."
-                      : refineError === "Missing REPLICATE_API_TOKEN"
-                        ? "Set REPLICATE_API_TOKEN in .env.local."
-                        : `Refinement failed: ${refineError}`}
+                    {refineError === "no_credit" ? (
+                      <>
+                        Replicate trial credit exhausted.{" "}
+                        <a
+                          href="https://replicate.com/account/billing"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="underline hover:text-rose-200"
+                        >
+                          Add billing →
+                        </a>
+                      </>
+                    ) : refineError === "bad_token" ? (
+                      "Invalid Replicate token."
+                    ) : refineError === "no_polygons" ? (
+                      "Couldn't extract a clean roof outline."
+                    ) : refineError === "Missing REPLICATE_API_TOKEN" ? (
+                      "Set REPLICATE_API_TOKEN in environment."
+                    ) : (
+                      `Refinement failed: ${refineError}`
+                    )}
                   </div>
                 )}
               </div>
