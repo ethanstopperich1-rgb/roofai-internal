@@ -318,7 +318,7 @@ export default function HomePage() {
           past the section's bottom edge. The gradient blob below uses
           isolation: isolate to keep its rounded-3xl clipping local. */}
       <section
-        className="glass-strong rounded-3xl p-7 md:p-9 relative"
+        className="glass-strong rounded-3xl p-5 sm:p-7 md:p-9 relative"
         style={{ isolation: "isolate" }}
       >
         <div
@@ -340,22 +340,22 @@ export default function HomePage() {
               <span className="text-cy-300">deliver</span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
             <input
-              className="input w-44 text-[13px]"
+              className="input flex-1 sm:flex-none sm:w-44 text-[13px]"
               placeholder="Your name"
               value={staff}
               onChange={(e) => setStaff(e.target.value)}
             />
             {shown && (
-              <button className="btn btn-ghost" onClick={reset}>
-                <RotateCcw size={14} /> New
+              <button className="btn btn-ghost flex-shrink-0" onClick={reset}>
+                <RotateCcw size={14} /> <span className="hidden sm:inline">New</span>
               </button>
             )}
           </div>
         </div>
 
-        <h1 className="font-display text-4xl md:text-[44px] leading-[1.05] tracking-tight font-medium mb-1.5">
+        <h1 className="font-display text-[28px] sm:text-4xl md:text-[44px] leading-[1.05] tracking-tight font-medium mb-1.5">
           Where are we{" "}
           <span className="bg-gradient-to-r from-cy-300 via-cy-400 to-mint bg-clip-text text-transparent">
             roofing
@@ -389,7 +389,7 @@ export default function HomePage() {
       {shown && (
         <>
           {/* ─── Map hero — satellite + Street View, full width ─────────── */}
-          <section className="relative h-[640px] float-in">
+          <section className="relative h-[420px] sm:h-[520px] lg:h-[640px] float-in">
             <MapView
               lat={address?.lat}
               lng={address?.lng}

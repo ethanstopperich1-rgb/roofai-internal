@@ -149,18 +149,27 @@ export default function AddressInput({ onSelect, onSubmit, value, onChange }: Pr
         )}
         <AuroraButton
           onClick={() => onSubmit()}
-          className="flex-shrink-0 px-5 py-2.5 font-medium text-[14px] tracking-tight inline-flex items-center gap-2"
+          className="flex-shrink-0 px-3 sm:px-5 py-2.5 font-medium text-[13px] sm:text-[14px] tracking-tight inline-flex items-center gap-2"
         >
           Estimate
-          <span className="kbd">↵</span>
+          <span className="kbd hidden sm:inline">↵</span>
         </AuroraButton>
       </div>
 
       {open && suggestions.length > 0 && (
-        <div className="absolute left-0 right-0 top-full mt-2 z-50 glass-strong rounded-2xl overflow-hidden shadow-2xl float-in">
+        <div
+          className="absolute left-0 right-0 top-full mt-2 z-[100] rounded-2xl overflow-hidden shadow-2xl float-in border border-white/10"
+          style={{
+            background: "rgba(11,14,20,0.96)",
+            backdropFilter: "blur(28px) saturate(160%)",
+            WebkitBackdropFilter: "blur(28px) saturate(160%)",
+            boxShadow:
+              "0 32px 64px -16px rgba(0,0,0,0.85), inset 0 1px 0 rgba(255,255,255,0.06)",
+          }}
+        >
           <div className="px-4 py-2 flex items-center justify-between border-b border-white/[0.06]">
             <span className="label">Suggestions</span>
-            <div className="flex items-center gap-1.5 text-slate-500">
+            <div className="hidden md:flex items-center gap-1.5 text-slate-500">
               <span className="kbd"><ArrowUp size={9} /></span>
               <span className="kbd"><ArrowDown size={9} /></span>
               <span className="text-[10px] font-mono">to navigate</span>

@@ -35,7 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen antialiased relative">
         <GradientBackground />
         <Header />
-        <main className="relative z-[1] max-w-[1280px] mx-auto px-6 lg:px-10 py-8">{children}</main>
+        <main className="relative z-[1] max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 py-6 sm:py-8">{children}</main>
       </body>
     </html>
   );
@@ -44,31 +44,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 function Header() {
   return (
     <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#07090d]/70 backdrop-blur-xl">
-      <div className="max-w-[1280px] mx-auto px-6 lg:px-10 h-20 flex items-center justify-between">
-        <Link href="/" className="group flex items-center gap-2.5" aria-label="Voxaris Pitch">
-          {/* Mobile: icon only */}
-          <img
-            src="/brand/logo-mark.png"
-            alt=""
-            width={48}
-            height={48}
-            className="w-12 h-12 sm:hidden"
-          />
-          {/* Desktop: full wordmark — bigger, breathes in the taller header */}
+      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-16 sm:h-20 flex items-center justify-between gap-3">
+        <Link href="/" className="group flex items-center gap-2 min-w-0" aria-label="Voxaris Pitch">
           <img
             src="/brand/logo-wordmark-alpha.png"
             alt="Voxaris Pitch"
             width={1672}
             height={941}
-            className="hidden sm:block h-14 w-auto"
+            className="h-9 sm:h-14 w-auto max-w-[180px] sm:max-w-none object-contain"
           />
-          <span className="hidden sm:inline-block ml-1 chip text-[10px]">beta</span>
+          <span className="hidden md:inline-block ml-1 chip text-[10px]">beta</span>
         </Link>
 
-        <nav className="flex items-center gap-1 p-1 rounded-xl bg-white/[0.025] border border-white/[0.05] text-[13px]">
+        <nav className="flex items-center gap-1 p-1 rounded-xl bg-white/[0.025] border border-white/[0.05] text-[12px] sm:text-[13px]">
           <NavLink href="/">Estimator</NavLink>
           <NavLink href="/history">History</NavLink>
-          <NavLink href="/admin">Admin</NavLink>
+          <NavLink href="/admin" hideOnMobile>Admin</NavLink>
         </nav>
 
         <div className="flex items-center gap-3 text-[12px] text-slate-400">
@@ -82,11 +73,21 @@ function Header() {
   );
 }
 
-function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+function NavLink({
+  href,
+  children,
+  hideOnMobile,
+}: {
+  href: string;
+  children: React.ReactNode;
+  hideOnMobile?: boolean;
+}) {
   return (
     <Link
       href={href}
-      className="px-3 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-white/[0.06] transition"
+      className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-white/[0.06] transition ${
+        hideOnMobile ? "hidden sm:inline-block" : ""
+      }`}
     >
       {children}
     </Link>
