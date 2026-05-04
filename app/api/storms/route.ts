@@ -74,7 +74,7 @@ WITH events AS (
     AND event_latitude IS NOT NULL AND event_longitude IS NOT NULL
     AND event_latitude BETWEEN @minLat AND @maxLat
     AND event_longitude BETWEEN @minLng AND @maxLng
-    AND event_type IN ('Hail', 'Tornado', 'Thunderstorm Wind', 'High Wind')
+    AND LOWER(event_type) IN ('hail', 'tornado', 'thunderstorm wind', 'high wind', 'marine hail')
 )
 SELECT
   event_type,
@@ -115,7 +115,7 @@ LIMIT 50`;
     });
 
     const events = (rows as StormRow[]).map((r) => ({
-      type: r.event_type,
+      type: titleCase(r.event_type),
       date:
         typeof r.event_begin_time === "string"
           ? r.event_begin_time
@@ -138,13 +138,17 @@ LIMIT 50`;
   }
 }
 
+function titleCase(s: string): string {
+  return s.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1));
+}
+
 function summarize(
   events: Array<{ type: string; magnitude: number | null; distanceMiles: number | null }>,
   radius: number,
 ) {
-  const hail = events.filter((e) => e.type === "Hail");
-  const tornado = events.filter((e) => e.type === "Tornado");
-  const wind = events.filter((e) => e.type !== "Hail" && e.type !== "Tornado");
+  const hail = events.filter((e) => /hail/i.test(e.type));
+  const tornado = events.filter((e) => /tornado/i.test(e.type));
+  const wind = events.filter((e) => !/hail|tornado/i.test(e.type));
   const maxHail = hail.reduce((m, e) => Math.max(m, e.magnitude ?? 0), 0);
   return {
     total: events.length,
