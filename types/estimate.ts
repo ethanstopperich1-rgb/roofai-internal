@@ -226,5 +226,5 @@ export interface Estimate {
    *  geometry it was priced against. Lat/lng order. */
   polygons?: Array<Array<{ lat: number; lng: number }>>;
   /** Optional — provenance of the saved polygons. */
-  polygonSource?: "edited" | "solar-mask" | "solar" | "sam" | "osm" | "ai";
+  polygonSource?: "edited" | "tiles3d" | "solar-mask" | "solar" | "sam" | "osm" | "ai";
 }

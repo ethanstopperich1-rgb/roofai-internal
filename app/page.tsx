@@ -104,6 +104,13 @@ export default function HomePage() {
   const [solarMaskPolygon, setSolarMaskPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // Polygon extracted client-side from the loaded 3D Tiles photogrammetric
+  // mesh (Roof3DViewer samples elevations on a grid, thresholds above
+  // ground). Top-priority source — uses real geometric height data so
+  // there's no AI/satellite-image guessing involved.
+  const [tiles3dPolygon, setTiles3dPolygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
   // Live polygons after the rep edits a vertex. When set, overrides the
   // auto-detected source polygons everywhere (lengths, sqft, blueprint, PDF).
   // Reset to null on every new estimate so we always start from auto-detect.
@@ -170,17 +177,19 @@ export default function HomePage() {
   }, [vision?.roofPolygon, address?.lat, address?.lng]);
 
   // Polygon source priority — best-quality first:
-  //   1. Solar mask    — Google's own roof segmentation from dataLayers:get
-  //                      (Project Sunroof's ground-truth segmentation)
-  //   2. Solar facets  — multi-facet bboxes from findClosest (axis-aligned
+  //   1. 3D Tiles mesh — height-thresholded from Google's photogrammetry
+  //                      (real geometric truth, no AI guessing)
+  //   2. Solar mask    — Project Sunroof's roof segmentation
+  //   3. Solar facets  — multi-facet bboxes from findClosest (axis-aligned
   //                      but useful for ridge/valley counting)
-  //   3. SAM 2 + OSM   — point-prompted SAM with OSM building clip
-  //   4. OSM           — human-traced building outline (~50-60% US)
-  //   5. Claude vision — last-resort AI trace
+  //   4. SAM 2 + OSM   — point-prompted SAM with OSM building clip
+  //   5. OSM           — human-traced building outline (~50-60% US)
+  //   6. Claude vision — last-resort AI trace
   const polygonSource = useMemo<
-    "edited" | "solar-mask" | "solar" | "sam" | "osm" | "ai" | "none"
+    "edited" | "tiles3d" | "solar-mask" | "solar" | "sam" | "osm" | "ai" | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
+    if (tiles3dPolygon) return "tiles3d";
     if (solarMaskPolygon) return "solar-mask";
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
     if (samRefinedPolygon) return "sam";
@@ -189,6 +198,7 @@ export default function HomePage() {
     return "none";
   }, [
     livePolygons,
+    tiles3dPolygon,
     solarMaskPolygon,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
@@ -203,6 +213,7 @@ export default function HomePage() {
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
+    if (tiles3dPolygon) return [tiles3dPolygon];
     if (solarMaskPolygon) return [solarMaskPolygon];
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1)
       return solar.segmentPolygonsLatLng;
@@ -211,6 +222,7 @@ export default function HomePage() {
     if (claudePolygonLatLng) return [claudePolygonLatLng];
     return undefined;
   }, [
+    tiles3dPolygon,
     solarMaskPolygon,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
@@ -377,6 +389,7 @@ export default function HomePage() {
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
+    setTiles3dPolygon(null);
     setLivePolygons(null);
     hasUserEditedRef.current = false;
 
@@ -556,6 +569,7 @@ export default function HomePage() {
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
+    setTiles3dPolygon(null);
     hasUserEditedRef.current = false;
   };
 
@@ -564,6 +578,7 @@ export default function HomePage() {
     if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
     if (polygonSource === "edited") badges.push("Edited");
+    else if (polygonSource === "tiles3d") badges.push("3D mesh");
     else if (polygonSource === "solar-mask") badges.push("Solar mask");
     else if (polygonSource === "sam") badges.push("SAM 2 refined");
     else if (polygonSource === "osm") badges.push("OSM traced");
@@ -675,6 +690,9 @@ export default function HomePage() {
                 address={address.formatted}
                 polygons={activePolygons}
                 polygonSource={polygonSource === "none" ? undefined : polygonSource}
+                onTilesPolygonDetected={(poly) => {
+                  if (!hasUserEditedRef.current) setTiles3dPolygon(poly);
+                }}
               />
             )}
           </section>
@@ -686,19 +704,21 @@ export default function HomePage() {
               editing={polygonSource === "edited"}
               pitchDegrees={solar?.pitchDegrees ?? null}
               sourceLabel={
-                polygonSource === "solar-mask"
-                  ? "Solar mask"
-                  : polygonSource === "solar"
-                    ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
-                    : polygonSource === "sam"
-                      ? "SAM 2 refined"
-                      : polygonSource === "osm"
-                        ? "OSM traced"
-                        : polygonSource === "ai"
-                          ? "AI traced"
-                          : polygonSource === "edited"
-                            ? "Edited by hand"
-                            : undefined
+                polygonSource === "tiles3d"
+                  ? "3D mesh"
+                  : polygonSource === "solar-mask"
+                    ? "Solar mask"
+                    : polygonSource === "solar"
+                      ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
+                      : polygonSource === "sam"
+                        ? "SAM 2 refined"
+                        : polygonSource === "osm"
+                          ? "OSM traced"
+                          : polygonSource === "ai"
+                            ? "AI traced"
+                            : polygonSource === "edited"
+                              ? "Edited by hand"
+                              : undefined
               }
             />
           )}
