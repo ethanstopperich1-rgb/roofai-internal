@@ -4,6 +4,7 @@ import {
   CANDIDATE_MODELS,
   type RoboflowResult,
 } from "@/lib/roboflow";
+import { fetchBuildingPolygon } from "@/lib/buildings";
 import { getCached, setCached } from "@/lib/cache";
 
 export const runtime = "nodejs";
@@ -71,6 +72,12 @@ export async function GET(req: Request) {
     return buildResponse(cached);
   }
 
+  // Fetch OSM building footprint first (fast, ~300ms cached / ~1.5s fresh)
+  // so refineRoofWithRoboflow can use it as a Phase-C clip on the primary
+  // polygon. OSM failure is silent — refineRoofWithRoboflow handles a
+  // null/undefined osmBuildingPolygon by skipping the clip step.
+  const osm = await fetchBuildingPolygon({ lat, lng }).catch(() => null);
+
   let result: RoboflowResult | null = null;
   try {
     result = await refineRoofWithRoboflow({
@@ -79,6 +86,7 @@ export async function GET(req: Request) {
       googleMapsKey,
       roboflowKey,
       model: CANDIDATE_MODELS.satelliteRooftopMap,
+      osmBuildingPolygon: osm?.latLng ?? null,
     });
   } catch (err) {
     console.error("[api/roboflow] inference error:", err);

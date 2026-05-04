@@ -29,6 +29,7 @@ import {
   type RoboflowModel,
   type RoboflowResult,
 } from "../lib/roboflow";
+import { fetchBuildingPolygon } from "../lib/buildings";
 
 // ---------- env loading (no dotenv dep — keeps the script standalone) ----------
 
@@ -187,6 +188,12 @@ async function main() {
     const tilePath = join(outRoot, `${addr.label}.tile.png`);
     writeFileSync(tilePath, tile);
 
+    // Fetch OSM building footprint once per address. refineRoofWithRoboflow
+    // uses it as the Phase-C clip when available. Cached on Overpass — first
+    // call ~1-2s, subsequent calls within minutes are usually fast.
+    const osm = await fetchBuildingPolygon({ lat: addr.lat, lng: addr.lng }).catch(() => null);
+    if (osm) console.log(`    osm: ${osm.latLng.length}-vertex footprint available`);
+
     for (const [name, model] of MODELS) {
       process.stdout.write(`  • ${name} (${model.slug}/${model.version}) ... `);
       const t0 = Date.now();
@@ -198,6 +205,7 @@ async function main() {
           googleMapsKey: googleKey,
           roboflowKey,
           model,
+          osmBuildingPolygon: osm?.latLng ?? null,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
