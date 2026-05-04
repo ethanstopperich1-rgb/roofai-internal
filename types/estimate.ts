@@ -241,5 +241,6 @@ export interface Estimate {
     | "solar"
     | "sam"
     | "osm"
+    | "microsoft-buildings"
     | "ai";
 }

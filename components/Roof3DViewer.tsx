@@ -22,6 +22,7 @@ interface Props {
     | "solar"
     | "sam"
     | "osm"
+    | "microsoft-buildings"
     | "ai";
   /** Fired once we've extracted a roof polygon from the 3D Tiles mesh by
    *  sampling elevations and thresholding above ground. Highest-quality
