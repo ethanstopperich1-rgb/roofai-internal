@@ -153,17 +153,10 @@ export default function Roof3DViewer({ lat, lng, address, polygons, polygonSourc
       viewer.scene.globe.show = false;
       (viewer.cesiumWidget.creditContainer as HTMLElement).style.opacity = "0.6";
 
-      // Tame the default camera. Cesium's screenSpaceCameraController is tuned
-      // for whole-globe navigation — at residential-property scale a small
-      // mouse twitch sends the camera flying. Cuts inertia, locks zoom range,
-      // and disables free-look so dragging only orbits.
-      const ssc = viewer.scene.screenSpaceCameraController;
-      ssc.inertiaSpin = 0.4;
-      ssc.inertiaTranslate = 0.4;
-      ssc.inertiaZoom = 0.4;
-      ssc.minimumZoomDistance = 30;
-      ssc.maximumZoomDistance = 600;
-      ssc.enableLook = false;
+      // Camera controls left at Cesium defaults — user feedback was that the
+      // tamed-inertia / no-look / clamped-zoom version felt worse than stock.
+      // Stock controls: inertiaSpin/Translate/Zoom ≈ 0.9, free-look enabled,
+      // zoom unbounded. Reverted on user request.
 
       try {
         const tileset = await Cesium.createGooglePhotorealistic3DTileset();
@@ -282,26 +275,44 @@ export default function Roof3DViewer({ lat, lng, address, polygons, polygonSourc
     // the polygon and paints every 3D Tile surface inside it: roof, walls,
     // ground. That made the 3D viewer look like the WHOLE HOUSE was wrapped
     // in colored film. The outline polyline is enough to mark the roof.
-    // Outline width + opacity track source quality. A confident SAM/OSM/Solar
-    // polygon gets a bright glowing outline (the visual "we measured this").
-    // A Claude AI fallback gets a dim outline — the polygon is usually wrong
-    // for that source, and a glowing wonky outline ruins an otherwise clean
-    // photogrammetric view of the property.
+    // Visual treatment per source quality. SAM/OSM/Solar/edited: bold filled
+    // polygon (paints the whole roof blue) + bright glowing outline. AI
+    // (Claude) source: dim, no fill — the polygon is usually wrong for AI,
+    // and a vivid wonky overlay ruins an otherwise clean photogrammetric view.
     const isLowConf = polygonSource === "ai";
+    const fillAlpha = isLowConf ? 0 : 0.35;
     const outlineWidth = isLowConf ? 2 : 4;
     const outlineAlpha = isLowConf ? 0.45 : 1.0;
-    const glowPower = isLowConf ? 0.15 : 0.3;
+    const glowPower = isLowConf ? 0.15 : 0.35;
 
     polygons.forEach((poly, idx) => {
       if (!poly || poly.length < 3) return;
       const colorHex = PALETTE[idx % PALETTE.length];
+      const fill = Cesium.Color.fromCssColorString(colorHex).withAlpha(fillAlpha);
       const stroke = Cesium.Color.fromCssColorString(colorHex).withAlpha(outlineAlpha);
 
       const positions = Cesium.Cartesian3.fromDegreesArray(
         poly.flatMap((v) => [v.lng, v.lat]),
       );
-      const closed = [...positions, positions[0]];
 
+      // Filled polygon — projected onto the 3D mesh as a colored region.
+      // CESIUM_3D_TILE classification paints rooftop AND any vertical surface
+      // the polygon's column passes through. For high-conf sources we accept
+      // some wall-painting bleed because the visual ("the whole roof is blue")
+      // is what the user wants. Skipped entirely for AI source where the
+      // polygon is suspect.
+      if (fillAlpha > 0) {
+        const fillEntity = viewer.entities.add({
+          polygon: {
+            hierarchy: positions,
+            material: fill,
+            classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
+          },
+        });
+        polygonEntitiesRef.current.push(fillEntity);
+      }
+
+      const closed = [...positions, positions[0]];
       const outlineEntity = viewer.entities.add({
         polyline: {
           positions: closed,

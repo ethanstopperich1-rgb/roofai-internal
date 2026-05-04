@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { Pitch, SolarSummary } from "@/types/estimate";
+import type { Pitch, SolarSegment, SolarSummary } from "@/types/estimate";
 import { getCached, setCached } from "@/lib/cache";
 
 export const runtime = "nodejs";
@@ -31,6 +31,28 @@ function degreesToPitch(deg: number | null | undefined): Pitch | null {
   if (rise >= 6) return "6/12";
   if (rise >= 5) return "5/12";
   return "4/12";
+}
+
+/**
+ * Area-weighted dominant building axis from segment azimuths, mod 90.
+ * Doubles the angle before averaging so opposite facets (front-of-house at
+ * 90°, back-of-house at 270°, both perpendicular to the same ridge axis)
+ * reinforce instead of cancel out.
+ */
+function dominantAzimuth(segs: SolarSegment[]): number | null {
+  if (segs.length === 0) return null;
+  let sumX = 0, sumY = 0, totalA = 0;
+  for (const s of segs) {
+    if (s.areaSqft <= 0) continue;
+    const a = ((s.azimuthDegrees % 90) + 90) % 90;
+    const rad = (a * Math.PI) / 90; // double-angle trick
+    sumX += Math.cos(rad) * s.areaSqft;
+    sumY += Math.sin(rad) * s.areaSqft;
+    totalA += s.areaSqft;
+  }
+  if (totalA === 0) return null;
+  const avg = (Math.atan2(sumY, sumX) * 90) / Math.PI / 2;
+  return ((avg % 90) + 90) % 90;
 }
 
 export async function GET(req: Request) {
@@ -67,6 +89,8 @@ export async function GET(req: Request) {
         imageryQuality: "UNKNOWN",
         imageryDate: null,
         segmentPolygonsLatLng: [],
+        segments: [],
+        dominantAzimuthDeg: null,
       };
       setCached("solar", lat, lng, empty);
       return NextResponse.json(empty);
@@ -100,6 +124,22 @@ export async function GET(req: Request) {
   const buildingFootprintSqft =
     buildingFootprintM2 != null ? Math.round(buildingFootprintM2 * 10.7639) : null;
 
+  // Per-facet metadata kept for validators (§9) and ensemble fuser (§6).
+  // Solar's `boundingBox` is sometimes absent on synthetic facets; default
+  // to a degenerate bbox so consumers don't have to null-guard.
+  const enrichedSegments: SolarSegment[] = segments.map((seg) => ({
+    pitchDegrees: seg.pitchDegrees ?? 0,
+    azimuthDegrees: seg.azimuthDegrees ?? 0,
+    areaSqft: Math.round((seg.stats?.areaMeters2 ?? 0) * 10.7639),
+    groundAreaSqft: Math.round((seg.stats?.groundAreaMeters2 ?? 0) * 10.7639),
+    bboxLatLng: {
+      swLat: seg.boundingBox?.sw.latitude ?? 0,
+      swLng: seg.boundingBox?.sw.longitude ?? 0,
+      neLat: seg.boundingBox?.ne.latitude ?? 0,
+      neLng: seg.boundingBox?.ne.longitude ?? 0,
+    },
+  }));
+
   const summary: SolarSummary = {
     sqft: totalRoofSqft,
     pitch: degreesToPitch(avgPitchDeg),
@@ -109,6 +149,8 @@ export async function GET(req: Request) {
     imageryQuality: data?.imageryQuality ?? "UNKNOWN",
     imageryDate: imageryDateString(data?.imageryDate),
     segmentPolygonsLatLng,
+    segments: enrichedSegments,
+    dominantAzimuthDeg: dominantAzimuth(enrichedSegments),
     maxArrayPanels: stats?.maxArrayPanelsCount ?? null,
     yearlyKwhPotential: stats?.maxSunshineHoursPerYear ?? null,
   };

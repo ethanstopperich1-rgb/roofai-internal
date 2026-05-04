@@ -6,6 +6,11 @@ import {
 import { fetchBuildingPolygon } from "@/lib/buildings";
 import { getCached, setCached } from "@/lib/cache";
 import { fetchSatelliteImage, validateRoofPolygon } from "@/lib/anthropic";
+import {
+  bestOrthogonalize,
+  polygonPrincipalAxisDeg,
+  mergeNearbyVertices,
+} from "@/lib/polygon";
 
 export const runtime = "nodejs";
 export const maxDuration = 90;
@@ -251,10 +256,23 @@ export async function POST(req: Request) {
     if (osmResult) {
       const clipped = clipSamToOsm(samResult.latLng, osmResult.latLng);
       if (clipped && clipped.length >= 3) {
+        // Re-orthogonalize the clipped polygon using the OSM building's
+        // principal axis as a candidate. Polygon clipping reintroduces
+        // jaggies at intersection corners, and the OSM axis is usually
+        // the most reliable building-axis signal we have for this property.
+        const osmAxis = polygonPrincipalAxisDeg(osmResult.latLng);
+        const clippedPoints = clipped.map((v) => [v.lng, v.lat] as [number, number]);
+        const reOrtho = bestOrthogonalize({
+          poly: clippedPoints,
+          candidateAxesDeg: [osmAxis],
+          toleranceDeg: 14,
+        });
+        const finalPoints = mergeNearbyVertices(reOrtho.polygon, 1e-6);
+        const finalLatLng = finalPoints.map(([lng, lat]) => ({ lat, lng }));
         console.log(
-          `[sam-refine] clipped SAM (${samResult.latLng.length} verts) × OSM (${osmResult.latLng.length}) → ${clipped.length} verts`,
+          `[sam-refine] clipped SAM (${samResult.latLng.length} verts) × OSM (${osmResult.latLng.length}) → ortho@${reOrtho.chosenAxisDeg.toFixed(1)}° → ${finalLatLng.length} verts`,
         );
-        candidate = { polygon: clipped, source: "sam-clipped-osm" };
+        candidate = { polygon: finalLatLng, source: "sam-clipped-osm" };
       } else {
         console.warn("[sam-refine] SAM × OSM intersection empty — checking SAM centroid against OSM");
         const c = centroidOf(samResult.latLng);

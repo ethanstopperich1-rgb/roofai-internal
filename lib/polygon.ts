@@ -133,8 +133,48 @@ export function orthogonalizePolygon(
    *  basically never are) than ship the curvy original. */
   forceSnap: boolean = false,
 ): Array<[number, number]> {
-  if (poly.length < 4) return poly;
+  // Default behaviour: longest-edge axis. For the multi-axis search use
+  // bestOrthogonalize() below.
+  return orthogonalizeAtAxis(poly, longestEdgeAngleDeg(poly), toleranceDeg, forceSnap)
+    .polygon;
+}
+
+/**
+ * Compute the angle (degrees, atan2-style — i.e. -180 < a ≤ 180) of the
+ * longest edge in a polygon. Returns 0 for degenerate polygons.
+ */
+export function longestEdgeAngleDeg(poly: Array<[number, number]>): number {
+  let bestLen = 0;
+  let bestAngle = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy);
+    if (len > bestLen) {
+      bestLen = len;
+      bestAngle = (Math.atan2(dy, dx) * 180) / Math.PI;
+    }
+  }
+  return bestAngle;
+}
+
+/**
+ * Run orthogonalization at an explicit base axis. Returns the snapped
+ * polygon plus the fraction of perimeter that aligned to a cardinal
+ * direction from that axis (= the snap quality). bestOrthogonalize uses
+ * `alignedRatio` to pick the winning axis among multiple candidates.
+ */
+export function orthogonalizeAtAxis(
+  poly: Array<[number, number]>,
+  baseAngleDeg: number,
+  toleranceDeg: number = 14,
+  forceSnap: boolean = false,
+): { polygon: Array<[number, number]>; alignedRatio: number } {
+  if (poly.length < 4) return { polygon: poly, alignedRatio: 0 };
   const n = poly.length;
+  const baseAngle = baseAngleDeg;
 
   type Edge = {
     a: [number, number];
@@ -152,11 +192,7 @@ export function orthogonalizePolygon(
     if (length < 1e-6) continue;
     edges.push({ a, b, angle: (Math.atan2(dy, dx) * 180) / Math.PI, length });
   }
-  if (edges.length < 4) return poly;
-
-  let longest = edges[0];
-  for (const e of edges) if (e.length > longest.length) longest = e;
-  const baseAngle = longest.angle;
+  if (edges.length < 4) return { polygon: poly, alignedRatio: 0 };
 
   const snappedAngles: number[] = [];
   let alignedLength = 0;
@@ -178,8 +214,9 @@ export function orthogonalizePolygon(
       snappedAngles.push(e.angle);
     }
   }
+  const alignedRatio = totalLength > 0 ? alignedLength / totalLength : 0;
 
-  if (!forceSnap && alignedLength / totalLength < 0.5) return poly;
+  if (!forceSnap && alignedRatio < 0.5) return { polygon: poly, alignedRatio };
 
   const m = edges.length;
   const result: Array<[number, number]> = [];
@@ -218,5 +255,76 @@ export function orthogonalizePolygon(
       result.push([px, py]);
     }
   }
-  return result;
+  return { polygon: result, alignedRatio };
+}
+
+/**
+ * Best-of-N axis orthogonalization. Tries multiple candidate base axes
+ * (longest edge + any caller-supplied candidates like the OSM polygon's
+ * principal axis or Solar's dominantAzimuthDeg) and returns the snapped
+ * polygon with the highest aligned-perimeter ratio.
+ *
+ * Catches the failure mode where the longest edge is a porch eave that
+ * doesn't actually represent the building's true axis — the OSM building
+ * outline or Solar's facet azimuths often nail the real axis when the
+ * longest-edge heuristic doesn't.
+ */
+export function bestOrthogonalize(opts: {
+  poly: Array<[number, number]>;
+  /** Candidate base axes, in degrees. Caller supplies these from external
+   *  signals (OSM polygon principal axis, Solar dominant azimuth, etc.).
+   *  The longest edge is always tried in addition to these. */
+  candidateAxesDeg?: number[];
+  toleranceDeg?: number;
+}): {
+  polygon: Array<[number, number]>;
+  chosenAxisDeg: number;
+  alignedRatio: number;
+} {
+  const { poly, candidateAxesDeg = [], toleranceDeg = 14 } = opts;
+  const longest = longestEdgeAngleDeg(poly);
+  // Always try longest + caller candidates + 0° (true north) as a safety net
+  const candidates = Array.from(new Set([longest, ...candidateAxesDeg, 0]));
+
+  let best = { polygon: poly, chosenAxisDeg: longest, alignedRatio: 0 };
+  for (const axis of candidates) {
+    const result = orthogonalizeAtAxis(poly, axis, toleranceDeg);
+    if (result.alignedRatio > best.alignedRatio) {
+      best = {
+        polygon: result.polygon,
+        chosenAxisDeg: axis,
+        alignedRatio: result.alignedRatio,
+      };
+    }
+  }
+  return best;
+}
+
+/**
+ * Principal axis (degrees) of a polygon's vertex distribution via PCA.
+ * Used by §8 best-of-N orthogonalization to feed the OSM building axis
+ * as a candidate. Returns the angle in atan2 convention (-180, 180].
+ */
+export function polygonPrincipalAxisDeg(
+  poly: Array<{ lat: number; lng: number }> | Array<[number, number]>,
+): number {
+  if (poly.length < 3) return 0;
+  // Normalise input shape
+  const pts: Array<[number, number]> = poly.map((p) =>
+    Array.isArray(p) ? [p[0], p[1]] : [p.lng, p.lat],
+  );
+  let cx = 0, cy = 0;
+  for (const [x, y] of pts) { cx += x; cy += y; }
+  cx /= pts.length;
+  cy /= pts.length;
+  let sxx = 0, sxy = 0, syy = 0;
+  for (const [x, y] of pts) {
+    const dx = x - cx;
+    const dy = y - cy;
+    sxx += dx * dx;
+    sxy += dx * dy;
+    syy += dy * dy;
+  }
+  const angle = (0.5 * Math.atan2(2 * sxy, sxx - syy) * 180) / Math.PI;
+  return angle;
 }

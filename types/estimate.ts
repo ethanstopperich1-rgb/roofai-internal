@@ -85,6 +85,17 @@ export interface RoofVision {
   confidence: number;
 }
 
+/** One roof facet from Solar API findClosest — preserves the per-segment
+ *  pitch, azimuth, area, and bounding box for downstream validators (axis
+ *  check, area check) and the ensemble fuser. */
+export interface SolarSegment {
+  pitchDegrees: number;
+  azimuthDegrees: number;
+  areaSqft: number;
+  groundAreaSqft: number;
+  bboxLatLng: { swLat: number; swLng: number; neLat: number; neLng: number };
+}
+
 /** Parsed Solar API output, augmented with pixel-space polygons for overlay drawing */
 export interface SolarSummary {
   sqft: number | null;
@@ -97,6 +108,13 @@ export interface SolarSummary {
   /** Geographic polygons (lat/lng vertex pairs), one per roof segment.
    *  Used to render overlay polygons on the Google Maps satellite map. */
   segmentPolygonsLatLng: Array<Array<{ lat: number; lng: number }>>;
+  /** Full per-facet metadata. Used by the validators (axis / area check)
+   *  and the ensemble fuser as a soft prior. */
+  segments: SolarSegment[];
+  /** Area-weighted dominant building axis from segment azimuths, normalized
+   *  to [0, 90) since rectangular buildings are bilaterally symmetric.
+   *  Drives best-of-N orthogonalization (§8) and the axis-mismatch validator. */
+  dominantAzimuthDeg: number | null;
   maxArrayPanels?: number | null;
   yearlyKwhPotential?: number | null;
 }

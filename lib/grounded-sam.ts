@@ -14,7 +14,7 @@
 
 import Replicate from "replicate";
 import sharp from "sharp";
-import { mergeNearbyVertices, orthogonalizePolygon } from "./polygon";
+import { bestOrthogonalize, mergeNearbyVertices } from "./polygon";
 
 // SAM 2 with point prompts. Replaces Grounding DINO + SAM 1. SAM 2 is
 // significantly more accurate at instance segmentation, and a positive
@@ -290,11 +290,13 @@ function maskToPolygon(
   const simplified = douglasPeucker(boundary, 6);
   if (simplified.length < 4) return null;
 
-  // Orthogonalize: snap edges to the dominant building axis. This is the step
-  // that converts SAM's "blob with corners" trace into a clean rectilinear
-  // outline indistinguishable from a hand-drafted measurement. Merge near-
-  // duplicate vertices the snap collapse onto each other.
-  const ortho = mergeNearbyVertices(orthogonalizePolygon(simplified, 14), 4);
+  // Best-of-N orthogonalize: try the longest-edge axis AND true north (0°),
+  // pick whichever yields the higher aligned-perimeter ratio. Catches the
+  // common failure mode where the longest edge is a porch eave that doesn't
+  // represent the building's true axis. Caller (sam-refine) does a second
+  // pass with OSM/Solar axes when those are available.
+  const orthoResult = bestOrthogonalize({ poly: simplified, toleranceDeg: 14 });
+  const ortho = mergeNearbyVertices(orthoResult.polygon, 4);
   return { polygon: ortho, area };
 }
 
