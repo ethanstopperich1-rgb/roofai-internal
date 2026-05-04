@@ -148,6 +148,18 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
       viewer.scene.globe.show = false;
       (viewer.cesiumWidget.creditContainer as HTMLElement).style.opacity = "0.6";
 
+      // Tame the default camera. Cesium's screenSpaceCameraController is tuned
+      // for whole-globe navigation — at residential-property scale a small
+      // mouse twitch sends the camera flying. Cuts inertia, locks zoom range,
+      // and disables free-look so dragging only orbits.
+      const ssc = viewer.scene.screenSpaceCameraController;
+      ssc.inertiaSpin = 0.4;
+      ssc.inertiaTranslate = 0.4;
+      ssc.inertiaZoom = 0.4;
+      ssc.minimumZoomDistance = 30;
+      ssc.maximumZoomDistance = 600;
+      ssc.enableLook = false;
+
       try {
         const tileset = await Cesium.createGooglePhotorealistic3DTileset();
         if (cancelled) return;
@@ -266,32 +278,27 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
     polygonEntitiesRef.current = [];
     if (!polygons || polygons.length === 0) return;
 
+    // Outline ONLY — no fill polygon. With a filled `Polygon` +
+    // CESIUM_3D_TILE classification, Cesium creates a vertical prism above
+    // the polygon and paints every 3D Tile surface inside it: roof, walls,
+    // ground. That made the 3D viewer look like the WHOLE HOUSE was wrapped
+    // in colored film. The outline polyline is enough to mark the roof.
     polygons.forEach((poly, idx) => {
       if (!poly || poly.length < 3) return;
       const colorHex = PALETTE[idx % PALETTE.length];
-      const fill = Cesium.Color.fromCssColorString(colorHex).withAlpha(0.32);
       const stroke = Cesium.Color.fromCssColorString(colorHex);
 
       const positions = Cesium.Cartesian3.fromDegreesArray(
         poly.flatMap((v) => [v.lng, v.lat]),
       );
-
-      const fillEntity = viewer.entities.add({
-        polygon: {
-          hierarchy: positions,
-          material: fill,
-          classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
-        },
-      });
-      polygonEntitiesRef.current.push(fillEntity);
-
       const closed = [...positions, positions[0]];
+
       const outlineEntity = viewer.entities.add({
         polyline: {
           positions: closed,
-          width: 3,
+          width: 4,
           material: new Cesium.PolylineGlowMaterialProperty({
-            glowPower: 0.25,
+            glowPower: 0.3,
             color: stroke,
           }),
           clampToGround: true,
@@ -303,7 +310,7 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
   }, [polygons, status]);
 
   return (
-    <div className="relative rounded-2xl overflow-hidden border border-white/[0.08] bg-black/40 h-72 sm:h-80">
+    <div className="relative rounded-2xl overflow-hidden border border-white/[0.07] bg-black/30 h-full min-h-[280px]">
       <div ref={containerRef} className="absolute inset-0" aria-label={address} />
 
       {status === "loading" && (

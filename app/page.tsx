@@ -15,7 +15,12 @@ import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
 import RoofBlueprint from "@/components/RoofBlueprint";
+import dynamic from "next/dynamic";
 import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
+
+const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
+  ssr: false,
+});
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
 import { generatePdf, buildSummaryText } from "@/lib/pdf";
@@ -202,6 +207,47 @@ export default function HomePage() {
   // Active polygons — what we use for sqft, lengths, blueprint, PDF.
   // Live edits override source.
   const activePolygons = livePolygons ?? sourcePolygons;
+
+  // Drop penetration markers that fall outside our active roof polygon —
+  // Vision occasionally tags vents/skylights on neighboring houses since the
+  // satellite tile spans more than just the target property. Anything we
+  // can't clearly attribute to OUR roof shouldn't drive line-item counts or
+  // confuse the rep on the satellite map.
+  const filteredPenetrations = useMemo(() => {
+    const pens = vision?.penetrations;
+    if (!pens || pens.length === 0) return undefined;
+    if (!activePolygons || activePolygons.length === 0 || address?.lat == null || address?.lng == null) {
+      return pens;
+    }
+    const lat = address.lat;
+    const lng = address.lng;
+    const mPerPx = (156_543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, 20);
+    const cosLat = Math.cos((lat * Math.PI) / 180);
+    const inAny = (penLat: number, penLng: number) => {
+      for (const poly of activePolygons) {
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const xi = poly[i].lng, yi = poly[i].lat;
+          const xj = poly[j].lng, yj = poly[j].lat;
+          if (
+            yi > penLat !== yj > penLat &&
+            penLng < ((xj - xi) * (penLat - yi)) / (yj - yi) + xi
+          ) {
+            inside = !inside;
+          }
+        }
+        if (inside) return true;
+      }
+      return false;
+    };
+    return pens.filter((p) => {
+      const dx = p.x - 320;
+      const dy = p.y - 320;
+      const penLat = lat + (-dy * mPerPx) / 111_320;
+      const penLng = lng + (dx * mPerPx) / (111_320 * cosLat);
+      return inAny(penLat, penLng);
+    });
+  }, [vision?.penetrations, activePolygons, address?.lat, address?.lng]);
 
   // Whenever the active polygon changes, sync the derived roof area into
   // assumptions.sqft so map label, blueprint label, and line-item engine
@@ -569,19 +615,27 @@ export default function HomePage() {
 
       {shown && (
         <>
-          {/* ─── Map hero — satellite + Street View, full width ─────────── */}
-          <section className="relative h-[420px] sm:h-[520px] lg:h-[640px] float-in">
+          {/* ─── Map hero — satellite + 3D side-by-side, full width ─────── */}
+          <section className="grid lg:grid-cols-2 gap-4 h-[420px] sm:h-[520px] lg:h-[640px] float-in">
             <MapView
               lat={address?.lat}
               lng={address?.lng}
               address={address?.formatted}
               segments={sourcePolygons}
-              penetrations={vision?.penetrations}
+              penetrations={filteredPenetrations}
               metaBadges={mapBadges}
               editable={polygonSource !== "none"}
               onPolygonsChanged={handlePolygonsChanged}
               pitchDegrees={solar?.pitchDegrees ?? null}
             />
+            {address?.lat != null && address?.lng != null && (
+              <Roof3DViewer
+                lat={address.lat}
+                lng={address.lng}
+                address={address.formatted}
+                polygons={activePolygons}
+              />
+            )}
           </section>
 
           {/* ─── Architectural blueprint of the traced roof ─────────────── */}
@@ -640,7 +694,7 @@ export default function HomePage() {
               </div>
             </div>
             <div className="space-y-6">
-              <PropertyContextPanel address={address} polygons={activePolygons} />
+              <PropertyContextPanel address={address} />
               <StormHistoryCard lat={address?.lat} lng={address?.lng} />
               <div className="glass rounded-2xl p-5 space-y-3">
                 <div className="flex items-center justify-between">
