@@ -1,6 +1,6 @@
 "use client";
 
-import type { Assumptions, Material, Pitch } from "@/types/estimate";
+import type { Assumptions, Complexity, Material, Pitch, ServiceType } from "@/types/estimate";
 import { MATERIAL_RATES } from "@/lib/pricing";
 import { Minus, Plus, Sliders } from "lucide-react";
 
@@ -11,10 +11,25 @@ interface Props {
 
 const PITCHES: Pitch[] = ["4/12", "5/12", "6/12", "7/12", "8/12+"];
 
+const SERVICE_TYPES: Array<{ value: ServiceType; label: string; sublabel: string }> = [
+  { value: "new", label: "New", sublabel: "First-time" },
+  { value: "reroof-tearoff", label: "Reroof", sublabel: "Tear-off" },
+  { value: "layover", label: "Layover", sublabel: "Over existing" },
+  { value: "repair", label: "Repair", sublabel: "Patch only" },
+];
+
+const COMPLEXITIES: Array<{ value: Complexity; label: string }> = [
+  { value: "simple", label: "Simple" },
+  { value: "moderate", label: "Moderate" },
+  { value: "complex", label: "Complex" },
+];
+
 export default function AssumptionsEditor({ value, onChange }: Props) {
   const set = <K extends keyof Assumptions>(k: K, v: Assumptions[K]) =>
     onChange({ ...value, [k]: v });
 
+  const serviceType: ServiceType = value.serviceType ?? "reroof-tearoff";
+  const complexity: Complexity = value.complexity ?? "moderate";
   const laborPct = ((value.laborMultiplier - 0.5) / 1.5) * 100;
   const matPct = ((value.materialMultiplier - 0.5) / 1.5) * 100;
 
@@ -29,6 +44,44 @@ export default function AssumptionsEditor({ value, onChange }: Props) {
             <div className="font-display font-semibold tracking-tight text-[15px]">Assumptions</div>
             <div className="text-[11px] text-slate-500 -mt-0.5">Tweak anything · live recalculation</div>
           </div>
+        </div>
+      </div>
+
+      {/* Service type */}
+      <div>
+        <div className="label mb-2">Service Type</div>
+        <div className="grid grid-cols-2 gap-2">
+          {SERVICE_TYPES.map((s) => {
+            const active = serviceType === s.value;
+            return (
+              <button
+                key={s.value}
+                onClick={() => set("serviceType", s.value)}
+                className={`relative text-left p-3 rounded-xl border transition group overflow-hidden ${
+                  active
+                    ? "border-cy-300/40 bg-cy-300/[0.06]"
+                    : "border-white/[0.06] bg-white/[0.015] hover:border-white/[0.12] hover:bg-white/[0.03]"
+                }`}
+              >
+                {active && (
+                  <span
+                    aria-hidden
+                    className="absolute inset-0 pointer-events-none rounded-xl"
+                    style={{
+                      background:
+                        "radial-gradient(closest-side at 100% 0%, rgba(103,220,255,0.18), transparent 70%)",
+                    }}
+                  />
+                )}
+                <div className={`relative font-display text-[13px] font-medium tracking-tight ${active ? "text-cy-200" : "text-slate-100"}`}>
+                  {s.label}
+                </div>
+                <div className="relative font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500 mt-0.5">
+                  {s.sublabel}
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -90,6 +143,29 @@ export default function AssumptionsEditor({ value, onChange }: Props) {
             value={value.ageYears}
             onChange={(e) => set("ageYears", Math.max(0, Number(e.target.value) || 0))}
           />
+        </div>
+      </div>
+
+      {/* Complexity */}
+      <div>
+        <div className="label mb-2">Complexity</div>
+        <div className="flex p-1 rounded-xl bg-black/20 border border-white/[0.06]">
+          {COMPLEXITIES.map((c) => {
+            const active = complexity === c.value;
+            return (
+              <button
+                key={c.value}
+                onClick={() => set("complexity", c.value)}
+                className={`flex-1 py-1.5 rounded-lg text-[12px] font-medium transition ${
+                  active
+                    ? "bg-white/10 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {c.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 

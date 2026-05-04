@@ -2,8 +2,23 @@
 
 import { useEffect, useRef, useState } from "react";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
-import type { AddressInfo, Assumptions } from "@/types/estimate";
-import { MapPin, Ruler, TrendingUp, Layers, Clock } from "lucide-react";
+import type { AddressInfo, Assumptions, ServiceType } from "@/types/estimate";
+import {
+  MapPin,
+  Ruler,
+  TrendingUp,
+  Layers,
+  Clock,
+  ShieldAlert,
+  Hammer,
+} from "lucide-react";
+
+const SERVICE_LABEL: Record<ServiceType, string> = {
+  new: "New install",
+  "reroof-tearoff": "Reroof · tear-off",
+  layover: "Layover",
+  repair: "Repair only",
+};
 
 interface Props {
   address: AddressInfo;
@@ -11,9 +26,19 @@ interface Props {
   total: number;
   baseLow: number;
   baseHigh: number;
+  isInsuranceClaim?: boolean;
+  onInsuranceChange?: (v: boolean) => void;
 }
 
-export default function ResultsPanel({ address, assumptions, total, baseLow, baseHigh }: Props) {
+export default function ResultsPanel({
+  address,
+  assumptions,
+  total,
+  baseLow,
+  baseHigh,
+  isInsuranceClaim,
+  onInsuranceChange,
+}: Props) {
   const [flash, setFlash] = useState(false);
   const prev = useRef(total);
   useEffect(() => {
@@ -25,9 +50,10 @@ export default function ResultsPanel({ address, assumptions, total, baseLow, bas
     }
   }, [total]);
 
+  const serviceType = assumptions.serviceType ?? "reroof-tearoff";
+
   return (
     <div className="glass-strong rounded-3xl p-7 md:p-8 relative overflow-hidden">
-      {/* Atmospheric glow behind price */}
       <div
         className="absolute -top-20 right-0 w-[460px] h-[300px] blur-3xl pointer-events-none opacity-60"
         style={{ background: "radial-gradient(closest-side, rgba(95,227,176,0.10), transparent)" }}
@@ -42,13 +68,20 @@ export default function ResultsPanel({ address, assumptions, total, baseLow, bas
           <div className="font-display text-[22px] md:text-[26px] leading-tight font-medium tracking-tight truncate">
             {address.formatted || "—"}
           </div>
-          <div className="mt-1 flex items-center gap-3 text-[12px] text-slate-400">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             {address.zip && (
-              <span className="font-mono tracking-wide">ZIP {address.zip}</span>
+              <span className="font-mono tabular text-[11px] text-slate-400">
+                ZIP {address.zip}
+              </span>
             )}
-            <span className="font-mono uppercase tracking-[0.14em] text-[10px] text-mint inline-flex items-center gap-1.5">
-              <span className="w-1 h-1 rounded-full bg-mint pulse-dot" /> Solar data linked
+            <span className="chip">
+              <Hammer size={10} /> {SERVICE_LABEL[serviceType]}
             </span>
+            {isInsuranceClaim && (
+              <span className="chip" style={{ background: "rgba(243,177,75,0.10)", borderColor: "rgba(243,177,75,0.32)", color: "#f3b14b" }}>
+                <ShieldAlert size={10} /> Insurance claim
+              </span>
+            )}
           </div>
         </div>
 
@@ -92,6 +125,32 @@ export default function ResultsPanel({ address, assumptions, total, baseLow, bas
         />
         <Stat icon={<Clock size={13} />} label="Age" value={`${assumptions.ageYears}`} unit="yrs" />
       </div>
+
+      {onInsuranceChange && (
+        <label
+          className={`mt-5 flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition ${
+            isInsuranceClaim
+              ? "border-amber/35 bg-amber/[0.06]"
+              : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.13] hover:bg-white/[0.04]"
+          }`}
+        >
+          <input
+            type="checkbox"
+            checked={!!isInsuranceClaim}
+            onChange={(e) => onInsuranceChange(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-amber-400 cursor-pointer"
+          />
+          <div className="flex-1">
+            <div className="text-[13.5px] font-medium flex items-center gap-2">
+              <ShieldAlert size={13} className={isInsuranceClaim ? "text-amber" : "text-slate-400"} />
+              Insurance claim
+            </div>
+            <div className="text-[12px] text-slate-400 mt-0.5 leading-relaxed">
+              Routes work to a restoration specialist; PDF includes full Xactimate-style line items.
+            </div>
+          </div>
+        </label>
+      )}
     </div>
   );
 }
