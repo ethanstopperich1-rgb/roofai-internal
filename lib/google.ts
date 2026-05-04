@@ -11,7 +11,8 @@ export function loadGoogle(): Promise<typeof google> {
     apiKey,
     version: "weekly",
     // geometry → spherical.computeArea() for polygon sqft labels.
-    libraries: ["places", "geometry"],
+    // drawing → DrawingManager for manual click-to-trace polygon mode
+    libraries: ["places", "geometry", "drawing"],
   });
   loaderPromise = loader.load();
   return loaderPromise;

@@ -102,10 +102,12 @@ function cleanRoofPolygon(input: unknown): Array<[number, number]> {
   if (out.length < 3) return [];
 
   // Sanity check: reject polygons that exceed plausible residential roof
-  // size. Anything > 35% of the 640×640 tile (143,360 px²) is almost
-  // certainly the model painting yard + house + driveway. Better to drop
-  // the polygon and let the source-priority chain fall back than show a
-  // wildly wrong outline (and an inflated sqft) to the rep.
+  // size. At zoom 20 the 640×640 tile spans ~78×78m on the ground (~6,500
+  // sf at typical mid-US latitudes), so a 1,500–2,500 sf residential roof
+  // takes 23–38% of the tile. We cap at 20% as a hard "this is wrong"
+  // threshold — anything above is almost certainly Claude painting yard +
+  // house + driveway, and we'd rather drop it and fall through to OSM /
+  // manual draw than hand the rep an inflated 6,000 sf polygon.
   let area = 0;
   for (let i = 0; i < out.length; i++) {
     const a = out[i];
@@ -114,7 +116,7 @@ function cleanRoofPolygon(input: unknown): Array<[number, number]> {
   }
   area = Math.abs(area) / 2;
   const fillFraction = area / (640 * 640);
-  if (fillFraction > 0.35) {
+  if (fillFraction > 0.20) {
     console.warn(
       `[anthropic] roof polygon too large (${(fillFraction * 100).toFixed(0)}% of tile) — discarding`,
     );

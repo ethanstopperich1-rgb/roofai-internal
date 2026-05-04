@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { loadGoogle } from "@/lib/google";
-import { Satellite, Eye } from "lucide-react";
+import { Satellite, Eye, Pencil, X } from "lucide-react";
 
 export interface PenetrationMarker {
   kind: string;
@@ -85,7 +85,96 @@ export default function MapView({
   const penMarkersRef = useRef<google.maps.Marker[]>([]);
   const labelMarkersRef = useRef<google.maps.Marker[]>([]);
   const animTimersRef = useRef<number[]>([]);
+  const drawingManagerRef = useRef<google.maps.drawing.DrawingManager | null>(null);
+  const drawingListenerRef = useRef<google.maps.MapsEventListener | null>(null);
   const [svUnavailable, setSvUnavailable] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
+  const [drawing, setDrawing] = useState(false);
+
+  // Cleanup the DrawingManager (and its event listener) without touching
+  // anything else. Called when the user cancels OR completes a draw.
+  const cleanupDrawing = useCallback(() => {
+    if (drawingListenerRef.current) {
+      drawingListenerRef.current.remove();
+      drawingListenerRef.current = null;
+    }
+    if (drawingManagerRef.current) {
+      drawingManagerRef.current.setMap(null);
+      drawingManagerRef.current = null;
+    }
+    setDrawing(false);
+  }, []);
+
+  // "Draw fresh" — wipe existing polygon(s) and enter click-to-trace mode.
+  // Use Google's DrawingManager (loaded via the "drawing" library, see
+  // lib/google.ts). On polygoncomplete we capture vertices, hand them up
+  // via onPolygonsChanged, and convert the just-drawn drawing-manager
+  // polygon into a regular editable polygon so the rep can immediately
+  // adjust corners.
+  const startDrawing = useCallback(async () => {
+    const map = mapRef.current;
+    if (!map) return;
+    const g = await loadGoogle();
+    if (!g.maps.drawing) return;
+
+    // Clear any existing rendered polygons + sqft labels so the canvas is fresh.
+    for (const p of polysRef.current) p.setMap(null);
+    polysRef.current = [];
+    for (const lm of labelMarkersRef.current) lm.setMap(null);
+    labelMarkersRef.current = [];
+    for (const t of animTimersRef.current) window.clearTimeout(t);
+    animTimersRef.current = [];
+
+    if (drawingManagerRef.current) {
+      drawingManagerRef.current.setMap(null);
+      drawingManagerRef.current = null;
+    }
+
+    const dm = new g.maps.drawing.DrawingManager({
+      drawingMode: g.maps.drawing.OverlayType.POLYGON,
+      drawingControl: false,
+      polygonOptions: {
+        strokeColor: "#67dcff",
+        strokeWeight: 2.5,
+        strokeOpacity: 0.95,
+        fillColor: "#38c5ee",
+        fillOpacity: 0.22,
+        editable: true,
+        clickable: true,
+        zIndex: 5,
+      },
+    });
+    dm.setMap(map);
+    drawingManagerRef.current = dm;
+    setDrawing(true);
+
+    drawingListenerRef.current = g.maps.event.addListener(
+      dm,
+      "polygoncomplete",
+      (poly: google.maps.Polygon) => {
+        // Treat the drawn polygon as a regular vertex-editable polygon.
+        polysRef.current.push(poly);
+        const path = poly.getPath();
+        const broadcast = () => {
+          if (!onPolygonsChangedRef.current) return;
+          const next = polysRef.current.map((p) => {
+            const arr: Array<{ lat: number; lng: number }> = [];
+            p.getPath().forEach((v) => arr.push({ lat: v.lat(), lng: v.lng() }));
+            return arr;
+          });
+          onPolygonsChangedRef.current(next);
+        };
+        path.addListener("set_at", broadcast);
+        path.addListener("insert_at", broadcast);
+        path.addListener("remove_at", broadcast);
+        broadcast();
+        cleanupDrawing();
+      },
+    );
+  }, [cleanupDrawing]);
+
+  // Tear down drawing on unmount so we don't leak listeners
+  useEffect(() => () => cleanupDrawing(), [cleanupDrawing]);
 
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) return;
@@ -115,6 +204,7 @@ export default function MapView({
         mapRef.current.setCenter(pos);
         mapRef.current.setZoom(20);
       }
+      setMapReady(true);
       if (markerRef.current) markerRef.current.setMap(null);
       markerRef.current = new g.maps.Marker({ position: pos, map: mapRef.current });
 
@@ -333,6 +423,27 @@ export default function MapView({
         emptyTitle="Satellite View"
         emptyBody="Pick an address to load high-resolution satellite imagery"
       >
+        {ready && mapReady && (
+          <div className="absolute top-2 right-2 z-10">
+            {drawing ? (
+              <button
+                onClick={cleanupDrawing}
+                className="rounded-full border border-rose/30 bg-rose/[0.15] hover:bg-rose/[0.22] text-rose px-2.5 py-1 text-[11px] font-mono uppercase tracking-[0.10em] backdrop-blur-md flex items-center gap-1.5"
+                title="Cancel drawing"
+              >
+                <X size={11} /> Cancel · click corners
+              </button>
+            ) : (
+              <button
+                onClick={startDrawing}
+                className="rounded-full border border-white/15 bg-black/65 hover:bg-black/85 text-white/90 px-2.5 py-1 text-[11px] font-mono uppercase tracking-[0.10em] backdrop-blur-md flex items-center gap-1.5"
+                title="Clear and draw a new polygon by clicking corners"
+              >
+                <Pencil size={11} /> Draw fresh
+              </button>
+            )}
+          </div>
+        )}
         {ready && metaBadges && metaBadges.length > 0 && (
           <div className="pointer-events-none absolute left-2 bottom-2 flex flex-wrap gap-1 max-w-[calc(100%-1rem)]">
             {metaBadges.map((b, i) => (

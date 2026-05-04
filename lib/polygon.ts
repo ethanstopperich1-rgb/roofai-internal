@@ -5,6 +5,36 @@
  */
 
 /**
+ * Drop vertices that are within `mergeDistance` of their neighbour.
+ * Orthogonalization can leave near-duplicate vertices when adjacent
+ * snapped lines intersect very close to the original vertex — these
+ * read as visual jaggies and cause the polygon edit handles to bunch
+ * up. Merge them before returning to the renderer.
+ */
+export function mergeNearbyVertices(
+  poly: Array<[number, number]>,
+  mergeDistance: number = 2,
+): Array<[number, number]> {
+  if (poly.length <= 3) return poly;
+  const out: Array<[number, number]> = [poly[0]];
+  for (let i = 1; i < poly.length; i++) {
+    const last = out[out.length - 1];
+    const dx = poly[i][0] - last[0];
+    const dy = poly[i][1] - last[1];
+    if (Math.hypot(dx, dy) >= mergeDistance) out.push(poly[i]);
+  }
+  // Re-check the wrap-around (last vs first)
+  if (out.length > 3) {
+    const last = out[out.length - 1];
+    const first = out[0];
+    if (Math.hypot(last[0] - first[0], last[1] - first[1]) < mergeDistance) {
+      out.pop();
+    }
+  }
+  return out;
+}
+
+/**
  * Principal-axis bounding rectangle. Computes the 2D PCA of a polygon's
  * vertices and returns the minimum oriented rectangle aligned with its
  * dominant direction.

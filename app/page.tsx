@@ -46,7 +46,7 @@ import {
   deriveRoofLengthsHeuristic,
   inferComplexityFromPolygons,
 } from "@/lib/roof-geometry";
-import { principalAxisRect } from "@/lib/polygon";
+import { orthogonalizePolygon, mergeNearbyVertices } from "@/lib/polygon";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
@@ -139,14 +139,15 @@ export default function HomePage() {
     if (!address?.lat || !address?.lng) return null;
     const rawPoly = vision?.roofPolygon;
     if (!rawPoly || rawPoly.length < 3) return null;
-    // Force the Claude trace to its principal-axis bounding rectangle.
-    // Claude consistently returns oval / curved 8–14 vertex traces of what
-    // are actually rectangular suburban roofs. Soft orthogonalization
-    // (snap-to-cardinal-when-aligned) doesn't help when the original has
-    // no axis-aligned edges. PCA bbox always returns a clean 4-vertex
-    // rectangle aligned with the building's dominant direction; rep can
-    // hand-edit corners on the satellite map to add L/T-shape detail.
-    const poly = principalAxisRect(rawPoly);
+    // Soft orthogonalize Claude's pixel-space trace before projection.
+    // We DON'T force an oriented bounding rectangle here — bounding boxes
+    // CIRCUMSCRIBE the input, so when Claude over-traces (covers the yard
+    // too), the rect ends up even bigger. The size guard in cleanRoofPolygon
+    // (lib/anthropic.ts) is what protects against over-trace; this pass
+    // just smooths jaggies on traces that ARE roughly correct.
+    // Orthogonalize, then drop near-duplicate vertices (orthogonalization
+    // can collapse two adjacent vertices onto the same intersection point).
+    const poly = mergeNearbyVertices(orthogonalizePolygon(rawPoly, 18), 4);
     const lat = address.lat;
     const lng = address.lng;
     const mPerPx =

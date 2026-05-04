@@ -182,18 +182,18 @@ export default function Roof3DViewer({ lat, lng, address, polygons, polygonSourc
         return;
       }
 
-      // Camera framing: hover above the property with enough breathing room
-      // to see the WHOLE roof + a strip of yard for context. 150 m radius
-      // at -45° pitch puts the camera ~106 m horizontal × 106 m vertical
-      // from the centerpoint — a "drone shot 30-40 ft off the ground from
-      // 100 ft south of the property." Earlier 90 m was too close (camera
-      // ended up clipping into the eaves), 180 m was too wide (whole block).
+      // Camera framing: nearly top-down view from a comfortable altitude.
+      // 250 m range at -65° pitch ≈ 106 m horizontal × 227 m vertical —
+      // a "helicopter 750 ft up looking down" shot that frames the target
+      // house clearly with neighboring properties as context, without ever
+      // clipping into eaves. Earlier 90/150 m oblique angles read as
+      // "camera shoved into the gable" because most of the shot WAS gable.
       const recenter = () => {
         const center = Cesium.Cartesian3.fromDegrees(lng, lat, 0);
         const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
         viewer.camera.lookAtTransform(
           transform,
-          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-45), 150),
+          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-65), 250),
         );
       };
       recenterRef.current = recenter;

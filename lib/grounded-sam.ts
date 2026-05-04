@@ -14,7 +14,7 @@
 
 import Replicate from "replicate";
 import sharp from "sharp";
-import { orthogonalizePolygon } from "./polygon";
+import { mergeNearbyVertices, orthogonalizePolygon } from "./polygon";
 
 // schananas/grounded_sam — Grounding DINO + SAM. Text prompt → mask URLs.
 const MODEL =
@@ -272,8 +272,9 @@ function maskToPolygon(
 
   // Orthogonalize: snap edges to the dominant building axis. This is the step
   // that converts SAM's "blob with corners" trace into a clean rectilinear
-  // outline indistinguishable from a hand-drafted measurement.
-  const ortho = orthogonalizePolygon(simplified, 14);
+  // outline indistinguishable from a hand-drafted measurement. Merge near-
+  // duplicate vertices the snap collapse onto each other.
+  const ortho = mergeNearbyVertices(orthogonalizePolygon(simplified, 14), 4);
   return { polygon: ortho, area };
 }
 
