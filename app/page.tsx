@@ -191,6 +191,39 @@ export default function HomePage() {
   // Live edits override source.
   const activePolygons = livePolygons ?? sourcePolygons;
 
+  // Whenever the active polygon changes, sync the derived roof area into
+  // assumptions.sqft so map label, blueprint label, and line-item engine
+  // all read the same number. Solar API takes precedence — if Solar gave
+  // us a sqft, we trust that and don't override.
+  useEffect(() => {
+    if (solar?.sqft) return; // Solar already populated assumptions.sqft elsewhere
+    if (!activePolygons || activePolygons.length === 0) return;
+    // Shoelace area in m² (lat/lng → meters via cosLat scale)
+    const M = 111_320;
+    let totalM2 = 0;
+    for (const poly of activePolygons) {
+      if (poly.length < 3) continue;
+      const cLat = poly.reduce((s, v) => s + v.lat, 0) / poly.length;
+      const cosLat = Math.cos((cLat * Math.PI) / 180);
+      let sum = 0;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+        const ax = a.lng * M * cosLat;
+        const ay = a.lat * M;
+        const bx = b.lng * M * cosLat;
+        const by = b.lat * M;
+        sum += ax * by - bx * ay;
+      }
+      totalM2 += Math.abs(sum) / 2;
+    }
+    // Polygon footprint × 1.118 (typical 6/12 pitch correction)
+    const sqft = Math.round(totalM2 * 10.7639 * 1.118);
+    if (sqft >= 200 && sqft <= 30_000) {
+      setAssumptions((a) => ({ ...a, sqft }));
+    }
+  }, [activePolygons, solar?.sqft]);
+
   const detailed = useMemo(
     () =>
       buildDetailedEstimate(assumptions, addOns, {
@@ -505,7 +538,6 @@ export default function HomePage() {
           {activePolygons && activePolygons.length > 0 && (
             <RoofBlueprint
               polygons={activePolygons}
-              totalRoofSqft={assumptions.sqft}
               editing={polygonSource === "edited"}
               sourceLabel={
                 polygonSource === "solar"

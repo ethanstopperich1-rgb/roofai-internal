@@ -22,10 +22,18 @@ const MODEL =
 const IMAGE_SIZE_PX = 640;
 const IMAGE_ZOOM = 20;
 
+// Tightly worded prompts. "rooftop shingles" performs noticeably better
+// than just "roof" because Grounding DINO's training data treats "roof"
+// as "the whole house including yard" sometimes. Negative prompt is a
+// long explicit list — DINO downweights anything it matches here.
 const POSITIVE_PROMPT =
-  "the main residential roof, all roof slopes including ridges and dormers";
+  "rooftop shingles, roof material, the actual sloped roof surface only";
 const NEGATIVE_PROMPT =
-  "ground, lawn, grass, dirt, trees, foliage, driveway, road, deck, patio, pool, shadow, vehicle, neighbouring building";
+  "ground, lawn, grass, dirt, soil, trees, foliage, leaves, branches, " +
+  "driveway, road, sidewalk, walkway, concrete, asphalt, " +
+  "deck, patio, balcony, porch, pool, water, " +
+  "shadow, dark area, vehicle, car, truck, " +
+  "neighbouring building, wall, fence, chair, table, furniture";
 
 export interface GroundedRoofPolygon {
   /** Polygon vertices in lat/lng */
@@ -195,7 +203,9 @@ export async function refineRoofWithGroundedSam(opts: {
         image: dataUri,
         mask_prompt: POSITIVE_PROMPT,
         negative_mask_prompt: NEGATIVE_PROMPT,
-        adjustment_factor: -2, // slight erosion → tighter to actual roof edges
+        // -ve = erosion. -4 keeps the outline just inside the eaves so
+        // the gutter shadow doesn't bleed into the polygon.
+        adjustment_factor: -4,
       },
     });
   } catch (err) {

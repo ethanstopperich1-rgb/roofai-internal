@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
+import polygonClipping from "polygon-clipping";
 import {
   refineRoofWithGroundedSam,
-  type GroundedRoofPolygon,
 } from "@/lib/grounded-sam";
 import { fetchBuildingPolygon } from "@/lib/buildings";
 import { getCached, setCached } from "@/lib/cache";
@@ -53,6 +53,55 @@ function centroidOf(poly: Array<{ lat: number; lng: number }>): {
   let lat = 0, lng = 0;
   for (const v of poly) { lat += v.lat; lng += v.lng; }
   return { lat: lat / poly.length, lng: lng / poly.length };
+}
+
+/**
+ * Clip the SAM polygon to the OSM building polygon using polygon-clipping
+ * (martinez algorithm, robust against degenerate input). Returns the
+ * largest resulting region, since OSM × SAM occasionally splits the SAM
+ * mask into multiple disjoint pieces (e.g. a porch shadow that bleeds
+ * into the lawn gets cut off, leaving the main roof piece).
+ */
+function clipSamToOsm(
+  sam: Array<{ lat: number; lng: number }>,
+  osm: Array<{ lat: number; lng: number }>,
+): Array<{ lat: number; lng: number }> | null {
+  if (sam.length < 3 || osm.length < 3) return null;
+  const samRing = sam.map((v) => [v.lng, v.lat] as [number, number]);
+  const osmRing = osm.map((v) => [v.lng, v.lat] as [number, number]);
+  // Close rings if not already closed
+  if (samRing[0][0] !== samRing[samRing.length - 1][0] || samRing[0][1] !== samRing[samRing.length - 1][1]) {
+    samRing.push(samRing[0]);
+  }
+  if (osmRing[0][0] !== osmRing[osmRing.length - 1][0] || osmRing[0][1] !== osmRing[osmRing.length - 1][1]) {
+    osmRing.push(osmRing[0]);
+  }
+  let result: ReturnType<typeof polygonClipping.intersection>;
+  try {
+    result = polygonClipping.intersection([samRing], [osmRing]);
+  } catch (err) {
+    console.warn("[sam-refine] polygon intersection failed:", err);
+    return null;
+  }
+  if (!result || result.length === 0) return null;
+  // Pick the largest piece by vertex count (proxy for area; cheap)
+  let best: typeof result[number] | null = null;
+  let bestSize = 0;
+  for (const piece of result) {
+    if (!piece[0]) continue;
+    const ring = piece[0];
+    if (ring.length > bestSize) {
+      bestSize = ring.length;
+      best = piece;
+    }
+  }
+  if (!best || !best[0]) return null;
+  // Drop the closing-vertex duplicate
+  const ring = best[0];
+  const closed = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  const verts = closed ? ring.slice(0, -1) : ring;
+  if (verts.length < 3) return null;
+  return verts.map((p) => ({ lng: p[0], lat: p[1] }));
 }
 
 interface SamRefineCachedResult {
@@ -125,32 +174,51 @@ export async function POST(req: Request) {
     samResult = null;
   }
 
-  // If SAM returned a polygon, sanity-check it against OSM
+  // If SAM returned a polygon, clip it against OSM when we have a building
+  // footprint. This is the magic step: SAM identifies "roof" semantically,
+  // OSM provides ground-truth building boundary, intersection drops every
+  // pixel that's outside the actual building (driveway shadows, lawn,
+  // neighbouring roofs the prompt didn't fully suppress).
   if (samResult) {
     if (osmResult) {
-      const c = centroidOf(samResult.latLng);
-      if (pointInPolygon(c.lat, c.lng, osmResult.latLng)) {
-        // SAM polygon's centroid is on the OSM building → trust SAM
+      const clipped = clipSamToOsm(samResult.latLng, osmResult.latLng);
+      if (clipped && clipped.length >= 3) {
+        console.log(
+          `[sam-refine] clipped SAM (${samResult.latLng.length} verts) × OSM (${osmResult.latLng.length}) → ${clipped.length} verts`,
+        );
         const result: SamRefineCachedResult = {
-          polygon: samResult.latLng,
-          source: "sam-grounded",
+          polygon: clipped,
+          source: "sam-clipped-osm",
         };
         setCached("sam-refine", lat, lng, result);
         return NextResponse.json(result);
       }
-      // SAM picked something off-building (e.g., a neighbour, the road).
+      // Intersection produced nothing — SAM and OSM didn't overlap, meaning
+      // SAM picked up something off-building (e.g., a neighbour, the road).
       // Fall back to OSM.
       console.warn(
-        "[sam-refine] SAM centroid landed off the OSM building — using OSM",
+        "[sam-refine] SAM × OSM intersection empty — falling back to OSM",
       );
+      const c = centroidOf(samResult.latLng);
+      if (!pointInPolygon(c.lat, c.lng, osmResult.latLng)) {
+        const result: SamRefineCachedResult = {
+          polygon: osmResult.latLng,
+          source: "osm-fallback",
+        };
+        setCached("sam-refine", lat, lng, result);
+        return NextResponse.json(result);
+      }
+      // Centroid IS on building but intersection failed (degenerate poly).
+      // Use raw SAM as last resort.
       const result: SamRefineCachedResult = {
-        polygon: osmResult.latLng,
-        source: "osm-fallback",
+        polygon: samResult.latLng,
+        source: "sam-grounded",
       };
       setCached("sam-refine", lat, lng, result);
       return NextResponse.json(result);
     }
-    // No OSM to validate against — trust SAM
+    // No OSM to validate against — trust SAM as-is. Without OSM clip the
+    // polygon may include some yard/shadow, but it's the best we have.
     const result: SamRefineCachedResult = {
       polygon: samResult.latLng,
       source: "sam-grounded",
