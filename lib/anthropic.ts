@@ -23,6 +23,7 @@ Return ONLY valid minified JSON matching this exact schema, no preamble, no mark
   "visibleFeatures": Array<"chimney" | "skylight" | "dormer" | "solar-panels" | "satellite-dish" | "vents" | "complex-geometry">,
   "visibleDamage": Array<"missing-shingles" | "moss-algae" | "discoloration" | "tarp-visible" | "ponding" | "none">,
   "penetrations": Array<{ "kind": "vent" | "chimney" | "skylight" | "stack" | "satellite-dish" | "other", "x": number, "y": number, "approxSizeFt"?: number }>,
+  "roofPolygon": Array<[number, number]>,
   "salesNotes": string,
   "confidence": number
 }
@@ -32,6 +33,7 @@ Rules:
 - estimatedAgeYears is your best integer guess based on visual condition (5..30).
 - complexity: simple = simple gable/hip; moderate = a few cuts, dormers, or wings; complex = many segments, intersections, multiple wings.
 - penetrations: list every roof penetration you can see (vents, chimneys, skylights, plumbing stacks, satellite dishes). x/y are pixel coordinates in the 640x640 image (0,0 = top-left). approxSizeFt is your best guess of the diameter in feet (typical: vent 0.5-1, stack 0.5, chimney 2-4, skylight 2-4). Limit to 12 most prominent.
+- roofPolygon: trace the outermost edge of the entire roof as a single closed polygon, 6-14 vertices in clockwise order. Hug the actual roof edges (eaves and rakes) — do NOT include attached porches, decks, garages, or driveways unless they share the main roof line. Use pixel coordinates in the 640x640 image. If the building straddles multiple unconnected roof sections, return the polygon for the LARGEST one. If you cannot identify the roof, return an empty array.
 - salesNotes: ONE sentence a sales rep can say to the homeowner — what you'd notice walking the roof. Be concrete, no fluff.
 - confidence is 0..1.`;
 
@@ -45,6 +47,7 @@ const MOCK_VISION: RoofVision = {
   visibleFeatures: ["vents", "chimney"],
   visibleDamage: ["none"],
   penetrations: [],
+  roofPolygon: [],
   salesNotes: "Mock vision result — set ANTHROPIC_API_KEY to enable Claude.",
   confidence: 0.3,
 };
@@ -75,9 +78,26 @@ function cleanPenetrations(input: unknown): RoofVision["penetrations"] {
   return out;
 }
 
+function cleanRoofPolygon(input: unknown): Array<[number, number]> {
+  if (!Array.isArray(input)) return [];
+  const out: Array<[number, number]> = [];
+  for (const raw of input) {
+    if (!Array.isArray(raw) || raw.length !== 2) continue;
+    const x = typeof raw[0] === "number" ? raw[0] : null;
+    const y = typeof raw[1] === "number" ? raw[1] : null;
+    if (x == null || y == null) continue;
+    if (x < 0 || x > 640 || y < 0 || y > 640) continue;
+    out.push([Math.round(x), Math.round(y)]);
+    if (out.length >= 16) break;
+  }
+  // Need at least 3 vertices to form a polygon
+  return out.length >= 3 ? out : [];
+}
+
 function clean(json: unknown): RoofVision {
   const v = (json && typeof json === "object" ? json : {}) as Partial<RoofVision> & {
     penetrations?: unknown;
+    roofPolygon?: unknown;
   };
   return {
     currentMaterial: v.currentMaterial ?? "unknown",
@@ -90,6 +110,7 @@ function clean(json: unknown): RoofVision {
     visibleFeatures: Array.isArray(v.visibleFeatures) ? v.visibleFeatures : [],
     visibleDamage: Array.isArray(v.visibleDamage) ? v.visibleDamage : ["none"],
     penetrations: cleanPenetrations(v.penetrations),
+    roofPolygon: cleanRoofPolygon(v.roofPolygon),
     salesNotes: typeof v.salesNotes === "string" ? v.salesNotes : "",
     confidence:
       typeof v.confidence === "number" ? Math.max(0, Math.min(1, v.confidence)) : 0.5,

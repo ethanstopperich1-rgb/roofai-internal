@@ -76,6 +76,11 @@ export interface RoofVision {
     y: number;
     approxSizeFt?: number;
   }>;
+  /** Single closed polygon outlining the entire roof, in pixel coords on the
+   *  640x640 satellite tile. 6-14 vertices, clockwise. Empty array when the
+   *  roof can't be identified. Used as the activePolygon when Solar API
+   *  has no segments for the property. */
+  roofPolygon: Array<[number, number]>;
   salesNotes: string;
   confidence: number;
 }

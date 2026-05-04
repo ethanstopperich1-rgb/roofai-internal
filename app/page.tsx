@@ -42,7 +42,7 @@ import {
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
-import { Plus, RotateCcw, Sparkles, Zap, Sparkle, Loader2 } from "lucide-react";
+import { Plus, RotateCcw, Sparkles, Zap } from "lucide-react";
 
 const DEFAULT_ASSUMPTIONS: Assumptions = {
   sqft: 2200,
@@ -81,11 +81,6 @@ export default function HomePage() {
   const [visionError, setVisionError] = useState<string>("");
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [propertyAttomYearBuilt, setPropertyAttomYearBuilt] = useState<number | null>(null);
-  const [refinedPolygons, setRefinedPolygons] = useState<
-    Array<Array<{ lat: number; lng: number }>> | null
-  >(null);
-  const [refining, setRefining] = useState(false);
-  const [refineError, setRefineError] = useState<string>("");
 
   // ATTOM yearBuilt → ageYears (rep can still override manually)
   useEffect(() => {
@@ -112,17 +107,46 @@ export default function HomePage() {
 
   const total = useMemo(() => computeTotal(assumptions, addOns), [assumptions, addOns]);
 
-  // Prefer SAM-refined polygons over Solar API bounding boxes when both exist
-  const activePolygons = refinedPolygons ?? solar?.segmentPolygonsLatLng;
+  // Polygon priority: Solar API per-facet > Claude single-polygon fallback.
+  // Claude's polygon is in pixel coords on the 640x640 zoom-20 satellite tile;
+  // we project back to lat/lng using the same meters-per-pixel formula MapView
+  // uses, so the polygon lines up with the satellite imagery underneath.
+  const claudePolygonLatLng = useMemo(() => {
+    if (!address?.lat || !address?.lng) return null;
+    const poly = vision?.roofPolygon;
+    if (!poly || poly.length < 3) return null;
+    const lat = address.lat;
+    const lng = address.lng;
+    const mPerPx =
+      (156_543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, 20);
+    const cosLat = Math.cos((lat * Math.PI) / 180);
+    return poly.map(([x, y]) => {
+      const dx = x - 320;
+      const dy = y - 320;
+      return {
+        lat: lat + (-dy * mPerPx) / 111_320,
+        lng: lng + (dx * mPerPx) / (111_320 * cosLat),
+      };
+    });
+  }, [vision?.roofPolygon, address?.lat, address?.lng]);
+
+  const activePolygons:
+    | Array<Array<{ lat: number; lng: number }>>
+    | undefined = useMemo(() => {
+    const solarPolys = solar?.segmentPolygonsLatLng;
+    if (solarPolys && solarPolys.length > 0) return solarPolys;
+    if (claudePolygonLatLng) return [claudePolygonLatLng];
+    return undefined;
+  }, [solar?.segmentPolygonsLatLng, claudePolygonLatLng]);
 
   const detailed = useMemo(
     () =>
       buildDetailedEstimate(assumptions, addOns, {
         buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-        segmentCount: refinedPolygons?.length ?? solar?.segmentCount,
+        segmentCount: solar?.segmentCount ?? activePolygons?.length,
         segmentPolygonsLatLng: activePolygons,
       }),
-    [assumptions, addOns, solar, refinedPolygons, activePolygons]
+    [assumptions, addOns, solar, activePolygons],
   );
 
   const lengths = useMemo(() => {
@@ -142,11 +166,11 @@ export default function HomePage() {
     return deriveRoofLengthsHeuristic({
       totalRoofSqft: assumptions.sqft,
       buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-      segmentCount: refinedPolygons?.length ?? solar?.segmentCount,
+      segmentCount: solar?.segmentCount ?? activePolygons?.length,
       complexity,
       pitch: assumptions.pitch,
     });
-  }, [assumptions, solar, refinedPolygons, activePolygons]);
+  }, [assumptions, solar, activePolygons]);
 
   const waste = useMemo(
     () => buildWasteTable(assumptions.sqft, assumptions.complexity ?? "moderate"),
@@ -165,8 +189,6 @@ export default function HomePage() {
     setSolar(null);
     setVision(null);
     setVisionError("");
-    setRefinedPolygons(null);
-    setRefineError("");
 
     if (addr.lat == null || addr.lng == null) {
       setAssumptions((a) => ({
@@ -272,40 +294,13 @@ export default function HomePage() {
     setVision(null);
     setVisionError("");
     setIsInsuranceClaim(false);
-    setRefinedPolygons(null);
-    setRefineError("");
-  };
-
-  const refineOutline = async () => {
-    if (!address?.lat || !address?.lng || refining) return;
-    setRefining(true);
-    setRefineError("");
-    try {
-      const res = await fetch("/api/refine-polygons", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat: address.lat, lng: address.lng }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? `refine_${res.status}`);
-      }
-      const data = (await res.json()) as {
-        polygons: Array<{ latLng: Array<{ lat: number; lng: number }> }>;
-      };
-      setRefinedPolygons(data.polygons.map((p) => p.latLng));
-    } catch (err) {
-      setRefineError(err instanceof Error ? err.message : "failed");
-    } finally {
-      setRefining(false);
-    }
   };
 
   const mapBadges = (() => {
     const badges: string[] = [];
     if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
-    if (refinedPolygons) badges.push(`Refined • ${refinedPolygons.length} facets`);
+    if (!solar?.segmentPolygonsLatLng?.length && claudePolygonLatLng) badges.push("AI traced");
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
     if (solar?.pitch) badges.push(`Pitch ${solar.pitch}`);
     return badges;
@@ -398,64 +393,6 @@ export default function HomePage() {
               penetrations={vision?.penetrations}
               metaBadges={mapBadges}
             />
-            {address?.lat && (
-              <div className="absolute right-3 top-3 z-10 flex flex-col items-end gap-2">
-                <button
-                  onClick={refineOutline}
-                  disabled={refining}
-                  className="btn btn-ghost py-2 px-3.5 text-[12px] backdrop-blur"
-                  style={{
-                    background: "rgba(15, 19, 26, 0.78)",
-                    borderColor: refinedPolygons
-                      ? "rgba(95, 227, 176, 0.55)"
-                      : "rgba(95, 227, 176, 0.35)",
-                  }}
-                >
-                  {refining ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <Sparkle size={12} className="text-mint" />
-                  )}
-                  {refining
-                    ? "Tracing roof…"
-                    : refinedPolygons
-                      ? `Refined · ${refinedPolygons.length} facets`
-                      : "Refine outline"}
-                </button>
-                {refineError && (
-                  <div
-                    className="max-w-[280px] rounded-lg border px-3 py-2 text-[11px] backdrop-blur leading-relaxed"
-                    style={{
-                      background: "rgba(60, 16, 24, 0.82)",
-                      borderColor: "rgba(244, 63, 94, 0.35)",
-                      color: "#fda4af",
-                    }}
-                  >
-                    {refineError === "no_credit" ? (
-                      <>
-                        Replicate trial credit exhausted.{" "}
-                        <a
-                          href="https://replicate.com/account/billing"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="underline hover:text-rose-200"
-                        >
-                          Add billing →
-                        </a>
-                      </>
-                    ) : refineError === "bad_token" ? (
-                      "Invalid Replicate token."
-                    ) : refineError === "no_polygons" ? (
-                      "Couldn't extract a clean roof outline."
-                    ) : refineError === "Missing REPLICATE_API_TOKEN" ? (
-                      "Set REPLICATE_API_TOKEN in environment."
-                    ) : (
-                      `Refinement failed: ${refineError}`
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
           </section>
 
           {/* ─── Headline price card — full width ──────────────────────── */}
