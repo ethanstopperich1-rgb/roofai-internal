@@ -250,30 +250,16 @@ textarea.input { resize: vertical; min-height: 90px; line-height: 1.5; }
 
 /* ─── Quantum-pulse "Generating" loader ─────────────────────────────── */
 
+/* Lightweight version: translateY + opacity only. The previous version used
+   rotateX 3D transforms + animated text-shadow, both of which forced a new
+   compositor layer per letter and stuttered when Cesium / Maps WebGL was
+   busy on the same GPU. This stays smooth at 60fps even during generation. */
 @keyframes generating-loader-letter-anim {
-  0% {
-    opacity: 0;
-    transform: translateY(20px) rotateX(-90deg);
-    text-shadow: 0 0 0px rgba(255, 255, 255, 0);
-  }
-  10% {
-    opacity: 1;
-    transform: translateY(0) rotateX(0deg);
-    text-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
-  }
-  30% {
-    opacity: 1;
-    transform: translateY(0) rotateX(0deg);
-    text-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
-  }
-  50% {
-    opacity: 0;
-    transform: translateY(-20px) rotateX(90deg);
-    text-shadow: 0 0 0px rgba(255, 255, 255, 0);
-  }
-  100% {
-    opacity: 0;
-  }
+  0%   { opacity: 0; transform: translateY(8px); }
+  12%  { opacity: 1; transform: translateY(0); }
+  38%  { opacity: 1; transform: translateY(0); }
+  50%  { opacity: 0; transform: translateY(-8px); }
+  100% { opacity: 0; }
 }
 
 @keyframes generating-loader-bar-anim {
@@ -289,7 +275,6 @@ textarea.input { resize: vertical; min-height: 90px; line-height: 1.5; }
   align-items: center;
   gap: 0.85rem;
   padding: 1.5rem 2rem;
-  perspective: 600px;
   user-select: none;
 }
 
@@ -302,15 +287,13 @@ textarea.input { resize: vertical; min-height: 90px; line-height: 1.5; }
   letter-spacing: 0.04em;
   color: var(--qpl-accent);
   text-transform: uppercase;
-  transform-style: preserve-3d;
 }
 
 .generating-loader-letter {
   display: inline-block;
   opacity: 0;
-  transform-origin: center;
   animation: generating-loader-letter-anim 2.4s ease-in-out infinite;
-  will-change: transform, opacity, text-shadow;
+  will-change: transform, opacity;
 }
 
 .generating-loader-bar {

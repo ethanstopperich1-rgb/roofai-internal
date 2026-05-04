@@ -769,7 +769,13 @@ export default function HomePage() {
               onPolygonsChanged={handlePolygonsChanged}
               pitchDegrees={solar?.pitchDegrees ?? null}
             />
-            {address?.lat != null && address?.lng != null && (
+            {/* Defer mounting Cesium until generation finishes. Cesium's
+              * first-paint downloads global tiles + builds a heavy octree
+              * for raycasting; doing that while the QuantumPulseLoader is
+              * on screen starves the GPU and visibly stutters the loader
+              * animation. Mounting after loading puts the cost on a fresh
+              * frame instead of competing with it. */}
+            {address?.lat != null && address?.lng != null && !visionLoading && (
               <Roof3DViewer
                 // key forces a hard remount on every address change so the
                 // previous house's Cesium camera/tiles can't linger.
