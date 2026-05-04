@@ -16,8 +16,24 @@ import Replicate from "replicate";
 import sharp from "sharp";
 import { mergeNearbyVertices, orthogonalizePolygon } from "./polygon";
 
-// schananas/grounded_sam — Grounding DINO + SAM. Text prompt → mask URLs.
+// SAM 2 with point prompts. Replaces Grounding DINO + SAM 1. SAM 2 is
+// significantly more accurate at instance segmentation, and a positive
+// point at the geocoded address centre is a far stronger signal than a
+// text prompt for "this specific roof" (text prompts can pick up the
+// neighbour's identical roof, the model car in the driveway, etc.).
+//
+// Pin to a specific version hash so model schema changes don't silently
+// break the parser. If Replicate updates the model and the input shape
+// changes, swap the hash here. Schema for this version:
+//   image (data URI), click_coordinates (JSON-stringified [[x,y],...])
+//   click_labels (JSON-stringified [1,1,...]), image_size (optional).
 const MODEL =
+  "meta/sam-2:fe97b453a6455861e3bac769b441ca1f1086110da7466dbb65cf1eecfd60dc83";
+
+// Fallback to the original Grounded SAM model when SAM 2 returns no usable
+// mask (rare but happens on heavy-canopy properties where the geocoded
+// point lands on tree shadow rather than the roof).
+const FALLBACK_MODEL =
   "schananas/grounded_sam:ee871c19efb1941f55f66a3d7d960428c8a5afcb77449547fe8e5a3ab9ebc21c";
 
 // Static Maps caps `size` at 640. With `scale=2` Google returns a 1280×1280
@@ -28,10 +44,14 @@ const IMAGE_SCALE = 2;
 const IMAGE_PIXELS = IMAGE_TILE_PX * IMAGE_SCALE; // 1280
 const IMAGE_ZOOM = 20;
 
-// Tightly worded prompts. "rooftop shingles" performs noticeably better
-// than just "roof" because Grounding DINO's training data treats "roof"
-// as "the whole house including yard" sometimes. Negative prompt is a
-// long explicit list — DINO downweights anything it matches here.
+// Cluster of positive points around the image centre (= geocoded address).
+// Using a 5-point cluster (center + 4 cardinal offsets ~7m apart) makes the
+// segmentation robust to small geocode offsets — even if one point lands on
+// a chimney, gable shadow, or eave, the others should hit the main roof
+// surface and SAM 2 unifies them into a single mask.
+const POINT_CLUSTER_RADIUS_PX = 60; // ~7m at zoom 20 / scale 2
+
+// Fallback prompts (only used if SAM 2 is unreachable / returns nothing)
 const POSITIVE_PROMPT =
   "rooftop shingles, roof material, the actual sloped roof surface only";
 const NEGATIVE_PROMPT =
@@ -328,42 +348,82 @@ export async function refineRoofWithGroundedSam(opts: {
   const replicate = new Replicate({ auth: replicateKey, useFileOutput: false });
   const dataUri = `data:image/png;base64,${img.base64}`;
 
-  let output: unknown;
+  // Build a 5-point cluster centred on the geocoded address (= image centre)
+  const cx = IMAGE_PIXELS / 2;
+  const cy = IMAGE_PIXELS / 2;
+  const r = POINT_CLUSTER_RADIUS_PX;
+  const points: Array<[number, number]> = [
+    [cx, cy],
+    [cx, cy - r],
+    [cx, cy + r],
+    [cx - r, cy],
+    [cx + r, cy],
+  ];
+  const labels = points.map(() => 1); // all positive
+
+  // Try SAM 2 (point prompts) first. If it errors or returns no usable
+  // mask, fall back to Grounded SAM (text prompts) — the original v1
+  // pipeline. The fallback path also catches cases where the geocoded
+  // point lands on tree shadow rather than the actual roof.
+  const tryModel = async (
+    modelId: `${string}/${string}` | `${string}/${string}:${string}`,
+    input: Record<string, unknown>,
+  ): Promise<string[] | null> => {
+    let output: unknown;
+    try {
+      output = await replicate.run(modelId, { input });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[sam] ${modelId.split(":")[0]} call failed:`, msg);
+      if (/Insufficient credit/i.test(msg)) throw new Error("REPLICATE_NO_CREDIT");
+      if (/401|Unauthenticated/i.test(msg)) throw new Error("REPLICATE_UNAUTHORIZED");
+      return null;
+    }
+    const urls: string[] = [];
+    if (Array.isArray(output)) {
+      for (const v of output) if (typeof v === "string") urls.push(v);
+    } else if (typeof output === "string") {
+      urls.push(output);
+    } else if (output && typeof output === "object") {
+      // SAM 2 sometimes returns { masks: [url, ...], scores: [...] }
+      const obj = output as Record<string, unknown>;
+      if (Array.isArray(obj.masks)) {
+        for (const v of obj.masks) if (typeof v === "string") urls.push(v);
+      }
+      if (typeof obj.combined_mask === "string") urls.push(obj.combined_mask);
+    }
+    return urls.length > 0 ? urls : null;
+  };
+
+  let urls: string[] | null = null;
   try {
-    output = await replicate.run(MODEL, {
-      input: {
+    urls = await tryModel(MODEL, {
+      image: dataUri,
+      click_coordinates: JSON.stringify(points),
+      click_labels: JSON.stringify(labels),
+    });
+  } catch (err) {
+    // credit / auth errors propagate up
+    throw err;
+  }
+  if (!urls) {
+    console.warn("[sam] SAM 2 returned no masks; falling back to Grounded SAM");
+    try {
+      urls = await tryModel(FALLBACK_MODEL, {
         image: dataUri,
         mask_prompt: POSITIVE_PROMPT,
         negative_mask_prompt: NEGATIVE_PROMPT,
-        // -ve = erosion. We send a 1280×1280 image (scale=2) so each
-        // pixel is half the physical size of the v1 pipeline; -8 here
-        // preserves the same ~0.6m gutter-shadow erosion that worked at
-        // -4 in 640px space.
         adjustment_factor: -8,
-      },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[grounded-sam] call failed:", msg);
-    if (/Insufficient credit/i.test(msg)) throw new Error("REPLICATE_NO_CREDIT");
-    if (/401|Unauthenticated/i.test(msg)) throw new Error("REPLICATE_UNAUTHORIZED");
+      });
+    } catch (err) {
+      throw err;
+    }
+  }
+  if (!urls || urls.length === 0) {
+    console.warn("[sam] no mask URLs from either model");
     return null;
   }
-
-  // Output is an array of mask URLs (positive mask is index 0 typically;
-  // grounded_sam returns the positive-prompt result and may include an
-  // intermediate mask too — we'll pick the largest mask).
-  const urls: string[] = [];
-  if (Array.isArray(output)) {
-    for (const v of output) if (typeof v === "string") urls.push(v);
-  } else if (typeof output === "string") {
-    urls.push(output);
-  }
-  if (urls.length === 0) {
-    console.warn("[grounded-sam] no mask URLs in output:", typeof output);
-    return null;
-  }
-  console.log(`[grounded-sam] received ${urls.length} mask URL(s)`);
+  console.log(`[sam] received ${urls.length} mask URL(s)`);
 
   // Process each mask, keep the largest non-degenerate one
   let best: { polygon: Array<[number, number]>; area: number } | null = null;

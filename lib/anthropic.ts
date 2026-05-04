@@ -211,6 +211,104 @@ export async function analyzeRoofImage(opts: {
 }
 
 /**
+ * Vision QA gate. Renders a polygon as a red outline composited onto the
+ * satellite tile and asks Claude to grade whether it actually traces the
+ * roof (vs. yard, neighbour, etc.). Returns confidence 0..1 and a brief
+ * reason. The sam-refine route uses this to reject polygons SAM produced
+ * but that don't actually match the building — typically when the geocoded
+ * point landed on tree shadow and SAM segmented the wrong region.
+ *
+ * Cost: ~$0.005–0.01 per call (one Claude vision message). Latency: 1–2s.
+ * Skipped when ANTHROPIC_API_KEY is missing — we return high confidence
+ * so the polygon flows through unchallenged.
+ */
+export async function validateRoofPolygon(opts: {
+  /** Satellite image (the same one fed to SAM/Claude), base64 PNG */
+  imageBase64: string;
+  /** Polygon in pixel coords on that image (matches the image size) */
+  polygon: Array<[number, number]>;
+  /** Image width/height in pixels (square assumed). Default 1280 (scale=2). */
+  imagePixels?: number;
+}): Promise<{ confidence: number; reason: string }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return { confidence: 0.8, reason: "anthropic_key_missing — gate skipped" };
+  }
+  if (!opts.polygon || opts.polygon.length < 3) {
+    return { confidence: 0, reason: "polygon_invalid" };
+  }
+
+  const size = opts.imagePixels ?? 1280;
+
+  // Composite the polygon as a translucent red overlay on the satellite tile
+  let overlaidBase64: string;
+  try {
+    const sharp = (await import("sharp")).default;
+    const points = opts.polygon.map(([x, y]) => `${Math.round(x)},${Math.round(y)}`).join(" ");
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">
+      <polygon points="${points}" fill="rgba(255,40,40,0.18)" stroke="#ff2828" stroke-width="4" stroke-linejoin="round" />
+    </svg>`;
+    const imgBuf = Buffer.from(opts.imageBase64, "base64");
+    const composed = await sharp(imgBuf)
+      .resize(size, size, { fit: "fill" })
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .png()
+      .toBuffer();
+    overlaidBase64 = composed.toString("base64");
+  } catch (err) {
+    console.warn("[anthropic] polygon overlay failed:", err);
+    // Fall back to sending the bare image — Claude can still reason about
+    // pixel coords if we describe the polygon in text. Lower accuracy.
+    overlaidBase64 = opts.imageBase64;
+  }
+
+  const QA_PROMPT = `You are roof-estimator QA. The image is a satellite view of a single residential property; a RED outline marks what was identified as "the main roof of the centred building."
+
+Grade ONLY whether that red outline correctly traces the actual roof material of the centred building. It is NOT a comparison against any other source — judge what you see.
+
+Strict JSON, no preamble:
+{ "confidence": <0..1>, "reason": "<one short clause>" }
+
+Scoring:
+- 0.85–1.0: outline tracks the roof eaves tightly. Tiny over/under is fine.
+- 0.55–0.85: roughly right shape and right building, but loose by 5–15 ft.
+- 0.30–0.55: covers the right house but bleeds significantly into yard / driveway / shadow / neighbour.
+- <0.30: wrong building, wildly oversized, or missing >50% of the actual roof.`;
+
+  try {
+    const client = new Anthropic({ apiKey });
+    const message = await client.messages.create({
+      model: MODEL,
+      max_tokens: 200,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: overlaidBase64 },
+            },
+            { type: "text", text: QA_PROMPT },
+          ],
+        },
+      ],
+    });
+    const block = message.content.find((b) => b.type === "text");
+    if (!block || block.type !== "text") return { confidence: 0.5, reason: "no_text" };
+    const parsed = extractJson(block.text);
+    if (!parsed || typeof parsed !== "object") return { confidence: 0.5, reason: "parse_fail" };
+    const v = parsed as { confidence?: unknown; reason?: unknown };
+    const confidence =
+      typeof v.confidence === "number" ? Math.max(0, Math.min(1, v.confidence)) : 0.5;
+    const reason = typeof v.reason === "string" ? v.reason : "no_reason";
+    return { confidence, reason };
+  } catch (err) {
+    console.error("[anthropic] validatePolygon error:", err);
+    return { confidence: 0.6, reason: "validate_error" };
+  }
+}
+
+/**
  * Fetch the satellite tile from Google Static Maps and return base64.
  */
 export async function fetchSatelliteImage(opts: {

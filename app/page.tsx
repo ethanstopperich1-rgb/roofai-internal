@@ -91,13 +91,19 @@ export default function HomePage() {
   const [osmBuildingPolygon, setOsmBuildingPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
-  // Compound-pipeline result — OSM building × Grounded SAM "roof" mask.
+  // Compound-pipeline result — OSM building × SAM 2 "roof" mask.
   // Tighter than OSM (it removes porches/decks/garages from the polygon)
   // and tighter than Claude (pixel-precise mask, not LLM-traced vertices).
   const [samRefinedPolygon, setSamRefinedPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
   const [samRefining, setSamRefining] = useState(false);
+  // Google Solar dataLayers:get binary roof mask — Project Sunroof's own
+  // ground-truth segmentation. Beats SAM/OSM/AI for any property in Solar
+  // coverage. Falls back through the chain when not available.
+  const [solarMaskPolygon, setSolarMaskPolygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
   // Live polygons after the rep edits a vertex. When set, overrides the
   // auto-detected source polygons everywhere (lengths, sqft, blueprint, PDF).
   // Reset to null on every new estimate so we always start from auto-detect.
@@ -164,25 +170,28 @@ export default function HomePage() {
   }, [vision?.roofPolygon, address?.lat, address?.lng]);
 
   // Polygon source priority — best-quality first:
-  //   1. SAM compound pipeline (Grounded SAM "roof" × OSM clip — pixel-precise)
-  //   2. OpenStreetMap building footprint (human-traced, ~50-60% US)
-  //   3. Claude vision polygon (fallback for everywhere else)
-  // Solar `findClosest` only exposes axis-aligned bbox-per-facet, which
-  // looks wrong on any non-north-aligned home — see app/api/solar/route.ts.
-  // The "solar" branch below is retained for forward-compat (DSM raster
-  // route is in the backlog) but never fires today.
+  //   1. Solar mask    — Google's own roof segmentation from dataLayers:get
+  //                      (Project Sunroof's ground-truth segmentation)
+  //   2. Solar facets  — multi-facet bboxes from findClosest (axis-aligned
+  //                      but useful for ridge/valley counting)
+  //   3. SAM 2 + OSM   — point-prompted SAM with OSM building clip
+  //   4. OSM           — human-traced building outline (~50-60% US)
+  //   5. Claude vision — last-resort AI trace
   const polygonSource = useMemo<
-    "edited" | "solar" | "sam" | "osm" | "ai" | "none"
+    "edited" | "solar-mask" | "solar" | "sam" | "osm" | "ai" | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
-    if (solar?.segmentPolygonsLatLng?.length) return "solar";
+    if (solarMaskPolygon) return "solar-mask";
+    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
     if (samRefinedPolygon) return "sam";
     if (osmBuildingPolygon) return "osm";
     if (claudePolygonLatLng) return "ai";
     return "none";
   }, [
     livePolygons,
+    solarMaskPolygon,
     solar?.segmentPolygonsLatLng,
+    solar?.segmentCount,
     samRefinedPolygon,
     osmBuildingPolygon,
     claudePolygonLatLng,
@@ -194,13 +203,17 @@ export default function HomePage() {
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    if (solar?.segmentPolygonsLatLng?.length) return solar.segmentPolygonsLatLng;
+    if (solarMaskPolygon) return [solarMaskPolygon];
+    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1)
+      return solar.segmentPolygonsLatLng;
     if (samRefinedPolygon) return [samRefinedPolygon];
     if (osmBuildingPolygon) return [osmBuildingPolygon];
     if (claudePolygonLatLng) return [claudePolygonLatLng];
     return undefined;
   }, [
+    solarMaskPolygon,
     solar?.segmentPolygonsLatLng,
+    solar?.segmentCount,
     samRefinedPolygon,
     osmBuildingPolygon,
     claudePolygonLatLng,
@@ -363,6 +376,7 @@ export default function HomePage() {
     setVisionError("");
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
+    setSolarMaskPolygon(null);
     setLivePolygons(null);
     hasUserEditedRef.current = false;
 
@@ -398,6 +412,19 @@ export default function HomePage() {
     // API) and short-circuits the need to trust an AI polygon for the
     // ~50-60% of US residential properties OSM has data on.
     const osmPromise = fetch(`/api/building?lat=${addr.lat}&lng=${addr.lng}`)
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const data = (await r.json()) as {
+          latLng?: Array<{ lat: number; lng: number }>;
+        };
+        return data.latLng && data.latLng.length >= 3 ? data.latLng : null;
+      })
+      .catch(() => null);
+
+    // Solar mask (Project Sunroof's roof segmentation) — runs in parallel
+    // with everything else. Free tier of Solar covers most US/EU/JP/AU.
+    // When available, this is the highest-quality polygon source we have.
+    const solarMaskPromise = fetch(`/api/solar-mask?lat=${addr.lat}&lng=${addr.lng}`)
       .then(async (r) => {
         if (!r.ok) return null;
         const data = (await r.json()) as {
@@ -446,6 +473,11 @@ export default function HomePage() {
         if (samPoly && !hasUserEditedRef.current) setSamRefinedPolygon(samPoly);
       })
       .finally(() => setSamRefining(false));
+
+    // Solar mask is the highest-priority source — same edit-stomp guard.
+    solarMaskPromise.then((maskPoly) => {
+      if (maskPoly && !hasUserEditedRef.current) setSolarMaskPolygon(maskPoly);
+    });
 
     setAssumptions((a) => {
       const next: Assumptions = { ...a };
@@ -523,6 +555,7 @@ export default function HomePage() {
     setLivePolygons(null);
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
+    setSolarMaskPolygon(null);
     hasUserEditedRef.current = false;
   };
 
@@ -531,7 +564,8 @@ export default function HomePage() {
     if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
     if (polygonSource === "edited") badges.push("Edited");
-    else if (polygonSource === "sam") badges.push("SAM refined");
+    else if (polygonSource === "solar-mask") badges.push("Solar mask");
+    else if (polygonSource === "sam") badges.push("SAM 2 refined");
     else if (polygonSource === "osm") badges.push("OSM traced");
     else if (polygonSource === "ai") badges.push("AI traced");
     else if (samRefining) badges.push("Refining…");
@@ -652,17 +686,19 @@ export default function HomePage() {
               editing={polygonSource === "edited"}
               pitchDegrees={solar?.pitchDegrees ?? null}
               sourceLabel={
-                polygonSource === "solar"
-                  ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
-                  : polygonSource === "sam"
-                    ? "SAM refined"
-                    : polygonSource === "osm"
-                      ? "OSM traced"
-                      : polygonSource === "ai"
-                        ? "AI traced"
-                        : polygonSource === "edited"
-                          ? "Edited by hand"
-                          : undefined
+                polygonSource === "solar-mask"
+                  ? "Solar mask"
+                  : polygonSource === "solar"
+                    ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
+                    : polygonSource === "sam"
+                      ? "SAM 2 refined"
+                      : polygonSource === "osm"
+                        ? "OSM traced"
+                        : polygonSource === "ai"
+                          ? "AI traced"
+                          : polygonSource === "edited"
+                            ? "Edited by hand"
+                            : undefined
               }
             />
           )}

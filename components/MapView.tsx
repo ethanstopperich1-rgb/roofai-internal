@@ -368,41 +368,51 @@ export default function MapView({
         });
       }
 
-      // Clear & redraw penetration markers (numbered amber circles)
+    });
+  }, [lat, lng, segments, pitchDegrees]);
+
+  // Penetration markers in their OWN effect — when filteredPenetrations
+  // changes (e.g. because user drew/edited a polygon and the inside-polygon
+  // filter recomputed), only these markers update. The main useEffect
+  // above no longer fires for penetration changes, so manually-drawn
+  // polygons survive the re-render.
+  useEffect(() => {
+    if (lat == null || lng == null) return;
+    if (!mapRef.current) return;
+    loadGoogle().then((g) => {
       for (const m of penMarkersRef.current) m.setMap(null);
       penMarkersRef.current = [];
-      if (penetrations && penetrations.length && mapRef.current) {
-        penetrations.forEach((p, idx) => {
-          const ll = pixelToLatLng({
-            x: p.x,
-            y: p.y,
-            centerLat: lat,
-            centerLng: lng,
-          });
-          const marker = new g.maps.Marker({
-            position: ll,
-            map: mapRef.current!,
-            label: {
-              text: String(idx + 1),
-              color: "#0a0d12",
-              fontSize: "11px",
-              fontWeight: "700",
-            },
-            title: `${p.kind}${p.approxSizeFt ? ` (~${p.approxSizeFt}ft)` : ""}`,
-            icon: {
-              path: g.maps.SymbolPath.CIRCLE,
-              scale: 9,
-              fillColor: "#f3b14b",
-              fillOpacity: 0.92,
-              strokeColor: "#0a0d12",
-              strokeWeight: 2,
-            },
-          });
-          penMarkersRef.current.push(marker);
+      if (!penetrations || penetrations.length === 0 || !mapRef.current) return;
+      penetrations.forEach((p, idx) => {
+        const ll = pixelToLatLng({
+          x: p.x,
+          y: p.y,
+          centerLat: lat,
+          centerLng: lng,
         });
-      }
+        const marker = new g.maps.Marker({
+          position: ll,
+          map: mapRef.current!,
+          label: {
+            text: String(idx + 1),
+            color: "#0a0d12",
+            fontSize: "11px",
+            fontWeight: "700",
+          },
+          title: `${p.kind}${p.approxSizeFt ? ` (~${p.approxSizeFt}ft)` : ""}`,
+          icon: {
+            path: g.maps.SymbolPath.CIRCLE,
+            scale: 9,
+            fillColor: "#f3b14b",
+            fillOpacity: 0.92,
+            strokeColor: "#0a0d12",
+            strokeWeight: 2,
+          },
+        });
+        penMarkersRef.current.push(marker);
+      });
     });
-  }, [lat, lng, segments, penetrations, pitchDegrees]);
+  }, [penetrations, lat, lng]);
 
   if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) {
     return (
@@ -429,9 +439,9 @@ export default function MapView({
               <button
                 onClick={cleanupDrawing}
                 className="rounded-full border border-rose/30 bg-rose/[0.15] hover:bg-rose/[0.22] text-rose px-2.5 py-1 text-[11px] font-mono uppercase tracking-[0.10em] backdrop-blur-md flex items-center gap-1.5"
-                title="Cancel drawing"
+                title="Cancel drawing — to commit, click your FIRST corner again"
               >
-                <X size={11} /> Cancel · click corners
+                <X size={11} /> Cancel · click 1st corner to close
               </button>
             ) : (
               <button

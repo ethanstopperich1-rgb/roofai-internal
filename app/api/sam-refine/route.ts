@@ -5,6 +5,7 @@ import {
 } from "@/lib/grounded-sam";
 import { fetchBuildingPolygon } from "@/lib/buildings";
 import { getCached, setCached } from "@/lib/cache";
+import { fetchSatelliteImage, validateRoofPolygon } from "@/lib/anthropic";
 
 export const runtime = "nodejs";
 export const maxDuration = 90;
@@ -119,6 +120,58 @@ function clipSamToOsm(
 interface SamRefineCachedResult {
   polygon: Array<{ lat: number; lng: number }>;
   source: "sam-grounded" | "sam-clipped-osm" | "osm-fallback";
+  /** Vision QA gate output (Claude). Low confidence (<0.45) blocks the
+   *  polygon from being returned — the route falls through to whatever
+   *  the next-priority source gives the client. */
+  qa?: { confidence: number; reason: string };
+}
+
+/** Convert a lat/lng polygon to pixel coords on a zoom-20 scale-2 (1280×1280)
+ *  satellite tile centered at (centerLat, centerLng). Used to feed the
+ *  vision QA validator after SAM produces a polygon in lat/lng space. */
+function latLngPolygonToPixels(
+  poly: Array<{ lat: number; lng: number }>,
+  centerLat: number,
+  centerLng: number,
+  imagePixels = 1280,
+  scale = 2,
+): Array<[number, number]> {
+  const mPerPx =
+    (156_543.03392 * Math.cos((centerLat * Math.PI) / 180)) / Math.pow(2, 20) / scale;
+  const cosLat = Math.cos((centerLat * Math.PI) / 180);
+  return poly.map((v) => {
+    const dx = (v.lng - centerLng) * 111_320 * cosLat;
+    const dy = (v.lat - centerLat) * 111_320;
+    return [imagePixels / 2 + dx / mPerPx, imagePixels / 2 - dy / mPerPx];
+  });
+}
+
+/** Run the QA gate against a polygon. Returns null if the polygon should be
+ *  rejected (low confidence), otherwise the QA result for caller logging. */
+async function runQaGate(opts: {
+  polygon: Array<{ lat: number; lng: number }>;
+  lat: number;
+  lng: number;
+  apiKey: string;
+}): Promise<{ confidence: number; reason: string } | null> {
+  const img = await fetchSatelliteImage({
+    lat: opts.lat,
+    lng: opts.lng,
+    apiKey: opts.apiKey,
+    size: 640,
+    zoom: 20,
+  });
+  if (!img) return { confidence: 0.6, reason: "image_fetch_failed" };
+  // Sample to scale=2 size for a tighter image (matches what SAM saw).
+  const pixelPoly = latLngPolygonToPixels(opts.polygon, opts.lat, opts.lng, 1280, 2);
+  const qa = await validateRoofPolygon({
+    imageBase64: img.base64,
+    polygon: pixelPoly,
+    imagePixels: 1280,
+  });
+  console.log(`[sam-refine] QA gate: ${qa.confidence.toFixed(2)} — ${qa.reason}`);
+  if (qa.confidence < 0.45) return null;
+  return qa;
 }
 
 export async function POST(req: Request) {
@@ -186,11 +239,14 @@ export async function POST(req: Request) {
     samResult = null;
   }
 
-  // If SAM returned a polygon, clip it against OSM when we have a building
-  // footprint. This is the magic step: SAM identifies "roof" semantically,
-  // OSM provides ground-truth building boundary, intersection drops every
-  // pixel that's outside the actual building (driveway shadows, lawn,
-  // neighbouring roofs the prompt didn't fully suppress).
+  // Build the candidate polygon (SAM × OSM clip when available, fall back
+  // through the chain), then run the QA gate at the end. Centralising the
+  // gate at one spot avoids duplicating the validate-or-reject logic at
+  // every return site.
+  let candidate:
+    | { polygon: Array<{ lat: number; lng: number }>; source: SamRefineCachedResult["source"] }
+    | null = null;
+
   if (samResult) {
     if (osmResult) {
       const clipped = clipSamToOsm(samResult.latLng, osmResult.latLng);
@@ -198,21 +254,54 @@ export async function POST(req: Request) {
         console.log(
           `[sam-refine] clipped SAM (${samResult.latLng.length} verts) × OSM (${osmResult.latLng.length}) → ${clipped.length} verts`,
         );
-        const result: SamRefineCachedResult = {
-          polygon: clipped,
-          source: "sam-clipped-osm",
-        };
-        setCached("sam-refine", lat, lng, result);
-        return NextResponse.json(result);
+        candidate = { polygon: clipped, source: "sam-clipped-osm" };
+      } else {
+        console.warn("[sam-refine] SAM × OSM intersection empty — checking SAM centroid against OSM");
+        const c = centroidOf(samResult.latLng);
+        if (!pointInPolygon(c.lat, c.lng, osmResult.latLng)) {
+          // SAM landed off-building — trust OSM
+          candidate = { polygon: osmResult.latLng, source: "osm-fallback" };
+        } else {
+          // Centroid on building but intersection degenerate — raw SAM
+          candidate = { polygon: samResult.latLng, source: "sam-grounded" };
+        }
       }
-      // Intersection produced nothing — SAM and OSM didn't overlap, meaning
-      // SAM picked up something off-building (e.g., a neighbour, the road).
-      // Fall back to OSM.
+    } else {
+      candidate = { polygon: samResult.latLng, source: "sam-grounded" };
+    }
+  } else if (osmResult) {
+    candidate = { polygon: osmResult.latLng, source: "osm-fallback" };
+  }
+
+  if (!candidate) {
+    return NextResponse.json(
+      {
+        error: "no_polygon",
+        message: "Neither SAM nor OSM produced a usable roof polygon.",
+      },
+      { status: 502 },
+    );
+  }
+
+  // Vision QA gate. OSM polygons are human-traced and trusted — skip the
+  // gate for them. SAM/SAM-clipped go through Claude validation: confidence
+  // < 0.45 means the polygon doesn't actually look like the centred building's
+  // roof, so we discard it and return 502 (client falls through to the
+  // Claude AI source or the manual draw mode).
+  let qa: { confidence: number; reason: string } | null = null;
+  if (candidate.source !== "osm-fallback") {
+    qa = await runQaGate({
+      polygon: candidate.polygon,
+      lat,
+      lng,
+      apiKey: googleMapsKey,
+    });
+    if (!qa) {
       console.warn(
-        "[sam-refine] SAM × OSM intersection empty — falling back to OSM",
+        `[sam-refine] QA gate REJECTED ${candidate.source} polygon — falling through`,
       );
-      const c = centroidOf(samResult.latLng);
-      if (!pointInPolygon(c.lat, c.lng, osmResult.latLng)) {
+      // If we have an OSM polygon as backup, return it instead
+      if (osmResult) {
         const result: SamRefineCachedResult = {
           polygon: osmResult.latLng,
           source: "osm-fallback",
@@ -220,40 +309,21 @@ export async function POST(req: Request) {
         setCached("sam-refine", lat, lng, result);
         return NextResponse.json(result);
       }
-      // Centroid IS on building but intersection failed (degenerate poly).
-      // Use raw SAM as last resort.
-      const result: SamRefineCachedResult = {
-        polygon: samResult.latLng,
-        source: "sam-grounded",
-      };
-      setCached("sam-refine", lat, lng, result);
-      return NextResponse.json(result);
+      return NextResponse.json(
+        {
+          error: "no_polygon",
+          message: "SAM polygon failed QA validation; no OSM fallback available.",
+        },
+        { status: 502 },
+      );
     }
-    // No OSM to validate against — trust SAM as-is. Without OSM clip the
-    // polygon may include some yard/shadow, but it's the best we have.
-    const result: SamRefineCachedResult = {
-      polygon: samResult.latLng,
-      source: "sam-grounded",
-    };
-    setCached("sam-refine", lat, lng, result);
-    return NextResponse.json(result);
   }
 
-  // SAM failed; if OSM has a building, return that
-  if (osmResult) {
-    const result: SamRefineCachedResult = {
-      polygon: osmResult.latLng,
-      source: "osm-fallback",
-    };
-    setCached("sam-refine", lat, lng, result);
-    return NextResponse.json(result);
-  }
-
-  return NextResponse.json(
-    {
-      error: "no_polygon",
-      message: "Neither SAM nor OSM produced a usable roof polygon.",
-    },
-    { status: 502 },
-  );
+  const result: SamRefineCachedResult = {
+    polygon: candidate.polygon,
+    source: candidate.source,
+    ...(qa && { qa }),
+  };
+  setCached("sam-refine", lat, lng, result);
+  return NextResponse.json(result);
 }

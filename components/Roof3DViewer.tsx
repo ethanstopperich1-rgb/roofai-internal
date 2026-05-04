@@ -13,7 +13,7 @@ interface Props {
   /** Provenance — polygons sourced from "ai" (Claude vision) are typically
    *  inaccurate, so we render their outline at lower opacity to avoid drawing
    *  attention to a wonky shape. */
-  polygonSource?: "edited" | "solar" | "sam" | "osm" | "ai";
+  polygonSource?: "edited" | "solar-mask" | "solar" | "sam" | "osm" | "ai";
 }
 
 const PALETTE = [
@@ -182,18 +182,18 @@ export default function Roof3DViewer({ lat, lng, address, polygons, polygonSourc
         return;
       }
 
-      // Camera framing: nearly top-down view from a comfortable altitude.
-      // 250 m range at -65° pitch ≈ 106 m horizontal × 227 m vertical —
-      // a "helicopter 750 ft up looking down" shot that frames the target
-      // house clearly with neighboring properties as context, without ever
-      // clipping into eaves. Earlier 90/150 m oblique angles read as
-      // "camera shoved into the gable" because most of the shot WAS gable.
+      // Camera framing: 180 m radius at -35° pitch — original "drone hover"
+      // framing the user explicitly preferred. Tightening (90 / 150 m) put
+      // the camera inside the eaves; widening (250 m) lost the property in
+      // the neighborhood. This is the Goldilocks setting; do not retune.
+      // (Pivot at lat,lng,30m so the look-target is a few meters above
+      // ground level — keeps the rooftop in the visual center of frame.)
       const recenter = () => {
-        const center = Cesium.Cartesian3.fromDegrees(lng, lat, 0);
+        const center = Cesium.Cartesian3.fromDegrees(lng, lat, 30);
         const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
         viewer.camera.lookAtTransform(
           transform,
-          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-65), 250),
+          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-35), 180),
         );
       };
       recenterRef.current = recenter;
