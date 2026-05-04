@@ -873,6 +873,25 @@ export default function HomePage() {
                     }));
                   }
                 }}
+                onPolygonSnapped={(snapped) => {
+                  // Pattern B: replace the active source's polygon with the
+                  // mesh-snapped refinement. Don't override a manual edit
+                  // (rep already moved vertices by hand).
+                  if (hasUserEditedRef.current) return;
+                  if (snapped.length < 4) return;
+                  switch (polygonSource) {
+                    case "roboflow": setRoboflowPolygon(snapped); break;
+                    case "osm": setOsmBuildingPolygon(snapped); break;
+                    case "microsoft-buildings": setMsBuildingPolygon(snapped); break;
+                    case "solar-mask": setSolarMaskPolygon(snapped); break;
+                    case "sam": setSamRefinedPolygon(snapped); break;
+                    // tiles3d / edited / solar (multi-segment) intentionally
+                    // not handled here — tiles3d is already mesh-derived
+                    // (snapping it against itself is a noop), edited is the
+                    // rep's authoritative polygon, and solar's bbox segments
+                    // aren't meaningful single polygons.
+                  }
+                }}
               />
             )}
           </section>

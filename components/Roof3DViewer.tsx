@@ -38,6 +38,14 @@ interface Props {
    *  the priority chain so a confident Roboflow polygon doesn't get
    *  shipped when the mesh says it's mostly on the ground. */
   onPolygonValidated?: (score: number, samples: number) => void;
+  /** Pattern-B 3D fusion: after a high-confidence polygon is validated,
+   *  snap each edge to the actual height transition in the 3D mesh
+   *  (the real eave). Roboflow returns roughly-correct shapes but the
+   *  edges drift 1-3m off the actual eave line because the model snaps
+   *  to mask boundaries that follow shadow gradients. This callback
+   *  fires when we've produced a refined polygon by snapping. Caller
+   *  should replace the active polygon with the snapped version. */
+  onPolygonSnapped?: (snapped: Array<{ lat: number; lng: number }>) => void;
 }
 
 const PALETTE = [
@@ -544,6 +552,192 @@ function pointInPolygonLatLng(
   return inside;
 }
 
+/**
+ * Pattern B: snap polygon edges to the height transitions in the 3D mesh.
+ *
+ * Roboflow's polygon shape is roughly correct but vertex positions can be
+ * 1-3m off the actual eave (the model snaps to AI mask boundaries which
+ * follow shadow gradients, not always the real eave line). The mesh tells
+ * us EXACTLY where the height drops from "roof" to "ground" — that's
+ * the eave. Snap each edge to that transition.
+ *
+ * Algorithm per edge:
+ *   1. Compute edge midpoint and outward perpendicular (in local meters).
+ *   2. Sample heights at 11 points along the perpendicular,
+ *      from -2.5m to +2.5m relative to the midpoint (0.5m spacing).
+ *   3. Find the FIRST height transition crossing the roof-min threshold
+ *      (ground + 2m). That's the actual eave.
+ *   4. Record the offset from original midpoint to the transition.
+ * Then apply the offsets to vertices: each vertex moves by the average of
+ * its two adjacent edges' offsets. Net result: rectilinear shape preserved,
+ * edges snapped to actual eaves.
+ *
+ * Skip when:
+ *   - Polygon is < 4 vertices (degenerate)
+ *   - Mesh sampling fails (no 3D Tiles coverage at this location)
+ *   - For most edges no clear transition (mesh quality too poor — keep
+ *     original polygon untouched rather than ship a corrupted version)
+ */
+async function snapPolygonEdgesToMesh(opts: {
+  Cesium: CesiumGlobal;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  viewer: any;
+  polygon: Array<{ lat: number; lng: number }>;
+  groundHeightM: number;
+}): Promise<Array<{ lat: number; lng: number }> | null> {
+  const { Cesium, viewer, polygon, groundHeightM } = opts;
+  if (polygon.length < 4) return null;
+
+  const SAMPLES_PER_EDGE = 11;
+  const SAMPLE_STEP_M = 0.5;
+  const SAMPLE_HALF_RANGE_M = (SAMPLES_PER_EDGE - 1) * SAMPLE_STEP_M / 2; // 2.5m
+  const ROOF_MIN_ABOVE_GROUND = 2;
+
+  const cosLat = Math.cos((polygon[0].lat * Math.PI) / 180);
+  const M_PER_DEG_LAT = 111_320;
+  const M_PER_DEG_LNG = 111_320 * cosLat;
+
+  // Build all sample points across all edges into one big Cartographic[]
+  // for a single Cesium round-trip.
+  const allCarto: import("cesium").Cartographic[] = [];
+  const edgeRanges: Array<{ start: number; mid: { lat: number; lng: number }; perpLat: number; perpLng: number }> = [];
+
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    const mid = {
+      lat: (a.lat + b.lat) / 2,
+      lng: (a.lng + b.lng) / 2,
+    };
+    // Edge direction in meters
+    const edgeDxM = (b.lng - a.lng) * M_PER_DEG_LNG;
+    const edgeDyM = (b.lat - a.lat) * M_PER_DEG_LAT;
+    const edgeLen = Math.hypot(edgeDxM, edgeDyM);
+    if (edgeLen < 0.5) {
+      // Degenerate edge — record empty range so indexing stays aligned
+      edgeRanges.push({ start: allCarto.length, mid, perpLat: 0, perpLng: 0 });
+      continue;
+    }
+    // Outward perpendicular (right-hand-rule for CCW polygon, but we don't
+    // know orientation — pick one and detect the sign from the height profile).
+    // Perpendicular vector, normalised, in meters: rotate edge by -90°.
+    const perpDxM = edgeDyM / edgeLen;
+    const perpDyM = -edgeDxM / edgeLen;
+    // Convert perpendicular meters/unit back to degrees per meter
+    const perpLat = perpDyM / M_PER_DEG_LAT;
+    const perpLng = perpDxM / M_PER_DEG_LNG;
+
+    edgeRanges.push({ start: allCarto.length, mid, perpLat, perpLng });
+
+    // Sample 11 points: -SAMPLE_HALF_RANGE_M, ..., 0, ..., +SAMPLE_HALF_RANGE_M
+    for (let k = 0; k < SAMPLES_PER_EDGE; k++) {
+      const t = -SAMPLE_HALF_RANGE_M + k * SAMPLE_STEP_M;
+      allCarto.push(
+        Cesium.Cartographic.fromDegrees(
+          mid.lng + perpLng * t,
+          mid.lat + perpLat * t,
+        ),
+      );
+    }
+  }
+
+  let sampled: import("cesium").Cartographic[];
+  try {
+    sampled = await viewer.scene.sampleHeightMostDetailed(allCarto);
+  } catch {
+    return null;
+  }
+
+  const roofMin = groundHeightM + ROOF_MIN_ABOVE_GROUND;
+  // Compute offset per edge: scan from CENTER outward, find the first
+  // sample where height drops below roofMin (the eave). That's the
+  // distance to move the edge along the perpendicular. Sign: -t means
+  // INWARD (eave is closer than the polygon thinks); +t means OUTWARD
+  // (eave is further out than the polygon thinks).
+  const edgeOffsetsM: Array<number | null> = [];
+  const center = (SAMPLES_PER_EDGE - 1) / 2;
+  for (let e = 0; e < edgeRanges.length; e++) {
+    const range = edgeRanges[e];
+    if (range.perpLat === 0 && range.perpLng === 0) {
+      edgeOffsetsM.push(null);
+      continue;
+    }
+    // Heights for this edge's 11 samples
+    const hs: Array<number | null> = [];
+    for (let k = 0; k < SAMPLES_PER_EDGE; k++) {
+      const c = sampled[range.start + k];
+      hs.push(typeof c?.height === "number" && Number.isFinite(c.height) ? c.height : null);
+    }
+    const isAbove = hs.map((h) => (h !== null ? h >= roofMin : null));
+    const centerAbove = isAbove[center];
+    if (centerAbove === null) {
+      edgeOffsetsM.push(null);
+      continue;
+    }
+    // If center is INSIDE (above roof min), find the OUTWARD transition (k > center where it goes below)
+    // If center is OUTSIDE (below roof min), find the INWARD transition (k < center where it goes above)
+    let transitionK = -1;
+    if (centerAbove) {
+      for (let k = center + 1; k < SAMPLES_PER_EDGE; k++) {
+        if (isAbove[k] === false) { transitionK = k; break; }
+      }
+    } else {
+      for (let k = center - 1; k >= 0; k--) {
+        if (isAbove[k] === true) {
+          // The transition is BETWEEN k and k+1 (k is above, k+1 is below at the time we're scanning toward center)
+          transitionK = k + 1;
+          break;
+        }
+      }
+    }
+    if (transitionK < 0) {
+      // No clear transition found in the ±2.5m window — edge stays put
+      edgeOffsetsM.push(null);
+      continue;
+    }
+    // The transition's offset from center, in meters along perpendicular
+    const offsetM = (transitionK - center) * SAMPLE_STEP_M;
+    edgeOffsetsM.push(offsetM);
+  }
+
+  // Count transitions found — if < 50%, the mesh quality is too poor to
+  // trust edge snapping; keep the original polygon.
+  const found = edgeOffsetsM.filter((o) => o !== null).length;
+  if (found < edgeOffsetsM.length * 0.5) {
+    console.log(
+      `[Roof3DViewer] edge-snap: only ${found}/${edgeOffsetsM.length} edges had clean transitions; skipping snap`,
+    );
+    return null;
+  }
+
+  // Apply offsets to vertices: each vertex moves by the average of its two
+  // adjacent edges' offsets. We use simple direction-aware averaging in lat/lng
+  // by computing each edge's perpendicular movement and applying half to each
+  // adjacent vertex.
+  const newPolygon = polygon.map((v) => ({ lat: v.lat, lng: v.lng }));
+  for (let e = 0; e < edgeRanges.length; e++) {
+    const offset = edgeOffsetsM[e];
+    if (offset === null) continue;
+    const range = edgeRanges[e];
+    // Move both endpoints of edge e by offset along perpendicular
+    const dLat = range.perpLat * offset;
+    const dLng = range.perpLng * offset;
+    // Apply HALF the offset to each endpoint, so each vertex gets the
+    // averaged offset of its two adjacent edges
+    const a = e;
+    const b = (e + 1) % polygon.length;
+    newPolygon[a].lat += dLat / 2;
+    newPolygon[a].lng += dLng / 2;
+    newPolygon[b].lat += dLat / 2;
+    newPolygon[b].lng += dLng / 2;
+  }
+
+  console.log(
+    `[Roof3DViewer] edge-snap: applied ${found}/${edgeOffsetsM.length} edge offsets`,
+  );
+  return newPolygon;
+}
+
 async function validatePolygonAgainstMesh(opts: {
   Cesium: CesiumGlobal;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -681,6 +875,7 @@ export default function Roof3DViewer({
   polygonSource,
   onTilesPolygonDetected,
   onPolygonValidated,
+  onPolygonSnapped,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
@@ -702,9 +897,16 @@ export default function Roof3DViewer({
   onTilesCallbackRef.current = onTilesPolygonDetected;
   const onValidatedRef = useRef(onPolygonValidated);
   onValidatedRef.current = onPolygonValidated;
+  const onSnappedRef = useRef(onPolygonSnapped);
+  onSnappedRef.current = onPolygonSnapped;
   // Cache of validated polygons so we don't re-validate the same polygon
   // every render. Keyed by source + first-vertex hash.
   const validatedPolygonRef = useRef<string | null>(null);
+  // Cache of snapped polygons — once a (source, polygon) has been snapped,
+  // don't re-run the snap on the snap-output (would re-fire the effect
+  // infinitely as the polygon prop changes after the parent applies the
+  // snapped version).
+  const snappedPolygonRef = useRef<Set<string>>(new Set());
 
   const [status, setStatus] = useState<"loading" | "ready" | "no-coverage" | "error">(
     "loading",
@@ -1077,8 +1279,28 @@ export default function Roof3DViewer({
           `[Roof3DViewer] validation [${polygonSource}]: ${(result.score * 100).toFixed(0)}% of ${result.samples} samples at roof height (${result.roofMin.toFixed(1)}-${result.roofMax.toFixed(1)}m, ground=${result.groundHeightM.toFixed(1)}m)`,
         );
         onValidatedRef.current?.(result.score, result.samples);
+
+        // Pattern B: edge snapping. Only run when the polygon clearly is
+        // on a roof (score > 0.6 — anything lower probably needs to be
+        // rejected entirely, not refined). Skip "ai" source because Claude
+        // polygons are wonky enough that edge-snapping just amplifies the
+        // wonkiness — better to leave them for the rep to redraw.
+        if (cancelled) return;
+        if (result.score <= 0.6) return;
+        if (polygonSource === "ai") return;
+        if (snappedPolygonRef.current.has(key)) return;
+        snappedPolygonRef.current.add(key);
+        const snapped = await snapPolygonEdgesToMesh({
+          Cesium,
+          viewer,
+          polygon: primary,
+          groundHeightM: result.groundHeightM,
+        });
+        if (cancelled || !snapped) return;
+        console.log(`[Roof3DViewer] edge-snap produced ${snapped.length}-vert refined polygon`);
+        onSnappedRef.current?.(snapped);
       } catch (err) {
-        console.warn("[Roof3DViewer] mesh validation failed:", err);
+        console.warn("[Roof3DViewer] mesh validation/snap failed:", err);
       }
     })();
     return () => {
