@@ -203,4 +203,10 @@ export interface Estimate {
   lengths?: RoofLengths;
   /** Optional — EagleView-style waste calculation table */
   waste?: WasteTable;
+  /** Optional — the polygon(s) actually used for measurement, after any
+   *  rep edits. Persisted so reopening an estimate restores the exact roof
+   *  geometry it was priced against. Lat/lng order. */
+  polygons?: Array<Array<{ lat: number; lng: number }>>;
+  /** Optional — provenance of the saved polygons. */
+  polygonSource?: "edited" | "solar" | "sam" | "osm" | "ai";
 }

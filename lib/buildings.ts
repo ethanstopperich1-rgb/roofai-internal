@@ -54,6 +54,32 @@ function distSqToCentroid(
 }
 
 /**
+ * Real polygon area in m² via shoelace (lat/lng → meters via cosLat scale).
+ * Used to rank candidate buildings — when none contain the click point we
+ * tiebreak by area so a 30-vertex apartment doesn't win over the 4-vertex
+ * house it should pick (the previous proxy used `polygon.length`, which
+ * inverted that ranking).
+ */
+function polygonAreaM2(poly: Array<{ lat: number; lng: number }>): number {
+  if (poly.length < 3) return 0;
+  let cLat = 0;
+  for (const v of poly) cLat += v.lat;
+  cLat /= poly.length;
+  const cosLat = Math.cos((cLat * Math.PI) / 180);
+  let sum = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const ax = a.lng * 111_320 * cosLat;
+    const ay = a.lat * 111_320;
+    const bx = b.lng * 111_320 * cosLat;
+    const by = b.lat * 111_320;
+    sum += ax * by - bx * ay;
+  }
+  return Math.abs(sum) / 2;
+}
+
+/**
  * Ray-casting point-in-polygon test in lat/lng space (good enough at
  * residential parcel scale).
  */
@@ -132,21 +158,28 @@ export async function fetchBuildingPolygon(opts: {
   for (const el of data.elements) {
     if (el.type !== "way" || !el.geometry || el.geometry.length < 3) continue;
     const polygon = el.geometry.map((p) => ({ lat: p.lat, lng: p.lon }));
+    // Skip implausibly small structures (sheds, AC pads ≤ 15 m²)
+    const area = polygonAreaM2(polygon);
+    if (area < 15) continue;
     candidates.push({
       polygon,
       osmId: el.id,
       contains: pointInPolygon(lat, lng, polygon),
       distSq: distSqToCentroid(lat, lng, polygon),
-      area: polygon.length, // proxy — real area calc unnecessary for ranking
+      area,
     });
   }
   if (candidates.length === 0) return null;
 
-  // Prefer the building that CONTAINS the point. If none contain it (the
-  // geocoder pinned to driveway/parcel center), pick the closest by centroid.
+  // Prefer the building that CONTAINS the point. Among containers, prefer the
+  // SMALLEST (parcel ways sometimes wrap multiple structures — we want the
+  // actual house, not the lot envelope). For non-containers, prefer the
+  // closest by centroid distance, then largest by area as tiebreak.
   candidates.sort((a, b) => {
     if (a.contains !== b.contains) return a.contains ? -1 : 1;
-    return a.distSq - b.distSq;
+    if (a.contains && b.contains) return a.area - b.area;
+    if (Math.abs(a.distSq - b.distSq) > 4) return a.distSq - b.distSq;
+    return b.area - a.area;
   });
   const best = candidates[0];
 

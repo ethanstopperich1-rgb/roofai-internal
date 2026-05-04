@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AddressInput from "@/components/AddressInput";
 import AssumptionsEditor from "@/components/AssumptionsEditor";
 import AddOnsPanel from "@/components/AddOnsPanel";
@@ -39,6 +39,7 @@ import {
   buildWasteTable,
   deriveRoofLengthsFromPolygons,
   deriveRoofLengthsHeuristic,
+  inferComplexityFromPolygons,
 } from "@/lib/roof-geometry";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
@@ -81,7 +82,6 @@ export default function HomePage() {
   const [visionLoading, setVisionLoading] = useState(false);
   const [visionError, setVisionError] = useState<string>("");
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
-  const [propertyAttomYearBuilt, setPropertyAttomYearBuilt] = useState<number | null>(null);
   const [osmBuildingPolygon, setOsmBuildingPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
@@ -98,16 +98,17 @@ export default function HomePage() {
   const [livePolygons, setLivePolygons] = useState<
     Array<Array<{ lat: number; lng: number }>> | null
   >(null);
-
-  // ATTOM yearBuilt → ageYears (rep can still override manually)
-  useEffect(() => {
-    if (propertyAttomYearBuilt) {
-      const age = new Date().getFullYear() - propertyAttomYearBuilt;
-      if (age > 0 && age < 150) {
-        setAssumptions((a) => ({ ...a, ageYears: age }));
-      }
-    }
-  }, [propertyAttomYearBuilt]);
+  // Tracked via ref so late-arriving SAM doesn't stomp in-progress edits
+  // (the sam-refine fetch resolves ~5-10s after OSM, by which point the rep
+  // may have already moved vertices on the OSM polygon).
+  const hasUserEditedRef = useRef(false);
+  const handlePolygonsChanged = useCallback(
+    (polys: Array<Array<{ lat: number; lng: number }>>) => {
+      hasUserEditedRef.current = true;
+      setLivePolygons(polys);
+    },
+    [],
+  );
 
   useEffect(() => {
     const s = localStorage.getItem("pitch.staff");
@@ -238,11 +239,27 @@ export default function HomePage() {
     }
   }, [activePolygons, solar?.sqft, solar?.pitchDegrees, assumptions.pitch]);
 
+  // Auto-derive complexity from polygon shape — strictly geometric, beats
+  // Vision's noisy-thumbnail guess. Vision still wins when it returns
+  // confidence >= 0.8 (set in the Solar+Vision merge below); this fires
+  // for the moderate-confidence cases where the polygon is the better signal.
+  useEffect(() => {
+    if (!activePolygons || activePolygons.length === 0) return;
+    if (vision && vision.confidence >= 0.8) return; // trust strong vision
+    const inferred = inferComplexityFromPolygons(activePolygons);
+    if (inferred && inferred !== assumptions.complexity) {
+      setAssumptions((a) => ({ ...a, complexity: inferred }));
+    }
+  }, [activePolygons, vision, assumptions.complexity]);
+
   const detailed = useMemo(
     () =>
       buildDetailedEstimate(assumptions, addOns, {
         buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-        segmentCount: solar?.segmentCount ?? activePolygons?.length,
+        // Solar's segmentCount > everything. Otherwise, for a single-polygon
+        // source (OSM / SAM / Claude), use vertex count as a complexity
+        // proxy: a 4-vertex rectangle is 1 facet; a 12-vertex L is ~4-5.
+        segmentCount: solar?.segmentCount ?? polygonVertexComplexity(activePolygons),
         segmentPolygonsLatLng: activePolygons,
       }),
     [assumptions, addOns, solar, activePolygons],
@@ -265,7 +282,7 @@ export default function HomePage() {
     return deriveRoofLengthsHeuristic({
       totalRoofSqft: assumptions.sqft,
       buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-      segmentCount: solar?.segmentCount ?? activePolygons?.length,
+      segmentCount: solar?.segmentCount ?? polygonVertexComplexity(activePolygons),
       complexity,
       pitch: assumptions.pitch,
     });
@@ -291,6 +308,7 @@ export default function HomePage() {
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
     setLivePolygons(null);
+    hasUserEditedRef.current = false;
 
     if (addr.lat == null || addr.lng == null) {
       setAssumptions((a) => ({
@@ -366,7 +384,10 @@ export default function HomePage() {
     // upgrade. Wire its result whenever it lands.
     samPromise
       .then((samPoly) => {
-        if (samPoly) setSamRefinedPolygon(samPoly);
+        // Don't stomp in-progress edits: if the rep has already moved a
+        // vertex on the OSM/Claude polygon, keep their work and silently
+        // discard the SAM refinement.
+        if (samPoly && !hasUserEditedRef.current) setSamRefinedPolygon(samPoly);
       })
       .finally(() => setSamRefining(false));
 
@@ -405,6 +426,8 @@ export default function HomePage() {
     detailed,
     lengths,
     waste,
+    polygons: activePolygons ?? undefined,
+    polygonSource: polygonSource === "none" ? undefined : polygonSource,
   };
 
   const applyTier = (tier: ProposalTier) => {
@@ -441,6 +464,10 @@ export default function HomePage() {
     setVision(null);
     setVisionError("");
     setIsInsuranceClaim(false);
+    setLivePolygons(null);
+    setOsmBuildingPolygon(null);
+    setSamRefinedPolygon(null);
+    hasUserEditedRef.current = false;
   };
 
   const mapBadges = (() => {
@@ -544,7 +571,7 @@ export default function HomePage() {
               penetrations={vision?.penetrations}
               metaBadges={mapBadges}
               editable={polygonSource !== "none"}
-              onPolygonsChanged={setLivePolygons}
+              onPolygonsChanged={handlePolygonsChanged}
               pitchDegrees={solar?.pitchDegrees ?? null}
             />
           </section>
@@ -605,10 +632,7 @@ export default function HomePage() {
               </div>
             </div>
             <div className="space-y-6">
-              <PropertyContextPanel
-                address={address}
-                onProperty={(p) => setPropertyAttomYearBuilt(p?.yearBuilt ?? null)}
-              />
+              <PropertyContextPanel address={address} polygons={activePolygons} />
               <StormHistoryCard lat={address?.lat} lng={address?.lng} />
               <div className="glass rounded-2xl p-5 space-y-3">
                 <div className="flex items-center justify-between">
@@ -682,4 +706,24 @@ function EmptyState() {
       ))}
     </section>
   );
+}
+
+/**
+ * Map a single-polygon source's vertex count to a "Solar-equivalent" segment
+ * count for the line-item / lengths heuristics. A 4-vertex rectangle is one
+ * gable; an 8-vertex L is roughly two gables; complex multi-bay houses with
+ * 12+ vertices behave like 4-5 facets. Returns 4 (the heuristic default) when
+ * we have nothing.
+ */
+function polygonVertexComplexity(
+  polys: Array<Array<{ lat: number; lng: number }>> | undefined,
+): number {
+  if (!polys || polys.length === 0) return 4;
+  if (polys.length > 1) return polys.length;
+  const v = polys[0].length;
+  if (v <= 4) return 2;
+  if (v <= 6) return 3;
+  if (v <= 8) return 4;
+  if (v <= 10) return 5;
+  return 6;
 }

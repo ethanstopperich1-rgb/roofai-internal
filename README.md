@@ -44,7 +44,6 @@ npm run dev
 | `ANTHROPIC_API_KEY` | Vision panel |
 | `GEMINI_API_KEY` | Sales intelligence panel |
 | `REPLICATE_API_TOKEN` | Roof outline refinement |
-| `ATTOM_API_KEY` | Property records |
 
 The app degrades gracefully when keys are missing — the panels that require them surface a quiet "unavailable" state without breaking the rest of the flow.
 
