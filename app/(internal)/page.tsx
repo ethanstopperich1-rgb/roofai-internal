@@ -813,6 +813,8 @@ export default function HomePage() {
               polygons={activePolygons}
               editing={polygonSource === "edited"}
               pitchDegrees={solar?.pitchDegrees ?? null}
+              address={address?.formatted}
+              pitchLabel={assumptions.pitch}
               sourceLabel={
                 polygonSource === "tiles3d"
                   ? "3D mesh"

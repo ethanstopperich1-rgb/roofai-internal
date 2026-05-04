@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import { Compass, Ruler } from "lucide-react";
+import { Compass, Ruler, Download } from "lucide-react";
+import { downloadDxf } from "@/lib/dxf-export";
 
 interface Props {
   /** Polygons in lat/lng space — same shape MapView consumes */
@@ -17,6 +18,10 @@ interface Props {
    *  roof surface area when totalRoofSqft isn't supplied. Falls back to
    *  6/12 (26.57°) when null/undefined. */
   pitchDegrees?: number | null;
+  /** Address — printed in the title block when provided */
+  address?: string;
+  /** Pitch as "5/12" / "8/12+" — printed in title block + per-facet arrow label */
+  pitchLabel?: string;
 }
 
 const M_PER_DEG_LAT = 111_320;
@@ -90,6 +95,8 @@ export default function RoofBlueprint({
   editing,
   sourceLabel,
   pitchDegrees,
+  address,
+  pitchLabel,
 }: Props) {
   const data = useMemo(() => {
     if (!polygons || polygons.length === 0) return null;
@@ -165,15 +172,32 @@ export default function RoofBlueprint({
     );
   }
 
-  // Layout: SVG viewbox is 1000×400. Scale roof to fit with padding.
+  // Layout: SVG viewbox is 1000×460 (extra 60px for the title block strip).
+  // Drawing border insets 8px from edges; padding for the polygon area
+  // accounts for the title block height + scale bar at the bottom.
   const VB_W = 1000;
-  const VB_H = 400;
+  const VB_H = 460;
+  const TITLE_BLOCK_H = 56;
+  const DRAWING_INSET = 8;
   const PADDING = 64;
   const innerW = VB_W - 2 * PADDING;
-  const innerH = VB_H - 2 * PADDING;
+  // Drawing area excludes the title block at the bottom
+  const innerH = VB_H - PADDING - TITLE_BLOCK_H - PADDING;
   const scale = Math.min(innerW / data.w, innerH / data.h);
   const offsetX = PADDING + (innerW - data.w * scale) / 2 - data.minX * scale;
   const offsetY = PADDING + (innerH - data.h * scale) / 2 - data.minY * scale;
+  // Scale-bar physical length in feet (1 m = 3.28084 ft). Pick a round value
+  // such that the bar is ~120 px on screen.
+  const targetBarPx = 120;
+  const ftPerPx = 1 / (scale * 3.28084);
+  const rawFt = targetBarPx * ftPerPx;
+  // Round to a nice number (1, 2, 5, 10, 20, 50, 100 ft)
+  const niceSteps = [1, 2, 5, 10, 20, 50, 100];
+  let scaleBarFt = niceSteps[0];
+  for (const s of niceSteps) {
+    if (s <= rawFt) scaleBarFt = s;
+  }
+  const scaleBarPx = scaleBarFt * 3.28084 * scale;
   const project = (x: number, y: number) => [
     x * scale + offsetX,
     y * scale + offsetY,
@@ -198,6 +222,17 @@ export default function RoofBlueprint({
   // forbidden zone so labels sit clearly outside the eaves.
   const placedLabelRects: Rect[] = [];
 
+  // Per-facet centroid (in SVG coords) — anchor for the pitch arrow + label
+  const facetCentroids = data.polysM.map((poly) => {
+    const cx = poly.reduce((s, v) => s + v.x, 0) / poly.length;
+    const cy = poly.reduce((s, v) => s + v.y, 0) / poly.length;
+    const [px, py] = project(cx, cy);
+    return { x: px, y: py };
+  });
+  const today = new Date().toLocaleDateString();
+  const drawingScale = `1" = ${Math.round(ftPerPx * 96)}'`;
+  void drawingScale;
+
   return (
     <div className="glass rounded-3xl overflow-hidden border border-white/[0.07]">
       <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.05]">
@@ -214,9 +249,24 @@ export default function RoofBlueprint({
             </div>
           </div>
         </div>
-        {sourceLabel && (
-          <span className="chip chip-accent">{sourceLabel}</span>
-        )}
+        <div className="flex items-center gap-2">
+          {sourceLabel && <span className="chip chip-accent">{sourceLabel}</span>}
+          {polygons && polygons.length > 0 && (
+            <button
+              type="button"
+              onClick={() =>
+                downloadDxf(
+                  { polygons, address, pitchLabel, withDimensions: true },
+                  `voxaris-pitch-roof-plan${address ? "-" + address.replace(/[^a-z0-9]/gi, "_").slice(0, 32) : ""}.dxf`,
+                )
+              }
+              className="btn btn-ghost py-1.5 px-3 text-[12px]"
+              title="Download CAD-compatible plan (.dxf — opens in AutoCAD, Revit, BricsCAD, etc.)"
+            >
+              <Download size={12} /> .dxf
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="relative" style={{ background: "#070a10" }}>
@@ -233,8 +283,28 @@ export default function RoofBlueprint({
           viewBox={`0 0 ${VB_W} ${VB_H}`}
           xmlns="http://www.w3.org/2000/svg"
           className={`relative w-full h-auto ${editing ? "blueprint-pulse" : ""}`}
-          style={{ maxHeight: "420px" }}
+          style={{ maxHeight: "480px" }}
         >
+          {/* CAD drawing border — heavy outer frame + inset hairline (architectural convention) */}
+          <rect
+            x={DRAWING_INSET}
+            y={DRAWING_INSET}
+            width={VB_W - DRAWING_INSET * 2}
+            height={VB_H - DRAWING_INSET * 2}
+            fill="none"
+            stroke="rgba(103,220,255,0.55)"
+            strokeWidth="1.5"
+          />
+          <rect
+            x={DRAWING_INSET + 4}
+            y={DRAWING_INSET + 4}
+            width={VB_W - DRAWING_INSET * 2 - 8}
+            height={VB_H - DRAWING_INSET * 2 - 8}
+            fill="none"
+            stroke="rgba(103,220,255,0.20)"
+            strokeWidth="0.6"
+          />
+
           {/* Compass rose */}
           <g transform={`translate(${VB_W - 60}, 60)`} fill="rgba(180,200,220,0.45)">
             <circle r="22" fill="rgba(7,10,16,0.6)" stroke="rgba(103,220,255,0.25)" strokeWidth="1" />
@@ -341,6 +411,165 @@ export default function RoofBlueprint({
               </g>
             );
           })}
+
+          {/* Pitch arrows on each facet — convention: arrow points UP-SLOPE
+              (toward the ridge), with rise/run ratio next to it */}
+          {pitchLabel && facetCentroids.map((c, i) => (
+            <g key={`p-${i}`} transform={`translate(${c.x}, ${c.y})`} opacity="0.85">
+              {/* Upward-pointing pitch arrow (always pointing up in plan view —
+                  in v2 we'd rotate per-facet azimuth) */}
+              <line
+                x1="-9" y1="6" x2="-9" y2="-12"
+                stroke="rgba(103,220,255,0.85)"
+                strokeWidth="1.2"
+              />
+              <polygon
+                points="-9,-15 -12,-9 -6,-9"
+                fill="rgba(103,220,255,0.85)"
+              />
+              {/* Pitch ratio label */}
+              <text
+                x="-2" y="-3"
+                textAnchor="start"
+                fontSize="9"
+                fontFamily="ui-monospace, monospace"
+                fontWeight="600"
+                fill="rgba(103,220,255,0.95)"
+              >
+                {pitchLabel}
+              </text>
+            </g>
+          ))}
+
+          {/* Scale bar — bottom-left, inside the drawing area but above the title block */}
+          <g transform={`translate(${PADDING}, ${VB_H - TITLE_BLOCK_H - 28})`}>
+            <text
+              x="0" y="-6"
+              fontSize="8"
+              fontFamily="ui-monospace, monospace"
+              fill="rgba(180,200,220,0.65)"
+              letterSpacing="1.2"
+            >
+              SCALE
+            </text>
+            {/* Bar outline */}
+            <rect
+              x="0" y="0"
+              width={scaleBarPx} height="6"
+              fill="none"
+              stroke="rgba(103,220,255,0.6)"
+              strokeWidth="0.8"
+            />
+            {/* Alternating fill segments (5 ticks) */}
+            {Array.from({ length: 5 }).map((_, i) => (
+              <rect
+                key={i}
+                x={(scaleBarPx / 5) * i}
+                y="0"
+                width={scaleBarPx / 5}
+                height="6"
+                fill={i % 2 === 0 ? "rgba(103,220,255,0.55)" : "transparent"}
+              />
+            ))}
+            <text
+              x="0" y="20"
+              fontSize="9"
+              fontFamily="ui-monospace, monospace"
+              fill="rgba(220,230,245,0.85)"
+            >
+              0
+            </text>
+            <text
+              x={scaleBarPx} y="20"
+              textAnchor="end"
+              fontSize="9"
+              fontFamily="ui-monospace, monospace"
+              fill="rgba(220,230,245,0.85)"
+            >
+              {scaleBarFt} ft
+            </text>
+          </g>
+
+          {/* Title block — bottom strip, 4-column layout: project | scale | sheet | date */}
+          <g transform={`translate(0, ${VB_H - TITLE_BLOCK_H})`}>
+            <rect
+              x={DRAWING_INSET + 4}
+              y={0}
+              width={VB_W - DRAWING_INSET * 2 - 8}
+              height={TITLE_BLOCK_H - 4}
+              fill="rgba(7,10,16,0.7)"
+              stroke="rgba(103,220,255,0.45)"
+              strokeWidth="1"
+            />
+            {/* Vertical dividers */}
+            {[0.55, 0.72, 0.86].map((p, i) => (
+              <line
+                key={i}
+                x1={DRAWING_INSET + 4 + (VB_W - DRAWING_INSET * 2 - 8) * p}
+                y1={0}
+                x2={DRAWING_INSET + 4 + (VB_W - DRAWING_INSET * 2 - 8) * p}
+                y2={TITLE_BLOCK_H - 4}
+                stroke="rgba(103,220,255,0.30)"
+                strokeWidth="0.8"
+              />
+            ))}
+            {/* Column 1: Project */}
+            <g transform={`translate(${DRAWING_INSET + 18}, 0)`}>
+              <text
+                x="0" y="14"
+                fontSize="7.5"
+                fontFamily="ui-monospace, monospace"
+                fill="rgba(103,220,255,0.7)"
+                letterSpacing="1.4"
+              >
+                PROJECT
+              </text>
+              <text
+                x="0" y="32"
+                fontSize="11"
+                fontFamily="ui-monospace, monospace"
+                fontWeight="700"
+                fill="#e6edf5"
+              >
+                Roof Replacement — Plan View
+              </text>
+              <text
+                x="0" y="46"
+                fontSize="9"
+                fontFamily="ui-monospace, monospace"
+                fill="rgba(180,200,220,0.7)"
+              >
+                {address ? (address.length > 56 ? address.slice(0, 56) + "…" : address) : "—"}
+              </text>
+            </g>
+            {/* Column 2: Scale */}
+            <g transform={`translate(${DRAWING_INSET + 4 + (VB_W - DRAWING_INSET * 2 - 8) * 0.55 + 14}, 0)`}>
+              <text x="0" y="14" fontSize="7.5" fontFamily="ui-monospace, monospace" fill="rgba(103,220,255,0.7)" letterSpacing="1.4">
+                SCALE
+              </text>
+              <text x="0" y="34" fontSize="13" fontFamily="ui-monospace, monospace" fontWeight="700" fill="#e6edf5">
+                1 ▭ = {scaleBarFt} ft
+              </text>
+            </g>
+            {/* Column 3: Sheet */}
+            <g transform={`translate(${DRAWING_INSET + 4 + (VB_W - DRAWING_INSET * 2 - 8) * 0.72 + 14}, 0)`}>
+              <text x="0" y="14" fontSize="7.5" fontFamily="ui-monospace, monospace" fill="rgba(103,220,255,0.7)" letterSpacing="1.4">
+                SHEET
+              </text>
+              <text x="0" y="34" fontSize="13" fontFamily="ui-monospace, monospace" fontWeight="700" fill="#e6edf5">
+                A-1.0
+              </text>
+            </g>
+            {/* Column 4: Date / Drawn-by */}
+            <g transform={`translate(${DRAWING_INSET + 4 + (VB_W - DRAWING_INSET * 2 - 8) * 0.86 + 14}, 0)`}>
+              <text x="0" y="14" fontSize="7.5" fontFamily="ui-monospace, monospace" fill="rgba(103,220,255,0.7)" letterSpacing="1.4">
+                DATE
+              </text>
+              <text x="0" y="34" fontSize="11" fontFamily="ui-monospace, monospace" fontWeight="700" fill="#e6edf5">
+                {today}
+              </text>
+            </g>
+          </g>
 
           {/* Center area label */}
           <g transform={`translate(${cmx}, ${cmy})`}>
