@@ -1,6 +1,6 @@
 "use client";
 
-import { Copy, FileDown, Mail, Save, Check } from "lucide-react";
+import { Copy, FileDown, Mail, Save, Check, Link as LinkIcon } from "lucide-react";
 import { useState } from "react";
 import type { Estimate } from "@/types/estimate";
 import { buildSummaryText, generatePdf } from "@/lib/pdf";
@@ -14,6 +14,7 @@ interface Props {
 export default function OutputButtons({ estimate, onSaved }: Props) {
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [linked, setLinked] = useState(false);
 
   const copy = async () => {
     await navigator.clipboard.writeText(buildSummaryText(estimate));
@@ -32,13 +33,21 @@ export default function OutputButtons({ estimate, onSaved }: Props) {
     setTimeout(() => setSaved(false), 1600);
     onSaved?.();
   };
+  const shareLink = async () => {
+    saveEstimate(estimate);
+    const url = `${window.location.origin}/p/${estimate.id}`;
+    await navigator.clipboard.writeText(url);
+    setLinked(true);
+    setTimeout(() => setLinked(false), 1800);
+  };
 
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         <SecondaryAction onClick={copy} icon={copied ? <Check size={14} /> : <Copy size={14} />} label={copied ? "Copied" : "Copy"} active={copied} />
         <SecondaryAction onClick={pdf} icon={<FileDown size={14} />} label="PDF" />
         <SecondaryAction onClick={email} icon={<Mail size={14} />} label="Email" />
+        <SecondaryAction onClick={shareLink} icon={linked ? <Check size={14} /> : <LinkIcon size={14} />} label={linked ? "Link copied" : "Share link"} active={linked} />
       </div>
       <button className="btn btn-primary w-full py-3 text-[14px]" onClick={save}>
         {saved ? <Check size={15} /> : <Save size={15} />}

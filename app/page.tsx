@@ -11,6 +11,11 @@ import InsightsPanel from "@/components/InsightsPanel";
 import PropertyContextPanel from "@/components/PropertyContextPanel";
 import VisionPanel from "@/components/VisionPanel";
 import LineItemsPanel from "@/components/LineItemsPanel";
+import TiersPanel from "@/components/TiersPanel";
+import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
+import { generatePdf, buildSummaryText } from "@/lib/pdf";
+import { saveEstimate } from "@/lib/storage";
+import type { ProposalTier } from "@/lib/tiers";
 import type {
   AddOn,
   AddressInfo,
@@ -168,6 +173,27 @@ export default function HomePage() {
     detailed,
   };
 
+  const applyTier = (tier: ProposalTier) => {
+    setAssumptions((a) => ({ ...a, material: tier.material }));
+    setAddOns((cur) => cur.map((x) => ({ ...x, enabled: tier.includedAddOnIds.includes(x.id) })));
+  };
+
+  useKeyboardShortcuts({
+    onSave: () => shown && saveEstimate(estimate),
+    onPdf: () => shown && generatePdf(estimate),
+    onEmail: () => {
+      if (!shown) return;
+      const subject = encodeURIComponent(`Roofing Estimate — ${estimate.address.formatted}`);
+      const body = encodeURIComponent(buildSummaryText(estimate));
+      window.location.href = `mailto:?subject=${subject}&body=${body}`;
+    },
+    onNew: () => reset(),
+    onFocusAddress: () => {
+      const el = document.querySelector<HTMLInputElement>("input[placeholder*='Main Street']");
+      el?.focus();
+    },
+  });
+
   const reset = () => {
     setAddressText("");
     setAddress(null);
@@ -264,6 +290,7 @@ export default function HomePage() {
               onInsuranceChange={setIsInsuranceClaim}
             />
             <VisionPanel vision={vision} loading={visionLoading} error={visionError} />
+            <TiersPanel assumptions={assumptions} addOns={addOns} onApplyTier={applyTier} />
             <LineItemsPanel
               detailed={detailed}
               defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
