@@ -12,6 +12,18 @@ import type {
   SimplifiedItem,
 } from "@/types/estimate";
 import { BRAND_CONFIG, getMaterialPrice, type MaterialPriceKey } from "./branding";
+import {
+  deriveRoofLengthsFromPolygons,
+  deriveRoofLengthsHeuristic,
+} from "./roof-geometry";
+
+const PITCH_TO_DEG_LOCAL: Record<Pitch, number> = {
+  "4/12": 18.43,
+  "5/12": 22.62,
+  "6/12": 26.57,
+  "7/12": 30.26,
+  "8/12+": 35.0,
+};
 
 // -----------------------------------------------------------------------------
 // Original (legacy) flat pricing — used by ResultsPanel for the headline number
@@ -181,6 +193,8 @@ export function buildDetailedEstimate(
     buildingFootprintSqft?: number | null;
     /** Optional — Solar API gives this; otherwise defaults to 4 */
     segmentCount?: number;
+    /** Optional — when present, perimeter/ridge/valley come from polygon geometry */
+    segmentPolygonsLatLng?: Array<Array<{ lat: number; lng: number }>>;
   } = {},
 ): DetailedEstimate {
   const sqft = a.sqft;
@@ -188,13 +202,25 @@ export function buildDetailedEstimate(
   const serviceType: ServiceType = a.serviceType ?? "reroof-tearoff";
   const complexity: Complexity = a.complexity ?? "moderate";
 
-  const footprint = opts.buildingFootprintSqft ?? Math.round(sqft / 1.4);
   const segmentCount = opts.segmentCount ?? 4;
-  const metrics = estimateRoofMetrics({
-    sqftFootprint: footprint,
-    segmentCount,
-  });
-  const { perimeterLf, ridgeLf, valleyLf, iwsSqft } = metrics;
+  const lengths =
+    opts.segmentPolygonsLatLng && opts.segmentPolygonsLatLng.length > 1
+      ? deriveRoofLengthsFromPolygons({
+          polygons: opts.segmentPolygonsLatLng,
+          pitchDegrees: PITCH_TO_DEG_LOCAL[a.pitch],
+          complexity,
+        })
+      : deriveRoofLengthsHeuristic({
+          totalRoofSqft: sqft,
+          buildingFootprintSqft: opts.buildingFootprintSqft ?? null,
+          segmentCount,
+          complexity,
+          pitch: a.pitch,
+        });
+  const perimeterLf = lengths.perimeterLf;
+  const ridgeLf = lengths.ridgesLf + lengths.hipsLf;
+  const valleyLf = lengths.valleysLf;
+  const iwsSqft = lengths.iwsSqft;
 
   const items: LineItem[] = [];
 

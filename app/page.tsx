@@ -12,6 +12,7 @@ import PropertyContextPanel from "@/components/PropertyContextPanel";
 import VisionPanel from "@/components/VisionPanel";
 import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
+import MeasurementsPanel from "@/components/MeasurementsPanel";
 import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
 import { generatePdf, buildSummaryText } from "@/lib/pdf";
 import { saveEstimate } from "@/lib/storage";
@@ -30,6 +31,11 @@ import {
   computeBase,
   computeTotal,
 } from "@/lib/pricing";
+import {
+  buildWasteTable,
+  deriveRoofLengthsFromPolygons,
+  deriveRoofLengthsHeuristic,
+} from "@/lib/roof-geometry";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
@@ -92,8 +98,37 @@ export default function HomePage() {
       buildDetailedEstimate(assumptions, addOns, {
         buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
         segmentCount: solar?.segmentCount,
+        segmentPolygonsLatLng: solar?.segmentPolygonsLatLng,
       }),
     [assumptions, addOns, solar]
+  );
+
+  const lengths = useMemo(() => {
+    const polys = solar?.segmentPolygonsLatLng;
+    const complexity = assumptions.complexity ?? "moderate";
+    if (polys && polys.length > 1) {
+      const pitchDegrees =
+        ({ "4/12": 18.43, "5/12": 22.62, "6/12": 26.57, "7/12": 30.26, "8/12+": 35.0 } as const)[
+          assumptions.pitch
+        ];
+      return deriveRoofLengthsFromPolygons({
+        polygons: polys,
+        pitchDegrees,
+        complexity,
+      });
+    }
+    return deriveRoofLengthsHeuristic({
+      totalRoofSqft: assumptions.sqft,
+      buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
+      segmentCount: solar?.segmentCount,
+      complexity,
+      pitch: assumptions.pitch,
+    });
+  }, [assumptions, solar]);
+
+  const waste = useMemo(
+    () => buildWasteTable(assumptions.sqft, assumptions.complexity ?? "moderate"),
+    [assumptions.sqft, assumptions.complexity],
   );
 
   const runEstimate = async () => {
@@ -171,6 +206,8 @@ export default function HomePage() {
     vision: vision ?? undefined,
     solar: solar ?? undefined,
     detailed,
+    lengths,
+    waste,
   };
 
   const applyTier = (tier: ProposalTier) => {
@@ -291,6 +328,11 @@ export default function HomePage() {
             />
             <VisionPanel vision={vision} loading={visionLoading} error={visionError} />
             <TiersPanel assumptions={assumptions} addOns={addOns} onApplyTier={applyTier} />
+            <MeasurementsPanel
+              lengths={lengths}
+              waste={waste}
+              defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
+            />
             <LineItemsPanel
               detailed={detailed}
               defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}

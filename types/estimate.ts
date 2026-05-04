@@ -134,6 +134,39 @@ export interface DetailedEstimate {
   squares: number;
 }
 
+/** EagleView-style line measurements (eaves/rakes/ridges/valleys etc.) */
+export interface RoofLengths {
+  perimeterLf: number;
+  eavesLf: number;
+  rakesLf: number;
+  ridgesLf: number;
+  hipsLf: number;
+  valleysLf: number;
+  dripEdgeLf: number;
+  flashingLf: number;
+  stepFlashingLf: number;
+  iwsSqft: number;
+  /** "polygons" = computed from real polygons; "footprint" = from building footprint; "heuristic" = pure approximation */
+  source: "polygons" | "footprint" | "heuristic";
+}
+
+export interface WasteRow {
+  pct: number;
+  areaSqft: number;
+  squares: number;
+  isMeasured?: boolean;
+  isSuggested?: boolean;
+}
+
+export interface WasteTable {
+  measuredSqft: number;
+  measuredSquares: number;
+  suggestedPct: number;
+  suggestedSqft: number;
+  suggestedSquares: number;
+  rows: WasteRow[];
+}
+
 export interface Estimate {
   id: string;
   createdAt: string;
@@ -154,4 +187,8 @@ export interface Estimate {
   solar?: SolarSummary;
   /** Optional — Xactimate-style line items (computed from assumptions on save) */
   detailed?: DetailedEstimate;
+  /** Optional — EagleView-style line-feet measurements */
+  lengths?: RoofLengths;
+  /** Optional — EagleView-style waste calculation table */
+  waste?: WasteTable;
 }
