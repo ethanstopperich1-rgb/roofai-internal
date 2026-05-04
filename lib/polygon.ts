@@ -5,6 +5,77 @@
  */
 
 /**
+ * Geodesic polygon area in m² via shoelace (lat/lng → meters via cosLat
+ * scale at the polygon centroid). Accurate at residential-parcel scale.
+ */
+export function polygonAreaM2(
+  poly: Array<{ lat: number; lng: number }>,
+): number {
+  if (!poly || poly.length < 3) return 0;
+  let cLat = 0;
+  for (const v of poly) cLat += v.lat;
+  cLat /= poly.length;
+  const cosLat = Math.cos((cLat * Math.PI) / 180);
+  let sum = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const ax = a.lng * 111_320 * cosLat;
+    const ay = a.lat * 111_320;
+    const bx = b.lng * 111_320 * cosLat;
+    const by = b.lat * 111_320;
+    sum += ax * by - bx * ay;
+  }
+  return Math.abs(sum) / 2;
+}
+
+/** Polygon footprint in square feet (top-down, not pitch-corrected). */
+export function polygonAreaSqft(
+  poly: Array<{ lat: number; lng: number }>,
+): number {
+  return polygonAreaM2(poly) * 10.7639;
+}
+
+/**
+ * Coverage validator: does this polygon cover enough of the building
+ * footprint to plausibly be "the whole roof"? Catches the failure mode
+ * where a roof segmenter (Roboflow / SAM / Solar bbox) latches onto one
+ * dark center section and misses the lighter wings — the polygon would
+ * pass Pattern A (points are at roof height) and the wrong-house guard
+ * (it contains the address pin), but only covers 20–30% of the actual
+ * roof. Compares against Solar API's `buildingFootprintSqft` (top-down
+ * ground area of all roof segments Solar measured, ~ground truth).
+ *
+ * Pitch-corrected: `polygonAreaSqft` is top-down (footprint), so we
+ * compare directly against `solarFootprintSqft` without applying
+ * 1/cos(pitch). Returns true when the polygon's footprint is at least
+ * `minRatio` of Solar's footprint.
+ */
+export function polygonCoversFootprint(
+  poly: Array<{ lat: number; lng: number }> | null | undefined,
+  solarFootprintSqft: number | null | undefined,
+  minRatio: number = 0.55,
+): boolean {
+  if (!poly || poly.length < 3) return false;
+  if (!solarFootprintSqft || solarFootprintSqft < 100) return true; // no signal → don't demote
+  const polyFootprintSqft = polygonAreaSqft(poly);
+  return polyFootprintSqft / solarFootprintSqft >= minRatio;
+}
+
+/** Sum-of-polygons coverage variant. Solar's facet polygons come back as
+ *  multiple disjoint shapes — sum them before comparing. */
+export function polygonsCoverFootprint(
+  polys: Array<Array<{ lat: number; lng: number }>> | null | undefined,
+  solarFootprintSqft: number | null | undefined,
+  minRatio: number = 0.55,
+): boolean {
+  if (!polys || polys.length === 0) return false;
+  if (!solarFootprintSqft || solarFootprintSqft < 100) return true;
+  const total = polys.reduce((s, p) => s + polygonAreaSqft(p), 0);
+  return total / solarFootprintSqft >= minRatio;
+}
+
+/**
  * Sanity check: is the polygon plausibly "the building at this address"?
  * Returns false when the polygon is clearly on a neighbour or wildly off
  * — e.g. the geocoded address point is farther than `toleranceM` from any

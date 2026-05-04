@@ -60,6 +60,8 @@ import {
   orthogonalizePolygon,
   mergeNearbyVertices,
   polygonIsNearAddress,
+  polygonCoversFootprint,
+  polygonsCoverFootprint,
 } from "@/lib/polygon";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
@@ -266,6 +268,22 @@ export default function HomePage() {
     return v.confidence < 0.7; // ok=false but Claude isn't sure → keep
   };
 
+  // Pattern D: footprint-coverage check. A roof segmenter (Roboflow / SAM)
+  // or Claude can latch onto the high-contrast center section and miss
+  // adjoining wings — the polygon passes both the wrong-house guard
+  // (contains the address) and Pattern A (points at roof height) but only
+  // covers ~20% of the building. Demote when polygon footprint is < 55%
+  // of Solar's `buildingFootprintSqft` (which Solar derives from its DSM
+  // and is ~ground truth for the main building). Skipped when Solar has
+  // no footprint signal — we don't penalize sources for Solar gaps.
+  const solarFootprintSqft = solar?.buildingFootprintSqft ?? null;
+  const passesCoverage = (
+    poly: Array<{ lat: number; lng: number }> | null | undefined,
+  ) => polygonCoversFootprint(poly, solarFootprintSqft, 0.55);
+  const passesCoverageMulti = (
+    polys: Array<Array<{ lat: number; lng: number }>> | null | undefined,
+  ) => polygonsCoverFootprint(polys, solarFootprintSqft, 0.55);
+
   // Polygon source priority — best-quality first.
   //
   // tiles3d (3D mesh height extraction) was originally at #1 but DEMOTED
@@ -312,14 +330,17 @@ export default function HomePage() {
     | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
-    if (validSolarMask && passesValidation("solar-mask") && passesClaude("solar-mask")) return "solar-mask";
-    if (validRoboflow && passesValidation("roboflow") && passesClaude("roboflow")) return "roboflow";
-    if (validTiles3d) return "tiles3d";
-    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
-    if (validSam && passesValidation("sam") && passesClaude("sam")) return "sam";
+    if (validSolarMask && passesValidation("solar-mask") && passesClaude("solar-mask") && passesCoverage(validSolarMask)) return "solar-mask";
+    if (validRoboflow && passesValidation("roboflow") && passesClaude("roboflow") && passesCoverage(validRoboflow)) return "roboflow";
+    if (validTiles3d && passesCoverage(validTiles3d)) return "tiles3d";
+    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1 && passesCoverageMulti(solar.segmentPolygonsLatLng)) return "solar";
+    if (validSam && passesValidation("sam") && passesClaude("sam") && passesCoverage(validSam)) return "sam";
+    // OSM and MS Buildings are footprint-derived, so coverage check is skipped —
+    // they are the ground truth Solar's footprint comes from. If Roboflow/SAM
+    // failed coverage, OSM is the fallback we want to land on.
     if (validOsm && passesValidation("osm") && passesClaude("osm")) return "osm";
     if (validMsBuilding && passesValidation("microsoft-buildings") && passesClaude("microsoft-buildings")) return "microsoft-buildings";
-    if (validClaude && passesValidation("ai") && passesClaude("ai")) return "ai";
+    if (validClaude && passesValidation("ai") && passesClaude("ai") && passesCoverage(validClaude)) return "ai";
     return "none";
   }, [
     livePolygons,
@@ -328,6 +349,7 @@ export default function HomePage() {
     validRoboflow,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
+    solarFootprintSqft,
     validSam,
     validOsm,
     validMsBuilding,
@@ -339,21 +361,27 @@ export default function HomePage() {
   // Source polygons — what MapView draws initially. Edited polygons don't
   // come back through this prop (would cause a redraw loop / cancel the
   // user's drag). They flow back via onPolygonsChanged → livePolygons.
+  // Mirrors the priority/coverage logic from `polygonSource` above so the
+  // map shows the polygon we'll actually use for sqft + lengths + PDF.
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
     // NB: must mirror polygonSource priority above. Tiles3d is now BELOW
     // Roboflow (Roboflow is the consistent winner; tiles3d falls back to
     // it when mesh extraction is noisy/incomplete).
-    if (validSolarMask) return [validSolarMask];
-    if (validRoboflow) return [validRoboflow];
-    if (validTiles3d) return [validTiles3d];
-    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1)
+    if (validSolarMask && passesCoverage(validSolarMask)) return [validSolarMask];
+    if (validRoboflow && passesCoverage(validRoboflow)) return [validRoboflow];
+    if (validTiles3d && passesCoverage(validTiles3d)) return [validTiles3d];
+    if (
+      solar?.segmentPolygonsLatLng?.length &&
+      solar.segmentCount > 1 &&
+      passesCoverageMulti(solar.segmentPolygonsLatLng)
+    )
       return solar.segmentPolygonsLatLng;
-    if (validSam) return [validSam];
+    if (validSam && passesCoverage(validSam)) return [validSam];
     if (validOsm) return [validOsm];
     if (validMsBuilding) return [validMsBuilding];
-    if (validClaude) return [validClaude];
+    if (validClaude && passesCoverage(validClaude)) return [validClaude];
     return undefined;
   }, [
     validTiles3d,
@@ -361,6 +389,7 @@ export default function HomePage() {
     validRoboflow,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
+    solarFootprintSqft,
     validSam,
     validOsm,
     validMsBuilding,
