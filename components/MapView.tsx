@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { loadGoogle } from "@/lib/google";
+import { Satellite, Eye } from "lucide-react";
 
 interface Props {
   lat?: number;
@@ -24,13 +25,8 @@ export default function MapView({ lat, lng, address }: Props) {
       if (!mapEl.current || !svEl.current) return;
       if (!mapRef.current) {
         mapRef.current = new g.maps.Map(mapEl.current, {
-          center: pos,
-          zoom: 20,
-          mapTypeId: "satellite",
-          tilt: 0,
-          disableDefaultUI: true,
-          zoomControl: true,
-          gestureHandling: "greedy",
+          center: pos, zoom: 20, mapTypeId: "satellite", tilt: 0,
+          disableDefaultUI: true, zoomControl: true, gestureHandling: "greedy",
         });
       } else {
         mapRef.current.setCenter(pos);
@@ -38,14 +34,10 @@ export default function MapView({ lat, lng, address }: Props) {
       }
       if (markerRef.current) markerRef.current.setMap(null);
       markerRef.current = new g.maps.Marker({ position: pos, map: mapRef.current });
-
       if (!svRef.current) {
         svRef.current = new g.maps.StreetViewPanorama(svEl.current, {
-          position: pos,
-          pov: { heading: 0, pitch: 0 },
-          visible: true,
-          disableDefaultUI: true,
-          addressControl: false,
+          position: pos, pov: { heading: 0, pitch: 0 }, visible: true,
+          disableDefaultUI: true, addressControl: false,
         });
       } else {
         svRef.current.setPosition(pos);
@@ -56,7 +48,7 @@ export default function MapView({ lat, lng, address }: Props) {
 
   if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) {
     return (
-      <div className="glass rounded-2xl h-full min-h-[280px] flex items-center justify-center text-slate-400 text-sm p-6 text-center">
+      <div className="glass rounded-3xl h-full min-h-[280px] flex items-center justify-center text-slate-400 text-[13px] p-6 text-center">
         Set <code className="kbd mx-1">NEXT_PUBLIC_GOOGLE_MAPS_KEY</code> to enable map.
       </div>
     );
@@ -65,22 +57,62 @@ export default function MapView({ lat, lng, address }: Props) {
   const ready = lat != null && lng != null;
   return (
     <div className="grid grid-rows-2 gap-3 h-full">
-      <div className="relative rounded-2xl overflow-hidden border border-white/10 min-h-[180px] bg-black/30">
-        <div ref={mapEl} className="absolute inset-0" aria-label={address} />
-        {!ready && (
-          <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-xs">
-            Pick an address from autocomplete to load satellite view
+      <Tile
+        ready={ready}
+        elRef={mapEl}
+        address={address}
+        icon={<Satellite size={14} />}
+        emptyTitle="Satellite View"
+        emptyBody="Pick an address to load high-resolution satellite imagery"
+      />
+      <Tile
+        ready={ready}
+        elRef={svEl}
+        address={address}
+        icon={<Eye size={14} />}
+        emptyTitle="Street View"
+        emptyBody="On-the-ground panorama of the property"
+      />
+    </div>
+  );
+}
+
+function Tile({
+  ready,
+  elRef,
+  address,
+  icon,
+  emptyTitle,
+  emptyBody,
+}: {
+  ready: boolean;
+  elRef: React.RefObject<HTMLDivElement | null>;
+  address?: string;
+  icon: React.ReactNode;
+  emptyTitle: string;
+  emptyBody: string;
+}) {
+  return (
+    <div className="relative rounded-2xl overflow-hidden border border-white/[0.07] bg-black/30">
+      <div ref={elRef} className="absolute inset-0" aria-label={address} />
+      {!ready && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6">
+          <div className="w-8 h-8 rounded-xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center text-slate-500 mb-3">
+            {icon}
           </div>
-        )}
-      </div>
-      <div className="relative rounded-2xl overflow-hidden border border-white/10 min-h-[180px] bg-black/30">
-        <div ref={svEl} className="absolute inset-0" aria-label={address} />
-        {!ready && (
-          <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-xs">
-            Street view will load with the address
+          <div className="font-display text-[13px] font-semibold tracking-tight text-slate-300">
+            {emptyTitle}
           </div>
-        )}
-      </div>
+          <div className="text-[11.5px] text-slate-500 mt-1 max-w-[220px] leading-relaxed">
+            {emptyBody}
+          </div>
+        </div>
+      )}
+      {ready && (
+        <div className="absolute top-2.5 left-2.5 z-10 chip chip-accent backdrop-blur-md bg-[#07090d]/60">
+          {icon}
+        </div>
+      )}
     </div>
   );
 }

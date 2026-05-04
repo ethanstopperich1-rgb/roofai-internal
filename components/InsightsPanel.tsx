@@ -38,21 +38,43 @@ export default function InsightsPanel({ estimate }: { estimate: Estimate }) {
   };
 
   return (
-    <div className="glass rounded-2xl p-5">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2 font-bold">
-          <Sparkles size={16} className="text-sky-400" /> AI Sales Insights
+    <div className="glass rounded-3xl p-5 relative overflow-hidden">
+      <div
+        className="absolute -top-12 -left-8 w-56 h-56 blur-3xl pointer-events-none opacity-50"
+        style={{ background: "radial-gradient(closest-side, rgba(95,227,176,0.10), transparent)" }}
+      />
+      <div className="relative flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-mint/10 border border-mint/20 flex items-center justify-center text-mint">
+            <Sparkles size={13} />
+          </div>
+          <div>
+            <div className="font-display font-semibold tracking-tight text-[14px]">AI Sales Insights</div>
+            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500 -mt-0.5">
+              Gemini · 2.0 Flash
+            </div>
+          </div>
         </div>
-        <button className="btn btn-ghost py-1.5 px-3 text-sm" onClick={run} disabled={loading}>
-          {loading ? <Loader2 size={14} className="animate-spin" /> : "Generate"}
+        <button onClick={run} disabled={loading} className="btn btn-ghost py-1.5 px-3 text-[12px]">
+          {loading ? <Loader2 size={12} className="animate-spin" /> : "Generate"}
         </button>
       </div>
-      {error && <div className="text-xs text-rose-400">{error}</div>}
+      {error && (
+        <div className="text-[12px] text-rose px-3 py-2 rounded-lg bg-rose/[0.08] border border-rose/20">
+          {error}
+        </div>
+      )}
       {text && (
-        <pre className="text-sm whitespace-pre-wrap font-sans text-slate-300 leading-relaxed">{text}</pre>
+        <div className="rounded-2xl p-4 bg-black/20 border border-white/[0.05]">
+          <pre className="text-[13px] whitespace-pre-wrap font-sans text-slate-200 leading-relaxed">
+            {text}
+          </pre>
+        </div>
       )}
       {!text && !error && !loading && (
-        <div className="text-xs text-slate-500">Click Generate for tactical sales notes from Gemini.</div>
+        <div className="text-[12px] text-slate-500 leading-relaxed">
+          Tactical sales notes — likely concerns, upsell opportunities, common objections.
+        </div>
       )}
     </div>
   );

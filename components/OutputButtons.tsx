@@ -34,21 +34,42 @@ export default function OutputButtons({ estimate, onSaved }: Props) {
   };
 
   return (
-    <div className="flex flex-wrap gap-2">
-      <button className="btn btn-ghost" onClick={copy}>
-        {copied ? <Check size={16} /> : <Copy size={16} />}
-        {copied ? "Copied" : "Copy Summary"}
-      </button>
-      <button className="btn btn-ghost" onClick={pdf}>
-        <FileDown size={16} /> PDF Proposal
-      </button>
-      <button className="btn btn-ghost" onClick={email}>
-        <Mail size={16} /> Email Customer
-      </button>
-      <button className="btn btn-primary" onClick={save}>
-        {saved ? <Check size={16} /> : <Save size={16} />}
-        {saved ? "Saved" : "Save to History"}
+    <div className="space-y-2">
+      <div className="grid grid-cols-3 gap-2">
+        <SecondaryAction onClick={copy} icon={copied ? <Check size={14} /> : <Copy size={14} />} label={copied ? "Copied" : "Copy"} active={copied} />
+        <SecondaryAction onClick={pdf} icon={<FileDown size={14} />} label="PDF" />
+        <SecondaryAction onClick={email} icon={<Mail size={14} />} label="Email" />
+      </div>
+      <button className="btn btn-primary w-full py-3 text-[14px]" onClick={save}>
+        {saved ? <Check size={15} /> : <Save size={15} />}
+        {saved ? "Saved to history" : "Save to History"}
       </button>
     </div>
+  );
+}
+
+function SecondaryAction({
+  onClick,
+  icon,
+  label,
+  active,
+}: {
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  active?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex flex-col items-center justify-center gap-1.5 py-3 rounded-xl border text-[12px] font-medium transition ${
+        active
+          ? "border-mint/40 bg-mint/[0.08] text-mint"
+          : "border-white/[0.06] bg-white/[0.015] text-slate-200 hover:border-white/[0.13] hover:bg-white/[0.04]"
+      }`}
+    >
+      <span className={active ? "text-mint" : "text-slate-400"}>{icon}</span>
+      {label}
+    </button>
   );
 }

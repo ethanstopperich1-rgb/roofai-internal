@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Cloud, Wind, Film, Loader2, Play } from "lucide-react";
+import { Cloud, Wind, Droplets, Film, Loader2, Play } from "lucide-react";
 import type { AddressInfo } from "@/types/estimate";
 
 interface Weather {
@@ -37,17 +37,14 @@ export default function PropertyContextPanel({ address }: { address: AddressInfo
     if (!address?.formatted) return;
     setAerialLoading(true);
     try {
-      // Try lookup first
       let res = await fetch(`/api/aerial?address=${encodeURIComponent(address.formatted)}`);
       let data: Aerial = await res.json();
-      // If not yet rendered, kick off a render
       if (!data.videoMp4 && data.state !== "ACTIVE") {
         await fetch("/api/aerial", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ address: address.formatted }),
         });
-        // Re-poll once after a short wait
         await new Promise((r) => setTimeout(r, 2500));
         res = await fetch(`/api/aerial?address=${encodeURIComponent(address.formatted)}`);
         data = await res.json();
@@ -62,53 +59,62 @@ export default function PropertyContextPanel({ address }: { address: AddressInfo
   if (!address?.lat) return null;
 
   return (
-    <div className="glass rounded-2xl p-5 space-y-4">
+    <div className="glass rounded-3xl p-5 space-y-4">
       <div className="flex items-center justify-between">
-        <div className="font-bold">Property Context</div>
+        <div className="font-display font-semibold tracking-tight text-[15px]">Property Context</div>
         <button
-          className="btn btn-ghost py-1.5 px-3 text-sm"
           onClick={requestAerial}
           disabled={aerialLoading}
+          className="btn btn-ghost py-1.5 px-3 text-[12px]"
         >
-          {aerialLoading ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
-          {aerial?.videoMp4 ? "Replay Flyover" : "3D Flyover"}
+          {aerialLoading ? <Loader2 size={12} className="animate-spin" /> : <Film size={12} />}
+          {aerial?.videoMp4 ? "Replay" : "3D Flyover"}
         </button>
       </div>
 
       {weather && (
-        <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="grid grid-cols-3 gap-1.5">
           <Stat
-            icon={<Cloud size={14} className="text-sky-400" />}
+            icon={<Cloud size={12} />}
+            value={weather.tempF != null ? `${weather.tempF}°` : "—"}
             label={weather.description ?? "—"}
-            value={weather.tempF != null ? `${weather.tempF}°F` : "—"}
           />
           <Stat
-            icon={<Wind size={14} className="text-sky-400" />}
-            label="Wind"
-            value={weather.windMph != null ? `${weather.windMph} mph ${weather.windDir ?? ""}` : "—"}
+            icon={<Wind size={12} />}
+            value={weather.windMph != null ? `${weather.windMph}` : "—"}
+            unit="mph"
+            label={weather.windDir ?? "wind"}
           />
-          <Stat label="Humidity" value={weather.humidity != null ? `${weather.humidity}%` : "—"} />
+          <Stat
+            icon={<Droplets size={12} />}
+            value={weather.humidity != null ? `${weather.humidity}` : "—"}
+            unit="%"
+            label="humidity"
+          />
         </div>
       )}
 
       {aerial?.state === "PROCESSING" && (
-        <div className="text-xs text-amber-300">
-          Aerial flyover is rendering for this address. Try again in ~30 seconds.
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber/[0.08] border border-amber/20 text-[12px] text-amber">
+          <Loader2 size={12} className="animate-spin" />
+          Rendering aerial flyover · ~30s
         </div>
       )}
       {aerial?.state === "FAILED" && (
-        <div className="text-xs text-rose-300">Aerial flyover unavailable for this property.</div>
+        <div className="px-3 py-2 rounded-lg bg-rose/[0.08] border border-rose/20 text-[12px] text-rose">
+          Aerial flyover unavailable for this property.
+        </div>
       )}
       {aerial?.image && !showVideo && (
         <button
           onClick={() => setShowVideo(!!aerial.videoMp4)}
-          className="relative block w-full overflow-hidden rounded-xl border border-white/10"
+          className="relative block w-full overflow-hidden rounded-2xl border border-white/[0.08] group"
         >
-          <img src={aerial.image} alt="Aerial view" className="w-full h-44 object-cover" />
+          <img src={aerial.image} alt="Aerial view" className="w-full h-44 object-cover transition group-hover:scale-[1.02]" />
           {aerial.videoMp4 && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-              <div className="bg-white/90 text-slate-900 rounded-full p-3">
-                <Play size={20} fill="currentColor" />
+            <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/40 transition">
+              <div className="bg-white/95 text-slate-900 rounded-full p-3.5 shadow-2xl">
+                <Play size={18} fill="currentColor" />
               </div>
             </div>
           )}
@@ -122,7 +128,7 @@ export default function PropertyContextPanel({ address }: { address: AddressInfo
           muted
           playsInline
           controls
-          className="w-full rounded-xl border border-white/10"
+          className="w-full rounded-2xl border border-white/[0.08]"
         />
       )}
     </div>
@@ -131,19 +137,25 @@ export default function PropertyContextPanel({ address }: { address: AddressInfo
 
 function Stat({
   icon,
-  label,
   value,
+  unit,
+  label,
 }: {
-  icon?: React.ReactNode;
-  label: string;
+  icon: React.ReactNode;
   value: string;
+  unit?: string;
+  label: string;
 }) {
   return (
-    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-2.5">
-      <div className="text-[10px] uppercase tracking-wider text-slate-400 flex items-center justify-center gap-1">
-        {icon} {label}
+    <div className="rounded-xl border border-white/[0.05] bg-white/[0.015] px-2.5 py-2 text-center">
+      <div className="text-slate-500 flex justify-center mb-0.5">{icon}</div>
+      <div className="font-display tabular text-[16px] font-semibold tracking-tight">
+        {value}
+        {unit && <span className="text-[10px] text-slate-500 font-mono ml-0.5">{unit}</span>}
       </div>
-      <div className="font-semibold mt-0.5 truncate text-sm">{value}</div>
+      <div className="text-[9.5px] font-mono uppercase tracking-[0.12em] text-slate-500 truncate mt-0.5">
+        {label}
+      </div>
     </div>
   );
 }

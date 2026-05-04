@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { loadGoogle } from "@/lib/google";
-import { Search } from "lucide-react";
+import { Search, Loader2, ArrowUp, ArrowDown, CornerDownLeft, MapPin } from "lucide-react";
 import type { AddressInfo } from "@/types/estimate";
 
 interface Props {
@@ -12,111 +11,189 @@ interface Props {
   onChange: (s: string) => void;
 }
 
-interface PlacePredictionLite {
-  toPlace(): {
-    fetchFields(req: { fields: string[] }): Promise<unknown>;
-    formattedAddress?: string;
-    addressComponents?: Array<{ types: string[]; shortText?: string }>;
-    location?: { lat(): number; lng(): number };
-  };
+interface Suggestion {
+  placeId: string;
+  text: string;
 }
 
 export default function AddressInput({ onSelect, onSubmit, value, onChange }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const elRef = useRef<HTMLElement | null>(null);
-  const [hasGoogle, setHasGoogle] = useState(false);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [hi, setHi] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const skipNextFetch = useRef(false);
 
   useEffect(() => {
-    if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) return;
-    let cancelled = false;
-    loadGoogle()
-      .then(async (g) => {
-        if (cancelled || !containerRef.current) return;
-        const places = (await g.maps.importLibrary("places")) as unknown as {
-          PlaceAutocompleteElement: new (opts: {
-            includedRegionCodes?: string[];
-          }) => HTMLElement;
-        };
-        const el = new places.PlaceAutocompleteElement({
-          includedRegionCodes: ["us"],
-        });
-        el.id = "roofai-place-autocomplete";
-        // Strip Google's default styling so our Tailwind takes over
-        el.setAttribute("style", "width:100%;");
-        containerRef.current.innerHTML = "";
-        containerRef.current.appendChild(el);
-        elRef.current = el;
-
-        el.addEventListener("gmp-select", async (ev: Event) => {
-          const detail = (ev as CustomEvent<{ placePrediction: PlacePredictionLite }>).detail;
-          const place = detail.placePrediction.toPlace();
-          await place.fetchFields({
-            fields: ["formattedAddress", "addressComponents", "location"],
-          });
-          const formatted = place.formattedAddress ?? "";
-          const zip = place.addressComponents?.find((c) =>
-            c.types.includes("postal_code")
-          )?.shortText;
-          const lat = place.location?.lat();
-          const lng = place.location?.lng();
-          onChange(formatted);
-          onSelect({ formatted, zip, lat, lng });
-        });
-
-        // Track typed input so manual Enter still works
-        el.addEventListener("input", (ev: Event) => {
-          const t = ev.target as HTMLInputElement;
-          if (t && typeof t.value === "string") onChange(t.value);
-        });
-        el.addEventListener("keydown", (ev: Event) => {
-          const ke = ev as KeyboardEvent;
-          if (ke.key === "Enter") {
-            ke.preventDefault();
-            onSubmit();
-          }
-        });
-
-        setHasGoogle(true);
-      })
-      .catch(() => setHasGoogle(false));
+    if (skipNextFetch.current) {
+      skipNextFetch.current = false;
+      return;
+    }
+    if (!value || value.trim().length < 3) {
+      setSuggestions([]);
+      return;
+    }
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `/api/places/autocomplete?q=${encodeURIComponent(value)}`,
+          { signal: ctrl.signal }
+        );
+        const data = await res.json();
+        setSuggestions(data.suggestions ?? []);
+        setHi(0);
+        setOpen(true);
+      } catch {
+        /* aborted */
+      } finally {
+        setLoading(false);
+      }
+    }, 180);
     return () => {
-      cancelled = true;
+      ctrl.abort();
+      clearTimeout(t);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  const pick = async (s: Suggestion) => {
+    skipNextFetch.current = true;
+    onChange(s.text);
+    setOpen(false);
+    setSuggestions([]);
+    try {
+      const res = await fetch(`/api/places/details?placeId=${s.placeId}`);
+      const data = await res.json();
+      onSelect({
+        formatted: data.formatted ?? s.text,
+        zip: data.zip,
+        lat: data.lat,
+        lng: data.lng,
+      });
+    } catch {
+      onSelect({ formatted: s.text });
+    }
+  };
+
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (open && suggestions.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHi((h) => (h + 1) % suggestions.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHi((h) => (h - 1 + suggestions.length) % suggestions.length);
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        pick(suggestions[hi]);
+        return;
+      }
+      if (e.key === "Escape") {
+        setOpen(false);
+        return;
+      }
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onSubmit();
+    }
+  };
+
   return (
-    <div className="relative">
-      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 z-10 pointer-events-none">
-        <Search size={20} />
-      </div>
-      {hasGoogle ? (
-        <div
-          ref={containerRef}
-          className="pl-12 pr-32 py-2 rounded-xl bg-black/30 border border-white/10 focus-within:border-sky-400 focus-within:ring-2 focus-within:ring-sky-400/15 [&_input]:!bg-transparent [&_input]:!border-0 [&_input]:!outline-none [&_input]:!text-white [&_input]:!text-lg [&_input]:!py-3 [&_input]:!w-full"
-        />
-      ) : (
+    <div ref={wrapRef} className="relative">
+      <div
+        className={`relative rounded-2xl border transition-all ${
+          open && suggestions.length > 0
+            ? "border-cy-300/40 bg-black/30 shadow-[0_0_0_4px_rgba(56,197,238,0.10)]"
+            : "border-white/[0.075] bg-black/30 hover:border-white/[0.13] focus-within:border-cy-300/55 focus-within:shadow-[0_0_0_4px_rgba(56,197,238,0.10)]"
+        }`}
+      >
+        <div className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-500 z-10 pointer-events-none">
+          <Search size={18} strokeWidth={2} />
+        </div>
         <input
-          className="input pl-12 pr-32 py-5 text-lg"
-          placeholder="Enter property address..."
+          ref={inputRef}
+          className="w-full bg-transparent border-0 outline-none pl-14 pr-44 py-5 text-[18px] font-medium tracking-tight text-slate-50 placeholder:text-slate-600"
+          placeholder="123 Main Street, Austin, TX…"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              onSubmit();
-            }
-          }}
+          onFocus={() => suggestions.length > 0 && setOpen(true)}
+          onKeyDown={onKey}
+          autoComplete="off"
+          spellCheck={false}
         />
+        {loading && (
+          <div className="absolute right-44 top-1/2 -translate-y-1/2 text-slate-400">
+            <Loader2 size={16} className="animate-spin" />
+          </div>
+        )}
+        <button
+          onClick={onSubmit}
+          className="btn btn-primary absolute right-2 top-1/2 -translate-y-1/2 px-4 py-2.5 z-10"
+        >
+          Estimate
+          <span className="kbd !bg-black/20 !text-[#0c1118]/80 !border-black/10">↵</span>
+        </button>
+      </div>
+
+      {open && suggestions.length > 0 && (
+        <div className="absolute left-0 right-0 top-full mt-2 z-50 glass-strong rounded-2xl overflow-hidden shadow-2xl float-in">
+          <div className="px-4 py-2 flex items-center justify-between border-b border-white/[0.06]">
+            <span className="label">Suggestions</span>
+            <div className="flex items-center gap-1.5 text-slate-500">
+              <span className="kbd"><ArrowUp size={9} /></span>
+              <span className="kbd"><ArrowDown size={9} /></span>
+              <span className="text-[10px] font-mono">to navigate</span>
+              <span className="kbd ml-1"><CornerDownLeft size={9} /></span>
+              <span className="text-[10px] font-mono">to pick</span>
+            </div>
+          </div>
+          <div>
+            {suggestions.map((s, i) => (
+              <button
+                key={s.placeId}
+                onClick={() => pick(s)}
+                onMouseEnter={() => setHi(i)}
+                className={`relative w-full text-left px-4 py-2.5 flex items-center gap-3 border-b border-white/[0.04] last:border-b-0 transition group ${
+                  i === hi ? "bg-cy-300/[0.08]" : "hover:bg-white/[0.025]"
+                }`}
+              >
+                {i === hi && (
+                  <span className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r-full bg-cy-300" />
+                )}
+                <MapPin
+                  size={14}
+                  className={`flex-shrink-0 ${i === hi ? "text-cy-300" : "text-slate-500"}`}
+                />
+                <span
+                  className={`truncate text-[13.5px] ${
+                    i === hi ? "text-cy-100" : "text-slate-200"
+                  }`}
+                >
+                  {s.text}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
       )}
-      <button
-        onClick={onSubmit}
-        className="btn btn-primary absolute right-2 top-1/2 -translate-y-1/2 z-10"
-      >
-        Estimate <span className="kbd">↵</span>
-      </button>
+
       {!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY && (
-        <div className="text-xs text-slate-500 mt-2 px-1">
+        <div className="text-[11px] text-slate-500 mt-2 px-1">
           Set <code className="kbd">NEXT_PUBLIC_GOOGLE_MAPS_KEY</code> in .env.local for autocomplete.
         </div>
       )}
