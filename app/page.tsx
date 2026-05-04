@@ -85,6 +85,13 @@ export default function HomePage() {
   const [osmBuildingPolygon, setOsmBuildingPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // Compound-pipeline result — OSM building × Grounded SAM "roof" mask.
+  // Tighter than OSM (it removes porches/decks/garages from the polygon)
+  // and tighter than Claude (pixel-precise mask, not LLM-traced vertices).
+  const [samRefinedPolygon, setSamRefinedPolygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
+  const [samRefining, setSamRefining] = useState(false);
   // Live polygons after the rep edits a vertex. When set, overrides the
   // auto-detected source polygons everywhere (lengths, sqft, blueprint, PDF).
   // Reset to null on every new estimate so we always start from auto-detect.
@@ -142,15 +149,25 @@ export default function HomePage() {
 
   // Polygon source priority — best-quality first:
   //   1. Solar API per-facet polygons (metros only, ~30% of US)
-  //   2. OpenStreetMap building footprint (human-traced, ~50-60% US)
-  //   3. Claude vision polygon (fallback for everywhere else)
-  const polygonSource = useMemo<"edited" | "solar" | "osm" | "ai" | "none">(() => {
+  //   2. SAM compound pipeline (Grounded SAM "roof" × OSM clip — pixel-precise)
+  //   3. OpenStreetMap building footprint (human-traced, ~50-60% US)
+  //   4. Claude vision polygon (fallback for everywhere else)
+  const polygonSource = useMemo<
+    "edited" | "solar" | "sam" | "osm" | "ai" | "none"
+  >(() => {
     if (livePolygons && livePolygons.length) return "edited";
     if (solar?.segmentPolygonsLatLng?.length) return "solar";
+    if (samRefinedPolygon) return "sam";
     if (osmBuildingPolygon) return "osm";
     if (claudePolygonLatLng) return "ai";
     return "none";
-  }, [livePolygons, solar?.segmentPolygonsLatLng, osmBuildingPolygon, claudePolygonLatLng]);
+  }, [
+    livePolygons,
+    solar?.segmentPolygonsLatLng,
+    samRefinedPolygon,
+    osmBuildingPolygon,
+    claudePolygonLatLng,
+  ]);
 
   // Source polygons — what MapView draws initially. Edited polygons don't
   // come back through this prop (would cause a redraw loop / cancel the
@@ -159,10 +176,16 @@ export default function HomePage() {
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
     if (solar?.segmentPolygonsLatLng?.length) return solar.segmentPolygonsLatLng;
+    if (samRefinedPolygon) return [samRefinedPolygon];
     if (osmBuildingPolygon) return [osmBuildingPolygon];
     if (claudePolygonLatLng) return [claudePolygonLatLng];
     return undefined;
-  }, [solar?.segmentPolygonsLatLng, osmBuildingPolygon, claudePolygonLatLng]);
+  }, [
+    solar?.segmentPolygonsLatLng,
+    samRefinedPolygon,
+    osmBuildingPolygon,
+    claudePolygonLatLng,
+  ]);
 
   // Active polygons — what we use for sqft, lengths, blueprint, PDF.
   // Live edits override source.
@@ -219,6 +242,7 @@ export default function HomePage() {
     setVision(null);
     setVisionError("");
     setOsmBuildingPolygon(null);
+    setSamRefinedPolygon(null);
     setLivePolygons(null);
 
     if (addr.lat == null || addr.lng == null) {
@@ -262,6 +286,24 @@ export default function HomePage() {
       })
       .catch(() => null);
 
+    // Compound-pipeline SAM refinement — fires in parallel with everything
+    // else. ~5-10s latency on Replicate so the cheaper sources show first
+    // and SAM "snaps" the polygon tighter when it returns.
+    setSamRefining(true);
+    const samPromise = fetch("/api/sam-refine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat: addr.lat, lng: addr.lng }),
+    })
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const data = (await r.json()) as {
+          polygon?: Array<{ lat: number; lng: number }>;
+        };
+        return data.polygon && data.polygon.length >= 3 ? data.polygon : null;
+      })
+      .catch(() => null);
+
     const [solarData, visionData, osmData] = await Promise.all([
       solarPromise,
       visionPromise,
@@ -272,6 +314,14 @@ export default function HomePage() {
     if (visionData) setVision(visionData);
     if (osmData) setOsmBuildingPolygon(osmData);
     setVisionLoading(false);
+
+    // Don't await SAM in the main critical path — it's a "snap to tighter"
+    // upgrade. Wire its result whenever it lands.
+    samPromise
+      .then((samPoly) => {
+        if (samPoly) setSamRefinedPolygon(samPoly);
+      })
+      .finally(() => setSamRefining(false));
 
     setAssumptions((a) => {
       const next: Assumptions = { ...a };
@@ -351,8 +401,10 @@ export default function HomePage() {
     if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
     if (polygonSource === "edited") badges.push("Edited");
+    else if (polygonSource === "sam") badges.push("SAM refined");
     else if (polygonSource === "osm") badges.push("OSM traced");
     else if (polygonSource === "ai") badges.push("AI traced");
+    else if (samRefining) badges.push("Refining…");
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
     if (solar?.pitch) badges.push(`Pitch ${solar.pitch}`);
     return badges;
@@ -458,13 +510,15 @@ export default function HomePage() {
               sourceLabel={
                 polygonSource === "solar"
                   ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
-                  : polygonSource === "osm"
-                    ? "OSM traced"
-                    : polygonSource === "ai"
-                      ? "AI traced"
-                      : polygonSource === "edited"
-                        ? "Edited by hand"
-                        : undefined
+                  : polygonSource === "sam"
+                    ? "SAM refined"
+                    : polygonSource === "osm"
+                      ? "OSM traced"
+                      : polygonSource === "ai"
+                        ? "AI traced"
+                        : polygonSource === "edited"
+                          ? "Edited by hand"
+                          : undefined
               }
             />
           )}
