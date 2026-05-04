@@ -124,11 +124,11 @@ export default function HomePage() {
   >(null);
   // Polygon extracted client-side from the loaded 3D Tiles photogrammetric
   // mesh (Roof3DViewer samples elevations on a grid, thresholds above
-  // ground). High-priority source — uses real geometric height data so
-  // there's no AI/satellite-image guessing involved.
-  const [tiles3dPolygon, setTiles3dPolygon] = useState<
-    Array<{ lat: number; lng: number }> | null
-  >(null);
+  // tiles3d (mesh height extraction) was removed — produced inconsistent
+  // results across rural properties (locked onto tree blobs, sheds, or
+  // partial roofs depending on mesh quality). The 3D viewer now serves
+  // purely as a visual renderer + multi-view capture surface for Claude
+  // verification (separate route).
   // Roboflow Hosted Inference — roof-specific instance segmentation on the
   // same satellite tile the rest of the pipeline uses. Bake-off in
   // scripts/eval-roboflow.ts picked Satellite Rooftop Map (v3) — nailed a
@@ -145,19 +145,10 @@ export default function HomePage() {
   const [msBuildingPolygon, setMsBuildingPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
-  // Pattern-A 3D-mesh validation: when a non-tiles3d polygon is rendered,
-  // Roof3DViewer samples mesh heights inside it and reports the % that
-  // land at "roof height". Score < 0.4 = polygon is mostly on lawn/deck/
-  // wrong building → demote that source so a lower-priority but valid
-  // source can win. Map keyed by polygon source.
-  const [validationScores, setValidationScores] = useState<
-    Partial<Record<string, number>>
-  >({});
-  // Pattern-C Claude verification: independent yes/no check on the rendered
-  // polygon. Catches semantic errors the mesh can't see (wrong building at
-  // correct roof height, polygon over a covered patio, etc). When Claude
-  // flags an issue with high confidence (ok=false, conf>0.7), we treat the
-  // source as failed and fall through. Otherwise just show as a warning.
+  // Claude verification of the rendered polygon. Catches polygons traced
+  // on the wrong building, neighbour's roof, covered patio over-traces.
+  // When Claude flags an issue with high confidence (ok=false, conf>0.7),
+  // we treat the source as failed and fall through. Otherwise informational.
   const [claudeVerifications, setClaudeVerifications] = useState<
     Partial<Record<string, { ok: boolean; confidence: number; reason: string }>>
   >({});
@@ -238,7 +229,6 @@ export default function HomePage() {
     return polygonIsNearAddress(poly, address.lat, address.lng, 15) ? poly : null;
   };
 
-  const validTiles3d = useMemo(() => validateAtAddress(tiles3dPolygon), [tiles3dPolygon, address?.lat, address?.lng]);
   const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng]);
   const validRoboflow = useMemo(() => validateAtAddress(roboflowPolygon), [roboflowPolygon, address?.lat, address?.lng]);
   const validSam = useMemo(() => validateAtAddress(samRefinedPolygon), [samRefinedPolygon, address?.lat, address?.lng]);
@@ -252,15 +242,9 @@ export default function HomePage() {
   // roof height. Tighter bars over-reject good polygons; looser bars let
   // through polygons traced on driveways. Tune up if false positives
   // continue to ship; tune down if good polygons get demoted.
-  const MIN_VALIDATION_SCORE = 0.4;
-  const passesValidation = (source: string) => {
-    const score = validationScores[source];
-    return score === undefined ? true : score >= MIN_VALIDATION_SCORE;
-  };
-
-  // Pattern C: Claude flagged the polygon as wrong with high confidence?
-  // Demote. Low-confidence flags are just informational (rep may notice a
-  // small edge issue but the polygon is mostly right).
+  // Claude flagged the polygon as wrong with high confidence?  Demote it.
+  // Low-confidence flags are informational (rep may notice a small edge
+  // issue but the polygon is mostly right).
   const passesClaude = (source: string) => {
     const v = claudeVerifications[source];
     if (!v) return true;
@@ -330,21 +314,23 @@ export default function HomePage() {
     | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
-    if (validSolarMask && passesValidation("solar-mask") && passesClaude("solar-mask") && passesCoverage(validSolarMask)) return "solar-mask";
-    if (validRoboflow && passesValidation("roboflow") && passesClaude("roboflow") && passesCoverage(validRoboflow)) return "roboflow";
-    if (validTiles3d && passesCoverage(validTiles3d)) return "tiles3d";
+    // tiles3d removed — Roboflow + Claude verification is the path now.
+    // Coverage gates (passesCoverage / passesCoverageMulti) preserved from
+    // f5523d3: a polygon must cover ≥X% of the Solar-known footprint or
+    // it gets demoted (catches "polygon is on a shed/garage, not the main
+    // house"). OSM + MS Buildings are footprint-derived themselves so the
+    // coverage gate is skipped on them — they're the ground truth Solar's
+    // footprint comes from.
+    if (validSolarMask && passesClaude("solar-mask") && passesCoverage(validSolarMask)) return "solar-mask";
+    if (validRoboflow && passesClaude("roboflow") && passesCoverage(validRoboflow)) return "roboflow";
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1 && passesCoverageMulti(solar.segmentPolygonsLatLng)) return "solar";
-    if (validSam && passesValidation("sam") && passesClaude("sam") && passesCoverage(validSam)) return "sam";
-    // OSM and MS Buildings are footprint-derived, so coverage check is skipped —
-    // they are the ground truth Solar's footprint comes from. If Roboflow/SAM
-    // failed coverage, OSM is the fallback we want to land on.
-    if (validOsm && passesValidation("osm") && passesClaude("osm")) return "osm";
-    if (validMsBuilding && passesValidation("microsoft-buildings") && passesClaude("microsoft-buildings")) return "microsoft-buildings";
-    if (validClaude && passesValidation("ai") && passesClaude("ai") && passesCoverage(validClaude)) return "ai";
+    if (validSam && passesClaude("sam") && passesCoverage(validSam)) return "sam";
+    if (validOsm && passesClaude("osm")) return "osm";
+    if (validMsBuilding && passesClaude("microsoft-buildings")) return "microsoft-buildings";
+    if (validClaude && passesClaude("ai") && passesCoverage(validClaude)) return "ai";
     return "none";
   }, [
     livePolygons,
-    validTiles3d,
     validSolarMask,
     validRoboflow,
     solar?.segmentPolygonsLatLng,
@@ -354,7 +340,6 @@ export default function HomePage() {
     validOsm,
     validMsBuilding,
     validClaude,
-    validationScores,
     claudeVerifications,
   ]);
 
@@ -366,12 +351,9 @@ export default function HomePage() {
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    // NB: must mirror polygonSource priority above. Tiles3d is now BELOW
-    // Roboflow (Roboflow is the consistent winner; tiles3d falls back to
-    // it when mesh extraction is noisy/incomplete).
+    // NB: must mirror polygonSource priority above. tiles3d removed.
     if (validSolarMask && passesCoverage(validSolarMask)) return [validSolarMask];
     if (validRoboflow && passesCoverage(validRoboflow)) return [validRoboflow];
-    if (validTiles3d && passesCoverage(validTiles3d)) return [validTiles3d];
     if (
       solar?.segmentPolygonsLatLng?.length &&
       solar.segmentCount > 1 &&
@@ -384,7 +366,6 @@ export default function HomePage() {
     if (validClaude && passesCoverage(validClaude)) return [validClaude];
     return undefined;
   }, [
-    validTiles3d,
     validSolarMask,
     validRoboflow,
     solar?.segmentPolygonsLatLng,
@@ -598,7 +579,6 @@ export default function HomePage() {
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
-    setTiles3dPolygon(null);
     setLivePolygons(null);
     hasUserEditedRef.current = false;
 
@@ -825,9 +805,7 @@ export default function HomePage() {
     setSolarMaskPolygon(null);
     setRoboflowPolygon(null);
     setMsBuildingPolygon(null);
-    setValidationScores({});
     setClaudeVerifications({});
-    setTiles3dPolygon(null);
     hasUserEditedRef.current = false;
   };
 
@@ -964,40 +942,6 @@ export default function HomePage() {
                 address={address.formatted}
                 polygons={activePolygons}
                 polygonSource={polygonSource === "none" ? undefined : polygonSource}
-                onTilesPolygonDetected={(poly) => {
-                  if (!hasUserEditedRef.current) setTiles3dPolygon(poly);
-                }}
-                onPolygonValidated={(score) => {
-                  // Pattern A: store score for the active source. The
-                  // polygonSource useMemo gates on this — a score < 0.4
-                  // means the polygon is mostly NOT on a roof, so the
-                  // source gets demoted and a lower-priority source wins.
-                  if (polygonSource && polygonSource !== "none") {
-                    setValidationScores((cur) => ({
-                      ...cur,
-                      [polygonSource]: score,
-                    }));
-                  }
-                }}
-                onPolygonSnapped={(snapped) => {
-                  // Pattern B: replace the active source's polygon with the
-                  // mesh-snapped refinement. Don't override a manual edit
-                  // (rep already moved vertices by hand).
-                  if (hasUserEditedRef.current) return;
-                  if (snapped.length < 4) return;
-                  switch (polygonSource) {
-                    case "roboflow": setRoboflowPolygon(snapped); break;
-                    case "osm": setOsmBuildingPolygon(snapped); break;
-                    case "microsoft-buildings": setMsBuildingPolygon(snapped); break;
-                    case "solar-mask": setSolarMaskPolygon(snapped); break;
-                    case "sam": setSamRefinedPolygon(snapped); break;
-                    // tiles3d / edited / solar (multi-segment) intentionally
-                    // not handled here — tiles3d is already mesh-derived
-                    // (snapping it against itself is a noop), edited is the
-                    // rep's authoritative polygon, and solar's bbox segments
-                    // aren't meaningful single polygons.
-                  }
-                }}
               />
             )}
           </section>
