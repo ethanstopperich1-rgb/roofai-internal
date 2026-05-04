@@ -306,62 +306,65 @@ async function refineAtZoom(opts: {
     return null;
   }
 
+  // Pull URLs from individual_masks ONLY. The combined_mask field is a
+  // colorized annotation overlay (every facet a different color drawn
+  // on the source image) — not a binary mask — so feeding it through
+  // our "pixel > 127 = mask" thresholder produces garbage.
   const maskUrls: string[] = [];
-  const collect = (v: unknown) => {
-    if (typeof v === "string" && v.startsWith("http")) {
-      maskUrls.push(v);
-      return;
-    }
-    if (Array.isArray(v)) {
-      v.forEach(collect);
-      return;
-    }
+  const extractUrl = (v: unknown): string | null => {
+    if (typeof v === "string" && v.startsWith("http")) return v;
     if (v && typeof v === "object") {
       const obj = v as Record<string, unknown>;
-      // Handle FileOutput from Replicate SDK v1.x even though
-      // useFileOutput: false should prevent these — defense in depth.
       if (typeof obj.url === "function") {
         try {
           const u = (obj.url as () => unknown)();
-          if (typeof u === "string") {
-            maskUrls.push(u);
-            return;
-          }
+          if (typeof u === "string") return u;
           if (u && typeof u === "object" && "href" in (u as object)) {
-            maskUrls.push(String((u as { href: unknown }).href));
-            return;
+            return String((u as { href: unknown }).href);
           }
         } catch {
-          // fall through
+          /* fall through */
         }
       }
-      for (const key of [
-        "individual_masks",
-        "masks",
-        "mask_urls",
-        "combined_mask",
-        "output",
-      ]) {
-        if (obj[key]) collect(obj[key]);
-      }
     }
+    return null;
   };
-  collect(output);
+
+  const out = output as Record<string, unknown> | null;
+  const individual = out?.individual_masks ?? out?.masks ?? out?.mask_urls;
+  if (Array.isArray(individual)) {
+    for (const item of individual) {
+      const url = extractUrl(item);
+      if (url) maskUrls.push(url);
+    }
+  } else if (typeof output === "string") {
+    // Some prompted-mode SAM models return a single URL string
+    const single = extractUrl(output);
+    if (single) maskUrls.push(single);
+  }
 
   if (maskUrls.length === 0) {
     console.warn(
-      `[replicate] zoom=${opts.zoom}: no mask URLs found. Output keys:`,
-      output && typeof output === "object" ? Object.keys(output) : typeof output,
+      `[replicate] zoom=${opts.zoom}: no individual mask URLs. Output:`,
+      JSON.stringify(output)?.slice(0, 400) ?? typeof output,
     );
     return null;
   }
-  console.log(`[replicate] zoom=${opts.zoom}: found ${maskUrls.length} mask URLs`);
+  console.log(
+    `[replicate] zoom=${opts.zoom}: ${maskUrls.length} individual mask URLs`,
+  );
 
   const candidates: Array<{ polygon: Array<[number, number]>; area: number }> = [];
+  let processed = 0;
+  let nullPolygons = 0;
   for (const url of maskUrls.slice(0, 30)) {
+    processed++;
     try {
       const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        nullPolygons++;
+        continue;
+      }
       const buf = Buffer.from(await res.arrayBuffer());
       const { data, info } = await sharp(buf)
         .resize(IMAGE_SIZE_PX, IMAGE_SIZE_PX, { fit: "fill" })
@@ -372,10 +375,15 @@ async function refineAtZoom(opts: {
       for (let i = 0; i < data.length; i++) mask[i] = data[i] > 127 ? 1 : 0;
       const result = maskToPolygon(mask, info.width, info.height);
       if (result) candidates.push(result);
+      else nullPolygons++;
     } catch (err) {
+      nullPolygons++;
       console.warn("[replicate] mask processing failed:", err);
     }
   }
+  console.log(
+    `[replicate] zoom=${opts.zoom}: processed ${processed}, ${candidates.length} produced polygons, ${nullPolygons} produced null`,
+  );
 
   console.log(
     `[replicate] zoom=${opts.zoom}: SAM produced ${candidates.length} candidates`,
