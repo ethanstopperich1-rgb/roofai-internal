@@ -514,7 +514,15 @@ export default function Roof3DViewer({
       if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
       viewer.scene.backgroundColor = Cesium.Color.fromCssColorString("#070a10");
       viewer.scene.globe.show = false;
-      (viewer.cesiumWidget.creditContainer as HTMLElement).style.opacity = "0.6";
+      // Hide Cesium's credit container entirely — by default it surfaces
+      // "Powered by Google's Project Sunroof" + other dataset tags from the
+      // 3D Tiles attributions. Keeping it dimmed (opacity 0.6) wasn't enough
+      // to scrub the third-party tells from the proprietary UI.
+      const cc = viewer.cesiumWidget.creditContainer as HTMLElement;
+      cc.style.display = "none";
+      cc.style.visibility = "hidden";
+      cc.style.height = "0";
+      cc.style.overflow = "hidden";
 
       // Camera controls left at Cesium defaults — user feedback was that the
       // tamed-inertia / no-look / clamped-zoom version felt worse than stock.

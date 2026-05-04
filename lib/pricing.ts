@@ -30,12 +30,84 @@ const PITCH_TO_DEG_LOCAL: Record<Pitch, number> = {
 // and by computeTotal(). Preserved as-is so the simple flow keeps working.
 // -----------------------------------------------------------------------------
 
-export const MATERIAL_RATES: Record<Material, { label: string; rate: number }> = {
-  "asphalt-3tab": { label: "Asphalt 3-Tab", rate: 4.5 },
-  "asphalt-architectural": { label: "Architectural Shingle", rate: 6.25 },
-  "metal-standing-seam": { label: "Metal Standing Seam", rate: 12.0 },
-  "tile-concrete": { label: "Concrete Tile", rate: 10.5 },
+/**
+ * Installed cost per sqft (materials + labor, mid/low/high).
+ *
+ * Source: RoofingCalculator's 2026 published industry ranges. These are
+ * total replacement costs per sqft, not material-only — labor is already
+ * baked in (~60% of the figure per their breakdown). `removeLow/High` is
+ * the tear-off + disposal range per their Table 4.
+ *
+ *   Asphalt 3-tab        : $3.43–$4.65/sf   tear-off $0.39–$0.53
+ *   Architectural        : $4.11–$5.95/sf   (incl. premium architectural)
+ *   Standing-seam metal  : $18.11–$24.50/sf no tear-off (layover allowed)
+ *   Concrete tile        : $6.27–$8.49/sf   tear-off $1.45–$1.97
+ */
+export const MATERIAL_RATES: Record<
+  Material,
+  {
+    label: string;
+    /** Midpoint per-sqft installed cost — used by `computeBase().mid` */
+    rate: number;
+    /** Industry-low installed cost per sqft */
+    low: number;
+    /** Industry-high installed cost per sqft */
+    high: number;
+    /** Tear-off + disposal per sqft, low end. 0 = no tear-off needed (metal layover) */
+    removeLow: number;
+    /** Tear-off + disposal per sqft, high end */
+    removeHigh: number;
+  }
+> = {
+  "asphalt-3tab": {
+    label: "Asphalt 3-Tab",
+    rate: 4.04, low: 3.43, high: 4.65,
+    removeLow: 0.39, removeHigh: 0.53,
+  },
+  "asphalt-architectural": {
+    label: "Architectural Shingle",
+    rate: 5.03, low: 4.11, high: 5.95,
+    removeLow: 0.39, removeHigh: 0.53,
+  },
+  "metal-standing-seam": {
+    label: "Standing-Seam Metal",
+    rate: 21.30, low: 18.11, high: 24.50,
+    removeLow: 0, removeHigh: 0,
+  },
+  "tile-concrete": {
+    label: "Concrete Tile",
+    rate: 7.38, low: 6.27, high: 8.49,
+    removeLow: 1.45, removeHigh: 1.97,
+  },
 };
+
+/**
+ * Component adders for the itemized engine — per-sqft or per-LF rates from
+ * RoofingCalculator's "Additional roof replacement materials" section.
+ * Used by `buildDetailedEstimate` and the white-label override in branding.ts.
+ */
+export const COMPONENT_RATES = {
+  /** Sheathing replacement per sqft */
+  decking:        { low: 2.20, high: 3.00 },
+  /** Synthetic felt underlayment per sqft */
+  underlayment:   { low: 1.50, high: 2.10 },
+  /** Ice & water barrier per sqft */
+  iceAndWater:    { low: 1.87, high: 2.53 },
+  /** Galvanized steel flashing per linear foot */
+  flashing:       { low: 9.00, high: 11.00 },
+  /** Rubber pipe boots, each */
+  pipeBoot:       { low: 63.00, high: 85.00 },
+  /** Fascia board per linear foot */
+  fascia:         { low: 4.25, high: 8.62 },
+  /** Soffit per linear foot */
+  soffit:         { low: 2.80, high: 5.28 },
+} as const;
+
+/**
+ * Two-story homes take materially longer (and need more safety setup).
+ * Default adjustment applied in computeBase when `isTwoStory` is set.
+ */
+export const TWO_STORY_LABOR_BUMP = 1.08;
 
 export const PITCH_FACTOR: Record<Pitch, number> = {
   "4/12": 1.0,
@@ -55,12 +127,23 @@ export const DEFAULT_ADDONS: AddOn[] = [
 ];
 
 export function computeBase(a: Assumptions): { low: number; high: number; mid: number } {
-  const rate = MATERIAL_RATES[a.material].rate * a.materialMultiplier;
-  const labor = 3.25 * a.laborMultiplier;
+  // Installed cost per sqft already includes labor (~60% of total per
+  // RoofingCalculator's breakdown). Multipliers shift the band:
+  //   - materialMultiplier scales the material side (~40% of cost)
+  //   - laborMultiplier scales the labor side (~60% of cost)
+  // Pitch factor + service-type mod are applied multiplicatively over both.
+  const m = MATERIAL_RATES[a.material];
+  const matSplit = 0.4;
+  const laborSplit = 0.6;
   const pitch = PITCH_FACTOR[a.pitch];
-  const perSqft = (rate + labor) * pitch;
-  const mid = a.sqft * perSqft;
-  return { low: mid * 0.92, high: mid * 1.12, mid };
+  const blended =
+    (matSplit * a.materialMultiplier + laborSplit * a.laborMultiplier) * pitch;
+  const mid = Math.round(a.sqft * m.rate * blended);
+  // Use the industry-published low/high envelope as the bound, scaled by the
+  // same blended multiplier so reps' adjustments stay reflected in the range.
+  const low = Math.round(a.sqft * m.low * blended);
+  const high = Math.round(a.sqft * m.high * blended);
+  return { low, high, mid };
 }
 
 export function computeTotal(a: Assumptions, addOns: AddOn[]): number {
