@@ -21,8 +21,8 @@ const bricolage = Bricolage_Grotesque({
 });
 
 export const metadata: Metadata = {
-  title: "RoofAI Internal · Estimator",
-  description: "Internal roofing estimator for sales reps and office staff.",
+  title: "Voxaris Pitch · Roofing Estimator",
+  description: "Estimate to deal in five minutes. The closing tool for roofing teams.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -44,16 +44,22 @@ function Header() {
     <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#07090d]/70 backdrop-blur-xl">
       <div className="max-w-[1280px] mx-auto px-6 lg:px-10 h-14 flex items-center justify-between">
         <Link href="/" className="group flex items-center gap-3">
-          <div className="relative w-7 h-7 rounded-[7px] bg-gradient-to-br from-cy-300 to-cy-600 flex items-center justify-center font-display font-bold text-[#051019] text-sm shadow-[0_4px_12px_-4px_rgba(56,197,238,0.6),inset_0_1px_0_rgba(255,255,255,0.4)]">
-            R
-            <span className="absolute -inset-px rounded-[7px] ring-1 ring-white/20" />
+          <div
+            className="relative w-7 h-7 rounded-[7px] bg-gradient-to-br from-cy-300 to-cy-600 flex items-center justify-center font-display font-bold text-[#051019] text-[14px] shadow-[0_4px_12px_-4px_rgba(56,197,238,0.6),inset_0_1px_0_rgba(255,255,255,0.4)]"
+            aria-label="Voxaris Pitch"
+          >
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 12 L12 4 L21 12" />
+              <path d="M6 11 V20 H18 V11" />
+            </svg>
+            <span className="absolute -inset-px rounded-[7px] ring-1 ring-white/20 pointer-events-none" />
           </div>
           <div className="leading-none">
             <div className="text-[15px] font-display font-semibold tracking-tight">
-              roofai<span className="text-cy-300">.</span>
+              <span className="text-slate-400 font-normal">Voxaris</span> Pitch
             </div>
             <div className="text-[10px] mt-0.5 font-mono uppercase tracking-[0.18em] text-slate-500">
-              Internal · v0.1
+              Roofing · Beta
             </div>
           </div>
         </Link>
