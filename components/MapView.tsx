@@ -63,6 +63,12 @@ export default function MapView({
   const penMarkersRef = useRef<google.maps.Marker[]>([]);
   const [svUnavailable, setSvUnavailable] = useState(false);
 
+  // Reset Street-View "unavailable" badge whenever the address changes so
+  // we don't show a stale "no SV here" overlay for the new property.
+  useEffect(() => {
+    setSvUnavailable(false);
+  }, [lat, lng]);
+
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) return;
     if (lat == null || lng == null) return;

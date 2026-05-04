@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Sparkles, Loader2 } from "lucide-react";
 import type { Estimate } from "@/types/estimate";
 
@@ -8,6 +8,14 @@ export default function InsightsPanel({ estimate }: { estimate: Estimate }) {
   const [text, setText] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
+
+  // Clear previous AI notes whenever the address changes (otherwise the last
+  // house's sales notes linger on screen for the next estimate).
+  useEffect(() => {
+    setText("");
+    setError("");
+    setLoading(false);
+  }, [estimate.address.formatted, estimate.address.lat, estimate.address.lng]);
 
   const run = async () => {
     setLoading(true);

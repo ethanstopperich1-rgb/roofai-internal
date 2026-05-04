@@ -43,6 +43,18 @@ export default function PropertyContextPanel({ address, onProperty }: Props) {
   const [property, setProperty] = useState<AttomProperty | null>(null);
   const [propertyError, setPropertyError] = useState<string>("");
 
+  // Reset all per-property state when the address changes — otherwise the
+  // previous house's aerial flyover / weather lingers on the right rail
+  // when a rep starts a new estimate.
+  useEffect(() => {
+    setWeather(null);
+    setAerial(null);
+    setAerialLoading(false);
+    setShowVideo(false);
+    setProperty(null);
+    setPropertyError("");
+  }, [address?.formatted, address?.lat, address?.lng]);
+
   useEffect(() => {
     if (!address?.lat || !address?.lng) return;
     fetch(`/api/weather?lat=${address.lat}&lng=${address.lng}`)
