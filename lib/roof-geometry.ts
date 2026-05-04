@@ -59,6 +59,83 @@ export interface WasteTable {
 
 const HAVERSINE_R_M = 6_371_000;
 
+/**
+ * Infer roof complexity from polygon shape — strictly geometric signal,
+ * stronger than Vision's "complexity" guess from a noisy 640×640 thumbnail.
+ *
+ * Logic:
+ *   - Multiple polygons (Solar facets): 1 facet → simple/moderate by vertex
+ *     count; 2–3 facets → moderate; 4+ facets → complex.
+ *   - Single polygon: convexity ratio (poly area / convex hull area) tells
+ *     us whether it's a rectangle (≈ 1.0) or L/T/U-shaped (< 0.85). High
+ *     vertex count after orthogonalization is also a complexity signal.
+ *
+ * Returns null if polygons are unusable (too few vertices), so the caller
+ * can fall back to the existing complexity (Vision-derived or default).
+ */
+export function inferComplexityFromPolygons(
+  polygons: Array<Array<{ lat: number; lng: number }>>,
+): Complexity | null {
+  if (!polygons || polygons.length === 0) return null;
+  const valid = polygons.filter((p) => p.length >= 3);
+  if (valid.length === 0) return null;
+
+  if (valid.length >= 4) return "complex";
+  if (valid.length >= 2) return "moderate";
+
+  // Single-polygon: vertex count + convexity
+  const poly = valid[0];
+  const v = poly.length;
+
+  // Convexity ratio in local meters (lat/lng skew negligible at house scale)
+  const cLat = poly.reduce((s, p) => s + p.lat, 0) / v;
+  const cosLat = Math.cos((cLat * Math.PI) / 180);
+  const pts = poly.map((p) => ({ x: p.lng * 111_320 * cosLat, y: p.lat * 111_320 }));
+  const polyArea = (() => {
+    let sum = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      sum += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(sum) / 2;
+  })();
+
+  // Andrew's monotone-chain convex hull
+  const sorted = [...pts].sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
+  const cross = (
+    o: { x: number; y: number },
+    a: { x: number; y: number },
+    b: { x: number; y: number },
+  ) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: Array<{ x: number; y: number }> = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper: Array<{ x: number; y: number }> = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  const hullArea = (() => {
+    let sum = 0;
+    for (let i = 0; i < hull.length; i++) {
+      const a = hull[i], b = hull[(i + 1) % hull.length];
+      sum += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(sum) / 2;
+  })();
+  const convexity = hullArea > 0 ? polyArea / hullArea : 1;
+
+  // Decide
+  if (v <= 5 && convexity > 0.95) return "simple";
+  if (v >= 10 || convexity < 0.78) return "complex";
+  return "moderate";
+}
+
+
 function haversineMeters(
   a: { lat: number; lng: number },
   b: { lat: number; lng: number },

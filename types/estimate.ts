@@ -76,8 +76,24 @@ export interface RoofVision {
     y: number;
     approxSizeFt?: number;
   }>;
+  /** Single closed polygon outlining the entire roof, in pixel coords on the
+   *  640x640 satellite tile. 6-14 vertices, clockwise. Empty array when the
+   *  roof can't be identified. Used as the activePolygon when Solar API
+   *  has no segments for the property. */
+  roofPolygon: Array<[number, number]>;
   salesNotes: string;
   confidence: number;
+}
+
+/** One roof facet from Solar API findClosest — preserves the per-segment
+ *  pitch, azimuth, area, and bounding box for downstream validators (axis
+ *  check, area check) and the ensemble fuser. */
+export interface SolarSegment {
+  pitchDegrees: number;
+  azimuthDegrees: number;
+  areaSqft: number;
+  groundAreaSqft: number;
+  bboxLatLng: { swLat: number; swLng: number; neLat: number; neLng: number };
 }
 
 /** Parsed Solar API output, augmented with pixel-space polygons for overlay drawing */
@@ -92,6 +108,13 @@ export interface SolarSummary {
   /** Geographic polygons (lat/lng vertex pairs), one per roof segment.
    *  Used to render overlay polygons on the Google Maps satellite map. */
   segmentPolygonsLatLng: Array<Array<{ lat: number; lng: number }>>;
+  /** Full per-facet metadata. Used by the validators (axis / area check)
+   *  and the ensemble fuser as a soft prior. */
+  segments: SolarSegment[];
+  /** Area-weighted dominant building axis from segment azimuths, normalized
+   *  to [0, 90) since rectangular buildings are bilaterally symmetric.
+   *  Drives best-of-N orthogonalization (§8) and the axis-mismatch validator. */
+  dominantAzimuthDeg: number | null;
   maxArrayPanels?: number | null;
   yearlyKwhPotential?: number | null;
 }
@@ -198,4 +221,18 @@ export interface Estimate {
   lengths?: RoofLengths;
   /** Optional — EagleView-style waste calculation table */
   waste?: WasteTable;
+  /** Optional — the polygon(s) actually used for measurement, after any
+   *  rep edits. Persisted so reopening an estimate restores the exact roof
+   *  geometry it was priced against. Lat/lng order. */
+  polygons?: Array<Array<{ lat: number; lng: number }>>;
+  /** Optional — provenance of the saved polygons. */
+  polygonSource?:
+    | "edited"
+    | "tiles3d"
+    | "solar-mask"
+    | "roboflow"
+    | "solar"
+    | "sam"
+    | "osm"
+    | "ai";
 }

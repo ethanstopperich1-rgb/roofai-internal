@@ -8,19 +8,33 @@ interface AuroraButtonProps
   className?: string;
   children: React.ReactNode;
   glowClassName?: string;
+  /** Tailwind classes applied to the OUTER wrapper. Use this for layout
+   *  hooks like `flex-shrink-0` so the wrapper participates correctly in
+   *  parent flex rows (the inner button can't take those — the wrapper
+   *  gets squeezed and drops out of the row). */
+  wrapperClassName?: string;
 }
 
 export function AuroraButton({
   className,
   children,
   glowClassName,
+  wrapperClassName,
   ...props
 }: AuroraButtonProps) {
   return (
-    <div className="relative group">
+    <div
+      className={cn(
+        // inline-flex so the wrapper sizes to its button child instead of
+        // expanding to fill the parent's cross axis. flex-shrink-0 by default
+        // so it never collapses below its natural width in a flex row.
+        "relative group inline-flex flex-shrink-0",
+        wrapperClassName,
+      )}
+    >
       <div
         className={cn(
-          "absolute -inset-[2px] rounded-lg bg-gradient-to-r from-purple-500 via-cyan-300 to-emerald-400 opacity-75 blur-lg transition-all",
+          "absolute -inset-[2px] rounded-lg bg-gradient-to-r from-purple-500 via-cyan-300 to-emerald-400 opacity-75 blur-lg transition-all pointer-events-none",
           "group-hover:opacity-100 group-hover:blur-xl",
           glowClassName,
         )}
