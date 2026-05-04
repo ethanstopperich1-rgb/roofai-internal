@@ -742,7 +742,12 @@ export default function HomePage() {
       {/* ─── Quantum-pulse loader: full-screen overlay while Solar+Vision run ─── */}
       {visionLoading && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-md bg-black/55 float-in"
+          // No backdrop-blur — the filter forces full-page recomposite every
+          // frame, which thrashes against Cesium's WebGL canvas underneath
+          // and made the loader animation visibly stutter. A solid fill at
+          // 88% darkness reads almost the same and stays smooth.
+          className="fixed inset-0 z-50 flex items-center justify-center float-in"
+          style={{ background: "rgba(7,9,13,0.88)" }}
           aria-live="polite"
         >
           <QuantumPulseLoader text="Generating" />
@@ -766,6 +771,9 @@ export default function HomePage() {
             />
             {address?.lat != null && address?.lng != null && (
               <Roof3DViewer
+                // key forces a hard remount on every address change so the
+                // previous house's Cesium camera/tiles can't linger.
+                key={`${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
                 lat={address.lat}
                 lng={address.lng}
                 address={address.formatted}
