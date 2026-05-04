@@ -870,7 +870,13 @@ export default function HomePage() {
           {/* ─── Two-col grid for everything else ─────────────────────── */}
           <div className="grid lg:grid-cols-3 gap-6 float-in">
             <div className="lg:col-span-2 space-y-6">
-              <VisionPanel vision={vision} loading={visionLoading} error={visionError} />
+              <VisionPanel
+                vision={vision}
+                loading={visionLoading}
+                error={visionError}
+                ageYears={assumptions.ageYears}
+                zip={address?.zip}
+              />
               <TiersPanel assumptions={assumptions} addOns={addOns} onApplyTier={applyTier} />
               <MeasurementsPanel
                 lengths={lengths}

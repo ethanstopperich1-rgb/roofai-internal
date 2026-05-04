@@ -44,9 +44,26 @@ interface Props {
   vision: RoofVision | null;
   loading: boolean;
   error?: string;
+  /** Optional roof age in years — drives the FL SB 2-D claim-helper chip */
+  ageYears?: number;
+  /** Optional ZIP code — used to detect FL properties for the SB 2-D helper */
+  zip?: string;
 }
 
-export default function VisionPanel({ vision, loading, error }: Props) {
+const FL_ZIP_PREFIXES = new Set([
+  "32", "33", "34",
+]);
+
+function isFlorida(zip?: string): boolean {
+  if (!zip) return false;
+  return FL_ZIP_PREFIXES.has(zip.slice(0, 2));
+}
+
+function hasMaterialDamage(damage: RoofVision["visibleDamage"]): boolean {
+  return damage.some((d) => d !== "none");
+}
+
+export default function VisionPanel({ vision, loading, error, ageYears, zip }: Props) {
   return (
     <div className="glass rounded-3xl p-6 relative overflow-hidden">
       <div
@@ -154,6 +171,38 @@ export default function VisionPanel({ vision, loading, error }: Props) {
               </div>
             </div>
           )}
+
+          {/* Florida SB 2-D claim-helper. Surfaces when:
+               - property is in FL (ZIP starts 32-, 33-, or 34-)
+               - roof age < 15 years
+               - vision detected at least one damage signal
+              SB 2-D bars insurers from denying full replacement on roofs
+              under 15 years old based on age alone. Big adjuster ammunition. */}
+          {isFlorida(zip) &&
+            ageYears != null &&
+            ageYears < 15 &&
+            hasMaterialDamage(vision.visibleDamage) && (
+              <div
+                className="rounded-2xl border p-3.5"
+                style={{
+                  background: "rgba(243,177,75,0.06)",
+                  borderColor: "rgba(243,177,75,0.32)",
+                }}
+              >
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <AlertTriangle size={11} className="text-amber" />
+                  <span className="label text-amber">
+                    FL SB 2-D · adjuster ammunition
+                  </span>
+                </div>
+                <div className="text-[13px] text-slate-200 leading-relaxed">
+                  Roof is <span className="font-mono tabular text-amber">{ageYears} years</span> old
+                  with visible damage. Under <strong>Florida SB 2-D</strong>, an
+                  insurer may not deny full replacement on a roof less than 15
+                  years old based on age alone.
+                </div>
+              </div>
+            )}
         </div>
       )}
     </div>
