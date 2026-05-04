@@ -18,28 +18,36 @@ export default function MapView({ lat, lng, address }: Props) {
 
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) return;
+    if (lat == null || lng == null) return;
+    const pos = { lat, lng };
     loadGoogle().then((g) => {
       if (!mapEl.current || !svEl.current) return;
-      const center = { lat: lat ?? 39.8, lng: lng ?? -98.5 };
       if (!mapRef.current) {
         mapRef.current = new g.maps.Map(mapEl.current, {
-          center, zoom: lat && lng ? 20 : 4,
-          mapTypeId: "satellite", tilt: 45, disableDefaultUI: true,
+          center: pos,
+          zoom: 20,
+          mapTypeId: "satellite",
+          tilt: 0,
+          disableDefaultUI: true,
           zoomControl: true,
+          gestureHandling: "greedy",
         });
+      } else {
+        mapRef.current.setCenter(pos);
+        mapRef.current.setZoom(20);
       }
+      if (markerRef.current) markerRef.current.setMap(null);
+      markerRef.current = new g.maps.Marker({ position: pos, map: mapRef.current });
+
       if (!svRef.current) {
         svRef.current = new g.maps.StreetViewPanorama(svEl.current, {
-          position: center, pov: { heading: 0, pitch: 0 }, visible: !!(lat && lng),
-          disableDefaultUI: true, addressControl: false,
+          position: pos,
+          pov: { heading: 0, pitch: 0 },
+          visible: true,
+          disableDefaultUI: true,
+          addressControl: false,
         });
-      }
-      if (lat != null && lng != null) {
-        const pos = { lat, lng };
-        mapRef.current.panTo(pos);
-        mapRef.current.setZoom(20);
-        if (markerRef.current) markerRef.current.setMap(null);
-        markerRef.current = new g.maps.Marker({ position: pos, map: mapRef.current });
+      } else {
         svRef.current.setPosition(pos);
         svRef.current.setVisible(true);
       }
@@ -54,10 +62,25 @@ export default function MapView({ lat, lng, address }: Props) {
     );
   }
 
+  const ready = lat != null && lng != null;
   return (
     <div className="grid grid-rows-2 gap-3 h-full">
-      <div ref={mapEl} className="rounded-2xl overflow-hidden border border-white/10 min-h-[180px]" aria-label={address} />
-      <div ref={svEl} className="rounded-2xl overflow-hidden border border-white/10 min-h-[180px]" aria-label={address} />
+      <div className="relative rounded-2xl overflow-hidden border border-white/10 min-h-[180px] bg-black/30">
+        <div ref={mapEl} className="absolute inset-0" aria-label={address} />
+        {!ready && (
+          <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-xs">
+            Pick an address from autocomplete to load satellite view
+          </div>
+        )}
+      </div>
+      <div className="relative rounded-2xl overflow-hidden border border-white/10 min-h-[180px] bg-black/30">
+        <div ref={svEl} className="absolute inset-0" aria-label={address} />
+        {!ready && (
+          <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-xs">
+            Street view will load with the address
+          </div>
+        )}
+      </div>
     </div>
   );
 }

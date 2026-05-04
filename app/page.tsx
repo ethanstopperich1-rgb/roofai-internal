@@ -8,6 +8,7 @@ import ResultsPanel from "@/components/ResultsPanel";
 import OutputButtons from "@/components/OutputButtons";
 import MapView from "@/components/MapView";
 import InsightsPanel from "@/components/InsightsPanel";
+import PropertyContextPanel from "@/components/PropertyContextPanel";
 import type { AddOn, AddressInfo, Assumptions, Estimate } from "@/types/estimate";
 import { DEFAULT_ADDONS, computeBase, computeTotal } from "@/lib/pricing";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
@@ -152,6 +153,7 @@ export default function HomePage() {
               <div className="h-[420px]">
                 <MapView lat={address?.lat} lng={address?.lng} address={address?.formatted} />
               </div>
+              <PropertyContextPanel address={address} />
               <div className="glass rounded-2xl p-5 space-y-3">
                 <div className="font-bold">Customer & Notes</div>
                 <input
