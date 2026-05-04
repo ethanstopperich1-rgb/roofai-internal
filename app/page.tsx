@@ -9,8 +9,23 @@ import OutputButtons from "@/components/OutputButtons";
 import MapView from "@/components/MapView";
 import InsightsPanel from "@/components/InsightsPanel";
 import PropertyContextPanel from "@/components/PropertyContextPanel";
-import type { AddOn, AddressInfo, Assumptions, Estimate } from "@/types/estimate";
-import { DEFAULT_ADDONS, computeBase, computeTotal } from "@/lib/pricing";
+import VisionPanel from "@/components/VisionPanel";
+import LineItemsPanel from "@/components/LineItemsPanel";
+import type {
+  AddOn,
+  AddressInfo,
+  Assumptions,
+  Estimate,
+  RoofVision,
+  SolarSummary,
+} from "@/types/estimate";
+import {
+  DEFAULT_ADDONS,
+  buildDetailedEstimate,
+  computeBase,
+  computeTotal,
+} from "@/lib/pricing";
+import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
 
@@ -21,6 +36,17 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   ageYears: 15,
   laborMultiplier: 1.0,
   materialMultiplier: 1.0,
+  serviceType: "reroof-tearoff",
+  complexity: "moderate",
+};
+
+const VISION_MATERIAL_TO_ASSUMPTION: Partial<
+  Record<RoofVision["currentMaterial"], Assumptions["material"]>
+> = {
+  "asphalt-3tab": "asphalt-3tab",
+  "asphalt-architectural": "asphalt-architectural",
+  "metal-standing-seam": "metal-standing-seam",
+  "tile-concrete": "tile-concrete",
 };
 
 export default function HomePage() {
@@ -33,6 +59,12 @@ export default function HomePage() {
   const [notes, setNotes] = useState("");
   const [estimateId, setEstimateId] = useState<string>(newId());
   const [shown, setShown] = useState(false);
+
+  const [solar, setSolar] = useState<SolarSummary | null>(null);
+  const [vision, setVision] = useState<RoofVision | null>(null);
+  const [visionLoading, setVisionLoading] = useState(false);
+  const [visionError, setVisionError] = useState<string>("");
+  const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
 
   useEffect(() => {
     const s = localStorage.getItem("roofai.staff");
@@ -49,35 +81,75 @@ export default function HomePage() {
 
   const total = useMemo(() => computeTotal(assumptions, addOns), [assumptions, addOns]);
 
+  const detailed = useMemo(
+    () =>
+      buildDetailedEstimate(assumptions, addOns, {
+        buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
+        segmentCount: solar?.segmentCount,
+      }),
+    [assumptions, addOns, solar],
+  );
+
   const runEstimate = async () => {
     if (!addressText.trim()) return;
     const addr: AddressInfo = address ?? { formatted: addressText.trim() };
     setAddress(addr);
     setShown(true);
+    setSolar(null);
+    setVision(null);
+    setVisionError("");
 
-    // Try Solar API for real sqft + pitch when we have coords
-    if (addr.lat != null && addr.lng != null) {
-      try {
-        const res = await fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`);
-        if (res.ok) {
-          const data = (await res.json()) as { sqft?: number | null; pitch?: string | null };
-          setAssumptions((a) => ({
-            ...a,
-            sqft: data.sqft || a.sqft || estimateRoofSize(),
-            pitch: (data.pitch as typeof a.pitch) || a.pitch,
-            ageYears: a.ageYears || estimateAge(),
-          }));
-          return;
-        }
-      } catch {
-        // fall through to heuristic
-      }
+    if (addr.lat == null || addr.lng == null) {
+      setAssumptions((a) => ({
+        ...a,
+        sqft: a.sqft || estimateRoofSize(),
+        ageYears: a.ageYears || estimateAge(),
+      }));
+      return;
     }
-    setAssumptions((a) => ({
-      ...a,
-      sqft: a.sqft || estimateRoofSize(),
-      ageYears: a.ageYears || estimateAge(),
-    }));
+
+    // Fire Solar + Vision in parallel
+    setVisionLoading(true);
+    const solarPromise = fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`)
+      .then(async (r) => (r.ok ? ((await r.json()) as SolarSummary) : null))
+      .catch(() => null);
+
+    const visionPromise = fetch(`/api/vision?lat=${addr.lat}&lng=${addr.lng}`)
+      .then(async (r) => {
+        if (!r.ok) {
+          const data = await r.json().catch(() => ({}));
+          throw new Error(data.error || `vision_${r.status}`);
+        }
+        return (await r.json()) as RoofVision;
+      })
+      .catch((err) => {
+        setVisionError(err instanceof Error ? err.message : "failed");
+        return null;
+      });
+
+    const [solarData, visionData] = await Promise.all([solarPromise, visionPromise]);
+
+    if (solarData) setSolar(solarData);
+    if (visionData) setVision(visionData);
+    setVisionLoading(false);
+
+    setAssumptions((a) => {
+      const next: Assumptions = { ...a };
+      // Solar API priors
+      if (solarData?.sqft) next.sqft = solarData.sqft;
+      if (solarData?.pitch) next.pitch = solarData.pitch;
+      // Vision priors (only when high-confidence)
+      if (visionData && visionData.confidence >= 0.5) {
+        const matMap = VISION_MATERIAL_TO_ASSUMPTION[visionData.currentMaterial];
+        if (matMap) next.material = matMap;
+        if (visionData.estimatedAgeYears) next.ageYears = visionData.estimatedAgeYears;
+        next.complexity = visionData.complexity;
+      }
+      // Heuristic fallbacks if both APIs were silent
+      if (!next.sqft) next.sqft = estimateRoofSize();
+      if (!next.ageYears) next.ageYears = estimateAge();
+      return next;
+    });
   };
 
   const estimate: Estimate = {
@@ -92,6 +164,10 @@ export default function HomePage() {
     total,
     baseLow: Math.round(low + addOns.filter((a) => a.enabled).reduce((s, x) => s + x.price, 0)),
     baseHigh: Math.round(high + addOns.filter((a) => a.enabled).reduce((s, x) => s + x.price, 0)),
+    isInsuranceClaim,
+    vision: vision ?? undefined,
+    solar: solar ?? undefined,
+    detailed,
   };
 
   const reset = () => {
@@ -103,7 +179,23 @@ export default function HomePage() {
     setNotes("");
     setEstimateId(newId());
     setShown(false);
+    setSolar(null);
+    setVision(null);
+    setVisionError("");
+    setIsInsuranceClaim(false);
   };
+
+  // Discard mid since it's only used to compute low/high above
+  void mid;
+
+  const mapBadges = solar
+    ? [
+        solar.imageryDate ? `Imagery ${solar.imageryDate}` : "",
+        solar.imageryQuality !== "UNKNOWN" ? `Quality ${solar.imageryQuality}` : "",
+        solar.segmentCount > 0 ? `${solar.segmentCount} segments` : "",
+        solar.pitch ? `Pitch ${solar.pitch}` : "",
+      ].filter(Boolean)
+    : [];
 
   return (
     <div className="space-y-6">
@@ -111,7 +203,9 @@ export default function HomePage() {
         <div className="flex items-end justify-between gap-4 mb-4 flex-wrap">
           <div>
             <h1 className="text-2xl md:text-3xl font-black tracking-tight">Quick Estimate</h1>
-            <p className="text-sm text-slate-400">Type or paste an address. Press Enter to estimate.</p>
+            <p className="text-sm text-slate-400">
+              Type or paste an address. Press Enter — Solar + Claude vision run in parallel.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <input
@@ -121,7 +215,9 @@ export default function HomePage() {
               onChange={(e) => setStaff(e.target.value)}
             />
             {shown && (
-              <button className="btn btn-ghost" onClick={reset}>New</button>
+              <button className="btn btn-ghost" onClick={reset}>
+                New
+              </button>
             )}
           </div>
         </div>
@@ -143,6 +239,16 @@ export default function HomePage() {
                 total={total}
                 baseLow={estimate.baseLow}
                 baseHigh={estimate.baseHigh}
+                isInsuranceClaim={isInsuranceClaim}
+                onInsuranceChange={setIsInsuranceClaim}
+              />
+              <VisionPanel vision={vision} loading={visionLoading} error={visionError} />
+              <LineItemsPanel
+                detailed={detailed}
+                defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
+                alwaysShowXactimate={
+                  isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
+                }
               />
               <div className="grid md:grid-cols-2 gap-6">
                 <AssumptionsEditor value={assumptions} onChange={setAssumptions} />
@@ -151,7 +257,13 @@ export default function HomePage() {
             </div>
             <div className="space-y-6">
               <div className="h-[420px]">
-                <MapView lat={address?.lat} lng={address?.lng} address={address?.formatted} />
+                <MapView
+                  lat={address?.lat}
+                  lng={address?.lng}
+                  address={address?.formatted}
+                  segments={solar?.segmentPolygonsLatLng}
+                  metaBadges={mapBadges}
+                />
               </div>
               <PropertyContextPanel address={address} />
               <div className="glass rounded-2xl p-5 space-y-3">

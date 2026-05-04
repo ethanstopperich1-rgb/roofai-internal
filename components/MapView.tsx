@@ -3,18 +3,28 @@
 import { useEffect, useRef } from "react";
 import { loadGoogle } from "@/lib/google";
 
+interface PolygonPath {
+  /** Array of {lat,lng} vertices in either CW or CCW order */
+  path: Array<{ lat: number; lng: number }>;
+}
+
 interface Props {
   lat?: number;
   lng?: number;
   address?: string;
+  /** Roof segment polygons from Solar API — drawn as overlays */
+  segments?: PolygonPath["path"][];
+  /** Optional badges shown over the satellite map */
+  metaBadges?: string[];
 }
 
-export default function MapView({ lat, lng, address }: Props) {
+export default function MapView({ lat, lng, address, segments, metaBadges }: Props) {
   const mapEl = useRef<HTMLDivElement>(null);
   const svEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
   const markerRef = useRef<google.maps.Marker | null>(null);
   const svRef = useRef<google.maps.StreetViewPanorama | null>(null);
+  const polysRef = useRef<google.maps.Polygon[]>([]);
 
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) return;
@@ -51,8 +61,28 @@ export default function MapView({ lat, lng, address }: Props) {
         svRef.current.setPosition(pos);
         svRef.current.setVisible(true);
       }
+
+      // Clear & redraw roof segment polygons
+      for (const p of polysRef.current) p.setMap(null);
+      polysRef.current = [];
+      if (segments && segments.length && mapRef.current) {
+        for (const path of segments) {
+          if (!path || path.length < 3) continue;
+          const poly = new g.maps.Polygon({
+            paths: path,
+            strokeColor: "#38bdf8",
+            strokeOpacity: 0.9,
+            strokeWeight: 2,
+            fillColor: "#38bdf8",
+            fillOpacity: 0.22,
+            clickable: false,
+            map: mapRef.current,
+          });
+          polysRef.current.push(poly);
+        }
+      }
     });
-  }, [lat, lng]);
+  }, [lat, lng, segments]);
 
   if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) {
     return (
@@ -70,6 +100,18 @@ export default function MapView({ lat, lng, address }: Props) {
         {!ready && (
           <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-xs">
             Pick an address from autocomplete to load satellite view
+          </div>
+        )}
+        {ready && metaBadges && metaBadges.length > 0 && (
+          <div className="pointer-events-none absolute left-2 top-2 flex flex-wrap gap-1.5">
+            {metaBadges.map((b, i) => (
+              <span
+                key={i}
+                className="rounded-full border border-white/15 bg-black/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white/85 backdrop-blur"
+              >
+                {b}
+              </span>
+            ))}
           </div>
         )}
       </div>
