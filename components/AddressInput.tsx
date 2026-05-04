@@ -116,18 +116,16 @@ export default function AddressInput({ onSelect, onSubmit, value, onChange }: Pr
   return (
     <div ref={wrapRef} className="relative">
       <div
-        className={`relative rounded-2xl border transition-all ${
+        className={`flex items-center gap-2 rounded-2xl border transition-all pl-4 pr-2 py-2 ${
           open && suggestions.length > 0
             ? "border-cy-300/40 bg-black/30 shadow-[0_0_0_4px_rgba(56,197,238,0.10)]"
             : "border-white/[0.075] bg-black/30 hover:border-white/[0.13] focus-within:border-cy-300/55 focus-within:shadow-[0_0_0_4px_rgba(56,197,238,0.10)]"
         }`}
       >
-        <div className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-500 z-10 pointer-events-none">
-          <Search size={18} strokeWidth={2} />
-        </div>
+        <Search size={18} strokeWidth={2} className="text-slate-500 flex-shrink-0" />
         <input
           ref={inputRef}
-          className="w-full bg-transparent border-0 outline-none pl-14 pr-44 py-5 text-[18px] font-medium tracking-tight text-slate-50 placeholder:text-slate-600"
+          className="flex-1 min-w-0 bg-transparent border-0 outline-none py-2 text-[16px] font-medium tracking-tight text-slate-50 placeholder:text-slate-600"
           placeholder="123 Main Street, Austin, TX…"
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -137,14 +135,9 @@ export default function AddressInput({ onSelect, onSubmit, value, onChange }: Pr
           spellCheck={false}
         />
         {loading && (
-          <div className="absolute right-44 top-1/2 -translate-y-1/2 text-slate-400">
-            <Loader2 size={16} className="animate-spin" />
-          </div>
+          <Loader2 size={15} className="animate-spin text-slate-400 flex-shrink-0" />
         )}
-        <button
-          onClick={onSubmit}
-          className="btn btn-primary absolute right-2 top-1/2 -translate-y-1/2 px-4 py-2.5 z-10"
-        >
+        <button onClick={onSubmit} className="btn btn-primary flex-shrink-0 px-4 py-2">
           Estimate
           <span className="kbd !bg-black/20 !text-[#0c1118]/80 !border-black/10">↵</span>
         </button>
