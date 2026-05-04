@@ -143,6 +143,14 @@ export default function HomePage() {
   const [msBuildingPolygon, setMsBuildingPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // Pattern-A 3D-mesh validation: when a non-tiles3d polygon is rendered,
+  // Roof3DViewer samples mesh heights inside it and reports the % that
+  // land at "roof height". Score < 0.4 = polygon is mostly on lawn/deck/
+  // wrong building → demote that source so a lower-priority but valid
+  // source can win. Map keyed by polygon source.
+  const [validationScores, setValidationScores] = useState<
+    Partial<Record<string, number>>
+  >({});
   // Live polygons after the rep edits a vertex. When set, overrides the
   // auto-detected source polygons everywhere (lengths, sqft, blueprint, PDF).
   // Reset to null on every new estimate so we always start from auto-detect.
@@ -228,6 +236,18 @@ export default function HomePage() {
   const validMsBuilding = useMemo(() => validateAtAddress(msBuildingPolygon), [msBuildingPolygon, address?.lat, address?.lng]);
   const validClaude = useMemo(() => validateAtAddress(claudePolygonLatLng), [claudePolygonLatLng, address?.lat, address?.lng]);
 
+  // Pattern A: only consider a source if its 3D-mesh validation score is
+  // above MIN_VALIDATION_SCORE (or no score yet — we don't penalize sources
+  // that haven't been validated). 0.4 = at least 40% of polygon samples at
+  // roof height. Tighter bars over-reject good polygons; looser bars let
+  // through polygons traced on driveways. Tune up if false positives
+  // continue to ship; tune down if good polygons get demoted.
+  const MIN_VALIDATION_SCORE = 0.4;
+  const passesValidation = (source: string) => {
+    const score = validationScores[source];
+    return score === undefined ? true : score >= MIN_VALIDATION_SCORE;
+  };
+
   // Polygon source priority — best-quality first:
   //   1. 3D Tiles mesh    — height-thresholded from Google's photogrammetry
   //                         (real geometric truth, no AI guessing)
@@ -265,13 +285,13 @@ export default function HomePage() {
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
     if (validTiles3d) return "tiles3d";
-    if (validSolarMask) return "solar-mask";
-    if (validRoboflow) return "roboflow";
+    if (validSolarMask && passesValidation("solar-mask")) return "solar-mask";
+    if (validRoboflow && passesValidation("roboflow")) return "roboflow";
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
-    if (validSam) return "sam";
-    if (validOsm) return "osm";
-    if (validMsBuilding) return "microsoft-buildings";
-    if (validClaude) return "ai";
+    if (validSam && passesValidation("sam")) return "sam";
+    if (validOsm && passesValidation("osm")) return "osm";
+    if (validMsBuilding && passesValidation("microsoft-buildings")) return "microsoft-buildings";
+    if (validClaude && passesValidation("ai")) return "ai";
     return "none";
   }, [
     livePolygons,
@@ -284,6 +304,7 @@ export default function HomePage() {
     validOsm,
     validMsBuilding,
     validClaude,
+    validationScores,
   ]);
 
   // Source polygons — what MapView draws initially. Edited polygons don't
@@ -699,6 +720,7 @@ export default function HomePage() {
     setSolarMaskPolygon(null);
     setRoboflowPolygon(null);
     setMsBuildingPolygon(null);
+    setValidationScores({});
     setTiles3dPolygon(null);
     hasUserEditedRef.current = false;
   };
@@ -838,6 +860,18 @@ export default function HomePage() {
                 polygonSource={polygonSource === "none" ? undefined : polygonSource}
                 onTilesPolygonDetected={(poly) => {
                   if (!hasUserEditedRef.current) setTiles3dPolygon(poly);
+                }}
+                onPolygonValidated={(score) => {
+                  // Pattern A: store score for the active source. The
+                  // polygonSource useMemo gates on this — a score < 0.4
+                  // means the polygon is mostly NOT on a roof, so the
+                  // source gets demoted and a lower-priority source wins.
+                  if (polygonSource && polygonSource !== "none") {
+                    setValidationScores((cur) => ({
+                      ...cur,
+                      [polygonSource]: score,
+                    }));
+                  }
                 }}
               />
             )}
