@@ -452,12 +452,15 @@ async function extractRoofPolygonFromTiles(opts: {
   }
   let area = 0;
   for (let i = 0; i < isolated.length; i++) if (isolated[i]) area++;
-  // Validation gate: residential roofs are at minimum ~80m² (~860 sqft)
-  // for the tiniest tiny-houses. Anything smaller is a shed, gazebo, or
-  // detection noise — REJECT so Roboflow / lower-priority sources can win
-  // instead of shipping a wrong tiny polygon to the rep. (The 30-cell
-  // threshold below was too permissive; many false positives squeaked by.)
-  if (area < 80) {
+  // Validation gate: residential roofs are at minimum ~150m² (~1,615 sqft).
+  // Anything smaller is a shed, attached garage alone, gazebo, or detection
+  // noise — REJECT so Roboflow can win instead of shipping a wrong tiny
+  // polygon. (Henley Rd reproducibly extracted 551 cells but visually only
+  // covered a small shed near the geocoded address — the 80-cell threshold
+  // and even the previous "551 looks fine" weren't catching it. Bumping to
+  // 150 forces tiles3d to fail on noisy/incomplete extractions and let
+  // Roboflow take over as the consistent source.)
+  if (area < 150) {
     console.warn(
       `[Roof3DViewer] component too small to be a residence (${area} cells = ~${area}m²); rejecting so Roboflow can win`,
     );

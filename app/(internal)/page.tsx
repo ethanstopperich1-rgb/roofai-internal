@@ -266,21 +266,31 @@ export default function HomePage() {
     return v.confidence < 0.7; // ok=false but Claude isn't sure → keep
   };
 
-  // Polygon source priority — best-quality first:
-  //   1. 3D Tiles mesh    — height-thresholded from Google's photogrammetry
-  //                         (real geometric truth, no AI guessing)
-  //   2. Solar mask       — Project Sunroof's roof segmentation
-  //   3. Roboflow         — roof-trained instance segmenter on the satellite
-  //                         tile (Satellite Rooftop Map v3)
-  //   4. Solar facets     — multi-facet bboxes from findClosest (axis-aligned
-  //                         but useful for ridge/valley counting)
+  // Polygon source priority — best-quality first.
+  //
+  // tiles3d (3D mesh height extraction) was originally at #1 but DEMOTED
+  // below Roboflow because mesh quality varies wildly between properties.
+  // On properties with sparse/noisy photogrammetric mesh, tiles3d
+  // reproducibly extracts a tiny polygon on a shed near the geocode while
+  // missing the actual main house. Roboflow is more CONSISTENT (~85-90%
+  // accurate across all property types) even when not pixel-perfect.
+  // Pattern A validation gates Roboflow on the mesh, so when the mesh IS
+  // clean it improves Roboflow's score; when it's noisy, Roboflow still
+  // wins.
+  //
+  //   1. Solar mask       — Project Sunroof's roof segmentation
+  //                         (photogrammetric, ground truth where covered)
+  //   2. Roboflow         — roof-trained instance segmenter on satellite
+  //                         (Satellite Rooftop Map v3); consistent winner
+  //   3. 3D Tiles mesh    — height-thresholded from Google's photogrammetry.
+  //                         Demoted from #1 — only trusted when Roboflow
+  //                         doesn't fire. Now requires ≥150 cells (was 80).
+  //   4. Solar facets     — multi-facet bboxes from findClosest
   //   5. SAM 2 + OSM clip — point-prompted SAM with OSM building intersect
   //   6. OSM              — hand-traced building outline (~50-60% US, urban)
   //   7. MS Buildings     — open-data ML-extracted building footprints; fills
-  //                         OSM coverage gap on rural addresses (currently
-  //                         pre-extracted for Nashville metro only)
-  //   8. Claude vision    — Claude on the 2D satellite tile. Less precise
-  //                         than the segmenters above; rep should review.
+  //                         OSM coverage gap on rural addresses (Nashville)
+  //   8. Claude vision    — Claude on the 2D satellite tile. Last resort.
   //
   // tiles3d-vision (Claude on multi-angle 3D mesh renders) was REMOVED —
   // it consistently produced over-traced rectangles. Claude's general vision
@@ -302,9 +312,9 @@ export default function HomePage() {
     | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
-    if (validTiles3d) return "tiles3d";
     if (validSolarMask && passesValidation("solar-mask") && passesClaude("solar-mask")) return "solar-mask";
     if (validRoboflow && passesValidation("roboflow") && passesClaude("roboflow")) return "roboflow";
+    if (validTiles3d) return "tiles3d";
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
     if (validSam && passesValidation("sam") && passesClaude("sam")) return "sam";
     if (validOsm && passesValidation("osm") && passesClaude("osm")) return "osm";
@@ -332,9 +342,12 @@ export default function HomePage() {
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    if (validTiles3d) return [validTiles3d];
+    // NB: must mirror polygonSource priority above. Tiles3d is now BELOW
+    // Roboflow (Roboflow is the consistent winner; tiles3d falls back to
+    // it when mesh extraction is noisy/incomplete).
     if (validSolarMask) return [validSolarMask];
     if (validRoboflow) return [validRoboflow];
+    if (validTiles3d) return [validTiles3d];
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1)
       return solar.segmentPolygonsLatLng;
     if (validSam) return [validSam];
