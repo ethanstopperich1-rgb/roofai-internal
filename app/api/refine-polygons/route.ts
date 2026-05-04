@@ -50,7 +50,33 @@ export async function POST(req: Request) {
     });
   }
 
-  const result = await refineRoofPolygons({ lat, lng, googleMapsKey });
+  let result: RefineResult | null;
+  try {
+    result = await refineRoofPolygons({ lat, lng, googleMapsKey });
+  } catch (err) {
+    const code = err instanceof Error ? err.message : "unknown";
+    if (code === "REPLICATE_NO_CREDIT") {
+      return NextResponse.json(
+        {
+          error: "no_credit",
+          message:
+            "Replicate trial credit exhausted. Add billing at replicate.com/account/billing to enable roof outline refinement.",
+        },
+        { status: 402 },
+      );
+    }
+    if (code === "REPLICATE_UNAUTHORIZED") {
+      return NextResponse.json(
+        { error: "bad_token", message: "Invalid REPLICATE_API_TOKEN — regenerate at replicate.com." },
+        { status: 401 },
+      );
+    }
+    return NextResponse.json(
+      { error: "sam_error", message: code },
+      { status: 502 },
+    );
+  }
+
   if (!result) {
     return NextResponse.json(
       { error: "no_polygons", message: "Could not extract roof polygons from this property." },

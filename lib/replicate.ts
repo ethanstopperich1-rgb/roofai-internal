@@ -267,17 +267,25 @@ async function refineAtZoom(opts: {
   let output: unknown;
   try {
     output = await opts.replicate.run(MODEL, {
+      // Match meta/sam-2 input schema exactly — passing fields not in
+      // the schema (crop_n_layers, min_mask_region_area) was a latent bug.
       input: {
         image: dataUri,
         points_per_side: 32,
         pred_iou_thresh: 0.86,
         stability_score_thresh: 0.92,
-        crop_n_layers: 0,
-        min_mask_region_area: 800,
+        use_m2m: true,
       },
     });
   } catch (err) {
-    console.error(`[replicate] SAM call failed (zoom=${opts.zoom}):`, err);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[replicate] SAM call failed (zoom=${opts.zoom}):`, msg);
+    if (/Insufficient credit/i.test(msg)) {
+      throw new Error("REPLICATE_NO_CREDIT");
+    }
+    if (/401|Unauthenticated/i.test(msg)) {
+      throw new Error("REPLICATE_UNAUTHORIZED");
+    }
     return null;
   }
 
@@ -377,7 +385,15 @@ export async function refineRoofPolygons(opts: {
 
   const replicate = new Replicate({ auth: replicateKey });
 
-  const tight = await refineAtZoom({ ...opts, replicate, zoom: 20 });
+  // Don't bother retrying at zoom 19 if the SAM call itself failed
+  // for a known reason (no credit, bad token) — the second attempt
+  // would fail identically.
+  let tight: RefineResult | null;
+  try {
+    tight = await refineAtZoom({ ...opts, replicate, zoom: 20 });
+  } catch (err) {
+    throw err;
+  }
   if (tight) return tight;
 
   console.log("[replicate] zoom=20 produced no roof; retrying at zoom=19");
