@@ -358,6 +358,91 @@ export function generatePdf(e: Estimate) {
   doc.text("Customer Signature", MARGIN, y + 14);
   doc.text("Date", 320, y + 14);
 
+  // ─── Field Photos appendix ──────────────────────────────────────────
+  // For insurance work (and just for proposal credibility), append every
+  // uploaded photo with its AI caption + EXIF metadata. 6 photos per page,
+  // 3-col × 2-row grid.
+  if (e.photos && e.photos.length > 0) {
+    doc.addPage();
+    let py = MARGIN;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.setTextColor(20, 20, 20);
+    doc.text("Field Inspection Photos", MARGIN, py);
+    py += 8;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(110, 110, 120);
+    const claimReady = e.photos.filter((p) => p.claimReady).length;
+    doc.text(
+      `${e.photos.length} photo${e.photos.length === 1 ? "" : "s"} · ${claimReady} claim-ready (with GPS + timestamp)`,
+      MARGIN,
+      py + 8,
+    );
+    py += 24;
+
+    const cols = 3;
+    const rows = 2;
+    const perPage = cols * rows;
+    const cellW = (W - MARGIN * 2 - (cols - 1) * 8) / cols;
+    const cellH = (H - py - MARGIN - (rows - 1) * 8) / rows;
+
+    for (let i = 0; i < e.photos.length; i++) {
+      const localIdx = i % perPage;
+      if (i > 0 && localIdx === 0) {
+        doc.addPage();
+        py = MARGIN;
+      }
+      const col = localIdx % cols;
+      const row = Math.floor(localIdx / cols);
+      const x = MARGIN + col * (cellW + 8);
+      const y = py + row * (cellH + 8);
+      const photo = e.photos[i];
+
+      // Caption + tag chip area: bottom 36pt of the cell
+      const imgH = cellH - 36;
+      try {
+        // jsPDF accepts data: URIs and remote URLs (when 'compress' option is fine).
+        // We pass URL directly; jsPDF fetches via Image() under the hood when
+        // running in a browser environment.
+        doc.addImage(photo.url, "JPEG", x, y, cellW, imgH, undefined, "FAST");
+      } catch {
+        doc.setDrawColor(220);
+        doc.rect(x, y, cellW, imgH);
+        doc.setFontSize(8);
+        doc.text("[image unavailable]", x + 6, y + 14);
+      }
+
+      // Index badge top-left
+      doc.setFillColor(7, 9, 13);
+      doc.roundedRect(x + 4, y + 4, 22, 14, 2, 2, "F");
+      doc.setTextColor(230, 237, 245);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.text(`#${i + 1}`, x + 15, y + 13, { align: "center" });
+
+      // Footer caption + tags
+      doc.setTextColor(20, 20, 20);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      const caption = photo.caption || photo.filename;
+      const capLines = doc.splitTextToSize(caption, cellW);
+      doc.text(capLines.slice(0, 2), x, y + imgH + 10);
+
+      // Tags + claim-ready badge
+      const tagText = photo.tags
+        .slice(0, 3)
+        .map((t) => t.kind.replace(/-/g, " "))
+        .join(" · ");
+      doc.setTextColor(110, 110, 120);
+      doc.setFontSize(7);
+      doc.text(tagText, x, y + imgH + 28);
+      const dateStr = photo.takenAt ? new Date(photo.takenAt).toLocaleDateString() : "—";
+      const meta = `${dateStr}${photo.location ? " · GPS ✓" : ""}${photo.claimReady ? " · CLAIM-READY" : ""}`;
+      doc.text(meta, x + cellW, y + imgH + 28, { align: "right" });
+    }
+  }
+
   // ─── AI-disclosure footer (Texas SB 1665 effective 2026; voluntary best
   // practice everywhere else). Roof measurements + damage flags came from
   // automated satellite analysis with optional human review. Surfacing this

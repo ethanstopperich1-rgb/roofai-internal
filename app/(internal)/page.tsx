@@ -16,6 +16,8 @@ import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
 import RoofBlueprint from "@/components/RoofBlueprint";
 import PolygonSizeWarning from "@/components/PolygonSizeWarning";
+import PhotoUploadPanel from "@/components/PhotoUploadPanel";
+import type { PhotoMeta } from "@/types/photo";
 import dynamic from "next/dynamic";
 import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
 
@@ -97,6 +99,7 @@ export default function HomePage() {
   const [visionLoading, setVisionLoading] = useState(false);
   const [visionError, setVisionError] = useState<string>("");
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
+  const [photos, setPhotos] = useState<PhotoMeta[]>([]);
   const [osmBuildingPolygon, setOsmBuildingPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
@@ -613,6 +616,7 @@ export default function HomePage() {
     waste,
     polygons: activePolygons ?? undefined,
     polygonSource: polygonSource === "none" ? undefined : polygonSource,
+    photos: photos.length ? photos : undefined,
   };
 
   const applyTier = (tier: ProposalTier) => {
@@ -649,6 +653,7 @@ export default function HomePage() {
     setVision(null);
     setVisionError("");
     setIsInsuranceClaim(false);
+    setPhotos([]);
     setLivePolygons(null);
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
@@ -896,6 +901,7 @@ export default function HomePage() {
             <div className="space-y-6">
               <PropertyContextPanel address={address} />
               <StormHistoryCard lat={address?.lat} lng={address?.lng} />
+              <PhotoUploadPanel photos={photos} onChange={setPhotos} />
               <div className="glass rounded-2xl p-5 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="font-display font-semibold tracking-tight">Customer & Notes</div>

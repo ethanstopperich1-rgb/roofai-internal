@@ -197,6 +197,8 @@ export interface WasteTable {
   rows: WasteRow[];
 }
 
+import type { PhotoMeta } from "./photo";
+
 export interface Estimate {
   id: string;
   createdAt: string;
@@ -221,6 +223,9 @@ export interface Estimate {
   lengths?: RoofLengths;
   /** Optional — EagleView-style waste calculation table */
   waste?: WasteTable;
+  /** Field-inspection photos uploaded by the rep, AI-tagged for damage,
+   *  EXIF-preserved for insurance claims. Persisted with the estimate. */
+  photos?: PhotoMeta[];
   /** Optional — the polygon(s) actually used for measurement, after any
    *  rep edits. Persisted so reopening an estimate restores the exact roof
    *  geometry it was priced against. Lat/lng order. */
