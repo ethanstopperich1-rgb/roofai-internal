@@ -70,8 +70,10 @@ async function fetchSatelliteImage(opts: {
   lat: number;
   lng: number;
   apiKey: string;
+  zoom?: number;
 }): Promise<{ buffer: Buffer; base64: string } | null> {
-  const url = `https://maps.googleapis.com/maps/api/staticmap?center=${opts.lat},${opts.lng}&zoom=${IMAGE_ZOOM}&size=${IMAGE_SIZE_PX}x${IMAGE_SIZE_PX}&maptype=satellite&key=${opts.apiKey}`;
+  const zoom = opts.zoom ?? IMAGE_ZOOM;
+  const url = `https://maps.googleapis.com/maps/api/staticmap?center=${opts.lat},${opts.lng}&zoom=${zoom}&size=${IMAGE_SIZE_PX}x${IMAGE_SIZE_PX}&maptype=satellite&key=${opts.apiKey}`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) return null;
   const buf = Buffer.from(await res.arrayBuffer());
@@ -242,37 +244,31 @@ function scoreAndRankMasks(
 }
 
 /**
- * Run SAM 2 on the property and return refined polygons in lat/lng space.
+ * One pass of SAM at a specific zoom level. Returns null when no usable
+ * polygons are produced — caller can retry at a different zoom.
  */
-export async function refineRoofPolygons(opts: {
+async function refineAtZoom(opts: {
   lat: number;
   lng: number;
   googleMapsKey: string;
+  replicate: Replicate;
+  zoom: number;
 }): Promise<RefineResult | null> {
-  const replicateKey = process.env.REPLICATE_API_TOKEN;
-  if (!replicateKey) {
-    console.warn("[replicate] REPLICATE_API_TOKEN not set");
-    return null;
-  }
-
   const img = await fetchSatelliteImage({
     lat: opts.lat,
     lng: opts.lng,
     apiKey: opts.googleMapsKey,
+    zoom: opts.zoom,
   });
   if (!img) return null;
 
-  const replicate = new Replicate({ auth: replicateKey });
-
-  // SAM 2 expects a public-ish URL or data URI. Data URI works for small images.
   const dataUri = `data:image/png;base64,${img.base64}`;
 
   let output: unknown;
   try {
-    output = await replicate.run(MODEL, {
+    output = await opts.replicate.run(MODEL, {
       input: {
         image: dataUri,
-        // Auto-mask params tuned for satellite roof tiles
         points_per_side: 32,
         pred_iou_thresh: 0.86,
         stability_score_thresh: 0.92,
@@ -281,18 +277,16 @@ export async function refineRoofPolygons(opts: {
       },
     });
   } catch (err) {
-    console.error("[replicate] SAM call failed:", err);
+    console.error(`[replicate] SAM call failed (zoom=${opts.zoom}):`, err);
     return null;
   }
 
-  // SAM 2 on Replicate returns either a single combined mask URL or list of mask URLs
   const maskUrls: string[] = [];
   const collect = (v: unknown) => {
     if (typeof v === "string" && v.startsWith("http")) maskUrls.push(v);
     else if (Array.isArray(v)) v.forEach(collect);
     else if (v && typeof v === "object") {
       const obj = v as Record<string, unknown>;
-      // Common keys we've seen in practice
       for (const key of [
         "individual_masks",
         "masks",
@@ -307,11 +301,10 @@ export async function refineRoofPolygons(opts: {
   collect(output);
 
   if (maskUrls.length === 0) {
-    console.warn("[replicate] no mask URLs in output:", output);
+    console.warn(`[replicate] zoom=${opts.zoom}: no mask URLs in output`);
     return null;
   }
 
-  // Process each mask: download, threshold, contour, simplify
   const candidates: Array<{ polygon: Array<[number, number]>; area: number }> = [];
   for (const url of maskUrls.slice(0, 30)) {
     try {
@@ -332,17 +325,15 @@ export async function refineRoofPolygons(opts: {
     }
   }
 
-  console.log(`[replicate] SAM produced ${candidates.length} candidate polygons`);
+  console.log(
+    `[replicate] zoom=${opts.zoom}: SAM produced ${candidates.length} candidates`,
+  );
   const ranked = scoreAndRankMasks(candidates, IMAGE_SIZE_PX);
   console.log(
-    `[replicate] ${ranked.length} survived size/aspect filter; top score=${ranked[0]?.score.toFixed(2) ?? "n/a"}`,
+    `[replicate] zoom=${opts.zoom}: ${ranked.length} survived; top score=${ranked[0]?.score.toFixed(2) ?? "n/a"}`,
   );
 
-  // Take up to 8 polygons, but be greedy: include lower-scored ones if the
-  // top-scorer is by itself (single facet on a simple roof) or if there are
-  // visually nearby segments that also scored decently.
   const top = ranked.slice(0, 8);
-
   if (top.length === 0) return null;
 
   const polygons: RefinedPolygon[] = top.map(({ polygon, area }) => ({
@@ -354,7 +345,7 @@ export async function refineRoofPolygons(opts: {
         centerLat: opts.lat,
         centerLng: opts.lng,
         imgSize: IMAGE_SIZE_PX,
-        zoom: IMAGE_ZOOM,
+        zoom: opts.zoom,
       }),
     ),
   }));
@@ -365,4 +356,30 @@ export async function refineRoofPolygons(opts: {
     imageMimeType: "image/png",
     rawMaskUrls: maskUrls,
   };
+}
+
+/**
+ * Public entry point. Tries SAM at zoom 20 first (best detail) and falls
+ * back to zoom 19 if no roof is found — this rescues rural / suburban
+ * properties where the geocode pins to the parcel center and the building
+ * sits partly outside the zoom-20 frame.
+ */
+export async function refineRoofPolygons(opts: {
+  lat: number;
+  lng: number;
+  googleMapsKey: string;
+}): Promise<RefineResult | null> {
+  const replicateKey = process.env.REPLICATE_API_TOKEN;
+  if (!replicateKey) {
+    console.warn("[replicate] REPLICATE_API_TOKEN not set");
+    return null;
+  }
+
+  const replicate = new Replicate({ auth: replicateKey });
+
+  const tight = await refineAtZoom({ ...opts, replicate, zoom: 20 });
+  if (tight) return tight;
+
+  console.log("[replicate] zoom=20 produced no roof; retrying at zoom=19");
+  return refineAtZoom({ ...opts, replicate, zoom: 19 });
 }
