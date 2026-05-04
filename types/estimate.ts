@@ -231,6 +231,7 @@ export interface Estimate {
     | "tiles3d-vision"
     | "tiles3d"
     | "solar-mask"
+    | "roboflow"
     | "solar"
     | "sam"
     | "osm"

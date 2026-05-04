@@ -116,10 +116,21 @@ export default function HomePage() {
     Array<{ lat: number; lng: number }> | null
   >(null);
   // Polygon from Claude reviewing 5 multi-angle renders of the 3D mesh
-  // (top-down + 4 obliques). HIGHEST-priority source — Claude can
-  // disambiguate the target house using the marker we draw in every view
-  // and triple-check the trace from cardinal angles. ~6-10s after 3D loads.
+  // (top-down + 4 obliques). DEMOTED to near-bottom of the priority chain:
+  // when 3D Tiles haven't fully loaded by the time the screenshots fire,
+  // Claude traces a tilted rectangle over the partially-rendered mesh
+  // ("jammed into the house" failure mode). Roof3DViewer pulls the camera
+  // back + waits longer, but it's still less reliable than a roof-trained
+  // segmenter on the 2D satellite tile.
   const [multiViewPolygon, setMultiViewPolygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
+  // Roboflow Hosted Inference — roof-specific instance segmentation on the
+  // same satellite tile the rest of the pipeline uses. Bake-off in
+  // scripts/eval-roboflow.ts picked Satellite Rooftop Map (v3) — nailed a
+  // hip-roof house at 92% confidence where tiles3d-vision had been
+  // returning a wrong-angle rectangle.
+  const [roboflowPolygon, setRoboflowPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
   // Live polygons after the rep edits a vertex. When set, overrides the
@@ -202,51 +213,60 @@ export default function HomePage() {
   const validMultiView = useMemo(() => validateAtAddress(multiViewPolygon), [multiViewPolygon, address?.lat, address?.lng]);
   const validTiles3d = useMemo(() => validateAtAddress(tiles3dPolygon), [tiles3dPolygon, address?.lat, address?.lng]);
   const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng]);
+  const validRoboflow = useMemo(() => validateAtAddress(roboflowPolygon), [roboflowPolygon, address?.lat, address?.lng]);
   const validSam = useMemo(() => validateAtAddress(samRefinedPolygon), [samRefinedPolygon, address?.lat, address?.lng]);
   const validOsm = useMemo(() => validateAtAddress(osmBuildingPolygon), [osmBuildingPolygon, address?.lat, address?.lng]);
   const validClaude = useMemo(() => validateAtAddress(claudePolygonLatLng), [claudePolygonLatLng, address?.lat, address?.lng]);
 
   // Polygon source priority — best-quality first:
-  //   1. 3D Tiles mesh — height-thresholded from Google's photogrammetry
-  //                      (real geometric truth, no AI guessing)
-  //   2. Solar mask    — Project Sunroof's roof segmentation
-  //   3. Solar facets  — multi-facet bboxes from findClosest (axis-aligned
-  //                      but useful for ridge/valley counting)
-  //   4. SAM 2 + OSM   — point-prompted SAM with OSM building clip
-  //   5. OSM           — human-traced building outline (~50-60% US)
-  //   6. Claude vision — last-resort AI trace
+  //   1. 3D Tiles mesh   — height-thresholded from Google's photogrammetry
+  //                        (real geometric truth, no AI guessing)
+  //   2. Solar mask      — Project Sunroof's roof segmentation
+  //   3. Roboflow        — roof-trained instance segmenter on the satellite
+  //                        tile (Satellite Rooftop Map v3)
+  //   4. Solar facets    — multi-facet bboxes from findClosest (axis-aligned
+  //                        but useful for ridge/valley counting)
+  //   5. SAM 2 + OSM     — point-prompted SAM with OSM building clip
+  //   6. OSM             — human-traced building outline (~50-60% US)
+  //   7. tiles3d-vision  — Claude on multi-angle 3D mesh renders. DEMOTED
+  //                        from #1 because partial-LOD captures consistently
+  //                        produced wrong-angle rectangles.
+  //   8. Claude vision   — last-resort AI trace on the satellite tile
   // Each source goes through the wrong-house guard above before being
   // considered — a polygon that doesn't contain (or live very near to) the
   // geocoded address is dropped on the floor regardless of source.
   const polygonSource = useMemo<
     | "edited"
-    | "tiles3d-vision"
     | "tiles3d"
     | "solar-mask"
+    | "roboflow"
     | "solar"
     | "sam"
     | "osm"
+    | "tiles3d-vision"
     | "ai"
     | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
-    if (validMultiView) return "tiles3d-vision";
     if (validTiles3d) return "tiles3d";
     if (validSolarMask) return "solar-mask";
+    if (validRoboflow) return "roboflow";
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
     if (validSam) return "sam";
     if (validOsm) return "osm";
+    if (validMultiView) return "tiles3d-vision";
     if (validClaude) return "ai";
     return "none";
   }, [
     livePolygons,
-    validMultiView,
     validTiles3d,
     validSolarMask,
+    validRoboflow,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
     validSam,
     validOsm,
+    validMultiView,
     validClaude,
   ]);
 
@@ -256,23 +276,25 @@ export default function HomePage() {
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    if (validMultiView) return [validMultiView];
     if (validTiles3d) return [validTiles3d];
     if (validSolarMask) return [validSolarMask];
+    if (validRoboflow) return [validRoboflow];
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1)
       return solar.segmentPolygonsLatLng;
     if (validSam) return [validSam];
     if (validOsm) return [validOsm];
+    if (validMultiView) return [validMultiView];
     if (validClaude) return [validClaude];
     return undefined;
   }, [
-    validMultiView,
     validTiles3d,
     validSolarMask,
+    validRoboflow,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
     validSam,
     validOsm,
+    validMultiView,
     validClaude,
   ]);
 
@@ -493,6 +515,21 @@ export default function HomePage() {
       })
       .catch(() => null);
 
+    // Roboflow Hosted Inference (Satellite Rooftop Map v3) — fires in parallel
+    // with everything else. ~1-2s latency. Slots between Solar mask and SAM
+    // in the priority chain — beats SAM/OSM/Claude on most addresses thanks
+    // to roof-specific training, but Solar mask wins when both available
+    // because Solar is photogrammetric ground truth.
+    const roboflowPromise = fetch(`/api/roboflow?lat=${addr.lat}&lng=${addr.lng}`)
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const data = (await r.json()) as {
+          polygon?: Array<{ lat: number; lng: number }>;
+        };
+        return data.polygon && data.polygon.length >= 3 ? data.polygon : null;
+      })
+      .catch(() => null);
+
     // Compound-pipeline SAM refinement — fires in parallel with everything
     // else. ~5-10s latency on Replicate so the cheaper sources show first
     // and SAM "snaps" the polygon tighter when it returns.
@@ -533,9 +570,16 @@ export default function HomePage() {
       })
       .finally(() => setSamRefining(false));
 
-    // Solar mask is the highest-priority source — same edit-stomp guard.
+    // Solar mask is one of the top-priority sources — same edit-stomp guard.
     solarMaskPromise.then((maskPoly) => {
       if (maskPoly && !hasUserEditedRef.current) setSolarMaskPolygon(maskPoly);
+    });
+
+    // Roboflow — same edit-stomp guard. When this returns, the priority
+    // chain in `polygonSource` decides whether it wins (it does when
+    // Solar mask is unavailable / 3D Tiles haven't loaded yet).
+    roboflowPromise.then((rfPoly) => {
+      if (rfPoly && !hasUserEditedRef.current) setRoboflowPolygon(rfPoly);
     });
 
     setAssumptions((a) => {
@@ -615,6 +659,7 @@ export default function HomePage() {
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
+    setRoboflowPolygon(null);
     setTiles3dPolygon(null);
     setMultiViewPolygon(null);
     hasUserEditedRef.current = false;
@@ -625,11 +670,12 @@ export default function HomePage() {
     if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
     if (polygonSource === "edited") badges.push("Edited");
-    else if (polygonSource === "tiles3d-vision") badges.push("3D AI verified");
     else if (polygonSource === "tiles3d") badges.push("3D mesh");
     else if (polygonSource === "solar-mask") badges.push("Solar mask");
+    else if (polygonSource === "roboflow") badges.push("Roof AI");
     else if (polygonSource === "sam") badges.push("SAM 2 refined");
     else if (polygonSource === "osm") badges.push("OSM traced");
+    else if (polygonSource === "tiles3d-vision") badges.push("3D AI verified");
     else if (polygonSource === "ai") badges.push("AI traced");
     else if (samRefining) badges.push("Refining…");
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
@@ -755,23 +801,25 @@ export default function HomePage() {
               editing={polygonSource === "edited"}
               pitchDegrees={solar?.pitchDegrees ?? null}
               sourceLabel={
-                polygonSource === "tiles3d-vision"
-                  ? "3D AI verified"
-                  : polygonSource === "tiles3d"
-                    ? "3D mesh"
-                    : polygonSource === "solar-mask"
-                      ? "Solar mask"
+                polygonSource === "tiles3d"
+                  ? "3D mesh"
+                  : polygonSource === "solar-mask"
+                    ? "Solar mask"
+                    : polygonSource === "roboflow"
+                      ? "Roof AI"
                       : polygonSource === "solar"
                         ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
                         : polygonSource === "sam"
                           ? "SAM 2 refined"
                           : polygonSource === "osm"
                             ? "OSM traced"
-                            : polygonSource === "ai"
-                              ? "AI traced"
-                              : polygonSource === "edited"
-                                ? "Edited by hand"
-                                : undefined
+                            : polygonSource === "tiles3d-vision"
+                              ? "3D AI verified"
+                              : polygonSource === "ai"
+                                ? "AI traced"
+                                : polygonSource === "edited"
+                                  ? "Edited by hand"
+                                  : undefined
               }
             />
           )}

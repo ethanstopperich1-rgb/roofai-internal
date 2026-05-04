@@ -19,6 +19,7 @@ interface Props {
     | "tiles3d-vision"
     | "tiles3d"
     | "solar-mask"
+    | "roboflow"
     | "solar"
     | "sam"
     | "osm"
@@ -407,11 +408,19 @@ async function extractRoofPolygonFromTiles(opts: {
 // casting needed).
 // ============================================================================
 
-const TOPDOWN_HALF_WIDTH_M = 35;       // top-down view covers ±35m around centerpoint
-const TOPDOWN_ALTITUDE_M = 250;
-const OBLIQUE_RANGE_M = 110;
+// Camera capture geometry for the multi-view pipeline.
+// Pulled back from the previous 110m oblique range — at the tighter range
+// the 3D Tiles loader didn't have time to fetch high-LOD tiles before the
+// screenshot fired, so Claude received partially-rendered mesh and
+// produced "tilted box" polygons that didn't match the actual roof
+// (a.k.a. the "jammed into the house" failure mode). Pulling back gives
+// Cesium a wider field at lower per-tile LOD that loads more reliably,
+// at the cost of slightly lower roof-pixel resolution per oblique.
+const TOPDOWN_HALF_WIDTH_M = 40;       // top-down covers ±40m (was 35)
+const TOPDOWN_ALTITUDE_M = 320;        // was 250
+const OBLIQUE_RANGE_M = 160;           // was 110
 const OBLIQUE_PITCH_DEG = -45;
-const SETTLE_MS = 800;
+const SETTLE_MS = 1200;                // was 800 — more time for tiles to render
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
