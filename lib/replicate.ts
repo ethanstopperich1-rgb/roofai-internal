@@ -185,19 +185,20 @@ function douglasPeucker(
 }
 
 /**
- * Filter and rank masks: keep ones that
- *   - cover at least 1% of the image
- *   - have their centroid within the inner 50% (so we ignore edge artifacts)
- *   - aspect ratio < 6:1 (reject long thin "road" masks)
+ * Score each mask against soft heuristics (centeredness, aspect, edge contact),
+ * drop only the masks that look obviously wrong (full-frame backgrounds, tiny
+ * specks, image-spanning rectangles), and rank the rest. We keep at least the
+ * top candidate even if it scores poorly so suburban / rural properties where
+ * the building is off-center still get a polygon.
  */
-function filterRoofMasks(
+function scoreAndRankMasks(
   candidates: Array<{ polygon: Array<[number, number]>; area: number }>,
   imgSize: number,
-): Array<{ polygon: Array<[number, number]>; area: number }> {
-  const minArea = imgSize * imgSize * 0.01;
+): Array<{ polygon: Array<[number, number]>; area: number; score: number }> {
+  const totalArea = imgSize * imgSize;
   const center = imgSize / 2;
-  return candidates.filter(({ polygon, area }) => {
-    if (area < minArea) return false;
+
+  const scored = candidates.map(({ polygon, area }) => {
     let cx = 0, cy = 0;
     let minX = imgSize, minY = imgSize, maxX = 0, maxY = 0;
     for (const [x, y] of polygon) {
@@ -208,14 +209,36 @@ function filterRoofMasks(
       if (y > maxY) maxY = y;
     }
     cx /= polygon.length; cy /= polygon.length;
-    const distToCenter = Math.hypot(cx - center, cy - center);
-    if (distToCenter > imgSize * 0.30) return false;
     const w = maxX - minX || 1;
     const h = maxY - minY || 1;
     const ratio = Math.max(w, h) / Math.min(w, h);
-    if (ratio > 6) return false;
-    return true;
+    const distToCenter = Math.hypot(cx - center, cy - center);
+    const fillFraction = area / totalArea;
+    const touchesEdge =
+      minX < 4 || minY < 4 || maxX > imgSize - 4 || maxY > imgSize - 4;
+
+    // Soft score: closer to center + reasonable aspect + reasonable size = higher
+    const centerScore = 1 - Math.min(1, distToCenter / (imgSize * 0.5));
+    const aspectScore = ratio < 4 ? 1 : ratio < 8 ? 0.5 : 0.1;
+    const sizeScore =
+      fillFraction < 0.005 ? 0.2 :
+      fillFraction < 0.50 ? 1 : 0.2; // large = probably not a roof
+    const edgePenalty = touchesEdge ? 0.4 : 1;
+    const score = centerScore * aspectScore * sizeScore * edgePenalty;
+
+    return { polygon, area, score, fillFraction, ratio, touchesEdge };
   });
+
+  // Drop only the obviously wrong:
+  //   - tiny (< 0.3% of image)
+  //   - background (> 65% of image)
+  //   - silly-thin (> 12:1)
+  const filtered = scored.filter(
+    (m) => m.fillFraction >= 0.003 && m.fillFraction <= 0.65 && m.ratio <= 12,
+  );
+
+  filtered.sort((a, b) => b.score - a.score);
+  return filtered;
 }
 
 /**
@@ -309,10 +332,16 @@ export async function refineRoofPolygons(opts: {
     }
   }
 
-  const filtered = filterRoofMasks(candidates, IMAGE_SIZE_PX);
-  // Sort largest first; cap at top 8 (typical residential roof has ≤8 facets)
-  filtered.sort((a, b) => b.area - a.area);
-  const top = filtered.slice(0, 8);
+  console.log(`[replicate] SAM produced ${candidates.length} candidate polygons`);
+  const ranked = scoreAndRankMasks(candidates, IMAGE_SIZE_PX);
+  console.log(
+    `[replicate] ${ranked.length} survived size/aspect filter; top score=${ranked[0]?.score.toFixed(2) ?? "n/a"}`,
+  );
+
+  // Take up to 8 polygons, but be greedy: include lower-scored ones if the
+  // top-scorer is by itself (single facet on a simple roof) or if there are
+  // visually nearby segments that also scored decently.
+  const top = ranked.slice(0, 8);
 
   if (top.length === 0) return null;
 

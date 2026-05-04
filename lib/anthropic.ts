@@ -9,7 +9,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { RoofVision } from "@/types/estimate";
 
-const MODEL = "claude-sonnet-4-5";
+const MODEL = "claude-sonnet-4-6";
 
 const SYSTEM_PROMPT = `You are a roofing inspector analyzing aerial imagery for a sales rep at a roofing company. Your job is to extract structured visual signals from a satellite image of a single residential property. The image is 640x640 pixels with the property roughly centered.
 
