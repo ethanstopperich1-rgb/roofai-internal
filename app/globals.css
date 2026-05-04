@@ -376,3 +376,19 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   border-color: rgba(103,220,255,0.30);
   color: #b3edff;
 }
+
+/* ─── Animated dots used by Roof3DViewer "Generating…" pill ─────────── */
+.generating-dots::after {
+  content: "";
+  display: inline-block;
+  width: 1.3em;
+  text-align: left;
+  animation: generatingDots 1.4s steps(4, end) infinite;
+}
+@keyframes generatingDots {
+  0%   { content: ""; }
+  25%  { content: "."; }
+  50%  { content: ".."; }
+  75%  { content: "..."; }
+  100% { content: ""; }
+}

@@ -58,6 +58,121 @@ Return ONLY this strict JSON, no preamble, no markdown fences:
   • confidence: 0..1 — how strongly the 4 oblique views agree with your top-down trace. 0.9+ = all 4 obliques cleanly match. 0.5–0.8 = some wings unclear. <0.5 = significant disagreement, you would not bet on this.
   • Vertices must be rectilinear (parallel/perpendicular) where the roof is rectilinear, which is ~95% of residential cases.`;
 
+/** Composite a polygon onto the top-down image as a translucent overlay so
+ *  Claude can review its own trace against the actual rooftop in pixel space.
+ *  Used by the verification pass. */
+async function renderPolygonOverlay(
+  topDownBase64: string,
+  polygon: Array<[number, number]>,
+): Promise<string> {
+  try {
+    const sharp = (await import("sharp")).default;
+    const buf = Buffer.from(topDownBase64, "base64");
+    const meta = await sharp(buf).metadata();
+    const w = meta.width ?? 1024;
+    const h = meta.height ?? 1024;
+    const points = polygon.map(([x, y]) => `${Math.round(x)},${Math.round(y)}`).join(" ");
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+      <polygon points="${points}" fill="rgba(255,40,40,0.18)" stroke="#ff2828" stroke-width="3" stroke-linejoin="round" />
+      <g fill="#ff2828">
+        ${polygon.map(([x, y]) => `<circle cx="${Math.round(x)}" cy="${Math.round(y)}" r="5" />`).join("")}
+      </g>
+    </svg>`;
+    const composed = await sharp(buf)
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .png()
+      .toBuffer();
+    return composed.toString("base64");
+  } catch (err) {
+    console.warn("[3d-vision-multiview] overlay failed:", err);
+    return topDownBase64;
+  }
+}
+
+const VERIFY_SYSTEM_PROMPT = `You are reviewing your own roof trace. The image is the top-down photogrammetric view with your previous polygon drawn as a RED outline (with red dots at vertices) over the rooftop.
+
+Look carefully at the eaves of the target house (under the red ground pin from the original task). Compare them to the red polygon you drew.
+
+Decide:
+  • If the red polygon is tight on the actual roof eaves → return SAME polygon, status "ok".
+  • If the polygon is too LARGE in places (covers yard / driveway / overhang past eave) → return a TIGHTER polygon, status "tightened".
+  • If the polygon is too SMALL in places (missing wings or sections of the actual roof) → return an EXPANDED polygon, status "expanded".
+  • If both — return adjusted polygon, status "adjusted".
+
+Strict JSON, no preamble:
+{
+  "status": "ok" | "tightened" | "expanded" | "adjusted",
+  "polygon": [[x1,y1], ...],
+  "reason": "<one short clause>"
+}
+
+Polygon must remain rectilinear where the roof is rectilinear (95% of cases). 4-14 vertices, clockwise, in TOP-DOWN PIXEL COORDS.`;
+
+async function verifyPolygon(opts: {
+  apiKey: string;
+  topDownBase64: string;
+  polygon: Array<[number, number]>;
+}): Promise<{ polygon: Array<[number, number]>; status: string; reason: string } | null> {
+  const overlaid = await renderPolygonOverlay(opts.topDownBase64, opts.polygon);
+  const client = new Anthropic({ apiKey: opts.apiKey });
+  try {
+    const message = await client.messages.create({
+      model: MODEL,
+      max_tokens: 1500,
+      system: VERIFY_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: overlaid },
+            },
+            { type: "text", text: "Review the red trace and return JSON per system prompt." },
+          ],
+        },
+      ],
+    });
+    const block = message.content.find((b) => b.type === "text");
+    if (!block || block.type !== "text") return null;
+    const trimmed = block.text.trim();
+    const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+    const candidate = fence ? fence[1] : trimmed;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      const start = candidate.indexOf("{");
+      const end = candidate.lastIndexOf("}");
+      if (start < 0 || end <= start) return null;
+      try {
+        parsed = JSON.parse(candidate.slice(start, end + 1));
+      } catch {
+        return null;
+      }
+    }
+    const v = parsed as Record<string, unknown>;
+    if (!Array.isArray(v.polygon)) return null;
+    const polygon: Array<[number, number]> = [];
+    for (const p of v.polygon) {
+      if (!Array.isArray(p) || p.length !== 2) continue;
+      const x = typeof p[0] === "number" ? p[0] : null;
+      const y = typeof p[1] === "number" ? p[1] : null;
+      if (x == null || y == null) continue;
+      polygon.push([x, y]);
+    }
+    if (polygon.length < 3) return null;
+    return {
+      polygon,
+      status: typeof v.status === "string" ? v.status : "unknown",
+      reason: typeof v.reason === "string" ? v.reason : "",
+    };
+  } catch (err) {
+    console.error("[3d-vision-multiview] verify error:", err);
+    return null;
+  }
+}
+
 async function callClaude(opts: {
   apiKey: string;
   topDownBase64: string;
@@ -192,7 +307,38 @@ export async function POST(req: Request) {
     if (!result) {
       return NextResponse.json({ error: "no_polygon", message: "Claude returned no polygon" }, { status: 502 });
     }
-    return NextResponse.json(result);
+
+    // Verification pass — render the polygon back onto the top-down image
+    // and ask Claude to grade its own trace. The "look at what you drew"
+    // framing catches the common failure mode where the first-pass polygon
+    // looks plausible in the abstract but is visibly loose against the
+    // actual eaves. Skip the verify call when the first-pass confidence
+    // is already very high (>= 0.92) — saves a Claude call when there's
+    // nothing to refine.
+    let verifiedPolygon = result.polygon;
+    let verifyStatus = "skipped";
+    let verifyReason = "first-pass confidence high";
+    if (result.confidence < 0.92) {
+      const verify = await verifyPolygon({
+        apiKey,
+        topDownBase64: topDown,
+        polygon: result.polygon,
+      });
+      if (verify) {
+        verifiedPolygon = verify.polygon;
+        verifyStatus = verify.status;
+        verifyReason = verify.reason;
+        console.log(
+          `[3d-vision-multiview] verify → ${verify.status} (${verify.reason})`,
+        );
+      }
+    }
+
+    return NextResponse.json({
+      ...result,
+      polygon: verifiedPolygon,
+      verify: { status: verifyStatus, reason: verifyReason },
+    });
   } catch (err) {
     console.error("[3d-vision-multiview] error:", err);
     return NextResponse.json(

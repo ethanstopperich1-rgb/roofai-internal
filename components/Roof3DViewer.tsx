@@ -978,9 +978,13 @@ export default function Roof3DViewer({
       )}
 
       {status === "ready" && (extracting || analyzing) && (
-        <div className="absolute top-2.5 left-2.5 z-10 chip chip-accent backdrop-blur-md bg-[#07090d]/65">
-          <Sparkles size={11} className="animate-pulse" />
-          <span>{analyzing ? "Multi-view review…" : "Reading 3D mesh…"}</span>
+        <div className="absolute inset-x-0 top-0 z-10 flex justify-center pointer-events-none">
+          <div className="mt-3 flex items-center gap-2 rounded-full border border-cy-300/40 bg-[#07090d]/85 backdrop-blur-md px-4 py-1.5 shadow-2xl shadow-cy-300/20">
+            <Sparkles size={13} className="text-cy-300 animate-pulse" />
+            <span className="font-mono text-[12px] uppercase tracking-[0.14em] text-cy-100">
+              Generating<span className="generating-dots" />
+            </span>
+          </div>
         </div>
       )}
       {status === "ready" && (
