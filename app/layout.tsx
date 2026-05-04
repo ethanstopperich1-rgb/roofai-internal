@@ -42,23 +42,23 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 function Header() {
   return (
     <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#07090d]/70 backdrop-blur-xl">
-      <div className="max-w-[1280px] mx-auto px-6 lg:px-10 h-14 flex items-center justify-between">
+      <div className="max-w-[1280px] mx-auto px-6 lg:px-10 h-20 flex items-center justify-between">
         <Link href="/" className="group flex items-center gap-2.5" aria-label="Voxaris Pitch">
           {/* Mobile: icon only */}
           <img
             src="/brand/logo-mark.png"
             alt=""
-            width={28}
-            height={28}
-            className="w-7 h-7 sm:hidden"
+            width={48}
+            height={48}
+            className="w-12 h-12 sm:hidden"
           />
-          {/* Desktop: full wordmark (transparent so it sits on the dark header) */}
+          {/* Desktop: full wordmark — bigger, breathes in the taller header */}
           <img
             src="/brand/logo-wordmark-alpha.png"
             alt="Voxaris Pitch"
             width={1672}
             height={941}
-            className="hidden sm:block h-7 w-auto"
+            className="hidden sm:block h-14 w-auto"
           />
           <span className="hidden sm:inline-block ml-1 chip text-[10px]">beta</span>
         </Link>
