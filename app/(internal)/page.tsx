@@ -15,6 +15,7 @@ import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
 import RoofBlueprint from "@/components/RoofBlueprint";
+import PolygonSizeWarning from "@/components/PolygonSizeWarning";
 import dynamic from "next/dynamic";
 import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
 
@@ -833,6 +834,23 @@ export default function HomePage() {
               }
             />
           )}
+
+          {/* ─── Polygon size sanity check ──────────────────────────────── */}
+          <PolygonSizeWarning
+            detectedSqft={assumptions.sqft}
+            solarFootprintSqft={solar?.buildingFootprintSqft ?? null}
+            pitchDegrees={solar?.pitchDegrees ?? null}
+            onAcceptSuggestion={(sqft) =>
+              setAssumptions((a) => ({ ...a, sqft }))
+            }
+            onManualEdit={() => {
+              const el = document.querySelector<HTMLInputElement>(
+                'input[type="number"]',
+              );
+              el?.focus();
+              el?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }}
+          />
 
           {/* ─── Headline price card — full width ──────────────────────── */}
           <ErrorBoundary>
