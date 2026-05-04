@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import NavHeader from "@/components/ui/nav-header";
 
 /**
  * Internal staff header. Hidden on customer-facing routes (/quote, /p/[id]).
@@ -26,11 +27,13 @@ export default function InternalHeader() {
           <span className="hidden md:inline-block ml-1 chip text-[10px]">beta</span>
         </Link>
 
-        <nav className="flex items-center gap-1 p-1 rounded-xl bg-white/[0.025] border border-white/[0.05] text-[12px] sm:text-[13px]">
-          <NavLink href="/">Estimator</NavLink>
-          <NavLink href="/history">History</NavLink>
-          <NavLink href="/admin" hideOnMobile>Admin</NavLink>
-        </nav>
+        <NavHeader
+          items={[
+            { label: "Estimator", href: "/" },
+            { label: "History", href: "/history" },
+            { label: "Admin", href: "/admin" },
+          ]}
+        />
 
         <div className="flex items-center gap-3 text-[12px] text-slate-400">
           <span className="hidden md:inline-flex items-center gap-2">
@@ -40,26 +43,5 @@ export default function InternalHeader() {
         </div>
       </div>
     </header>
-  );
-}
-
-function NavLink({
-  href,
-  children,
-  hideOnMobile,
-}: {
-  href: string;
-  children: React.ReactNode;
-  hideOnMobile?: boolean;
-}) {
-  return (
-    <Link
-      href={href}
-      className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-white/[0.06] transition ${
-        hideOnMobile ? "hidden sm:inline-block" : ""
-      }`}
-    >
-      {children}
-    </Link>
   );
 }

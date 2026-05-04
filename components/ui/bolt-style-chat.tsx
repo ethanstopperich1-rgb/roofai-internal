@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { ArrowRight, Loader2, MapPin, Search, ShieldCheck, Sparkles, Zap } from "lucide-react";
+import { AuroraButton } from "@/components/ui/aurora-button";
 
 interface Suggestion {
   placeId: string;
@@ -25,6 +26,8 @@ interface Props {
   announcementText?: string;
   onSubmit: (values: QuoteHeroFormValues) => void;
   submitting?: boolean;
+  /** Optional nav rendered inside the hero (right-side of the top bar) */
+  nav?: React.ReactNode;
 }
 
 /**
@@ -41,6 +44,7 @@ export function BoltStyleHero({
   announcementText = "Voxaris Pitch · Quick Quote",
   onSubmit,
   submitting = false,
+  nav,
 }: Props) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -66,15 +70,39 @@ export function BoltStyleHero({
   };
 
   return (
-    <div className="relative flex flex-col items-center justify-center min-h-[88vh] w-full overflow-hidden">
+    <div className="relative flex flex-col items-center min-h-screen w-full overflow-hidden">
       <RayBackground />
 
-      {/* Announcement chip */}
-      <div className="relative z-10 mb-8">
-        <AnnouncementBadge text={announcementText} />
-      </div>
+      {/* Top bar — logo big on the left, nav center, free-no-obligation right.
+          Sits inside the bolt canvas so there's no color seam between header
+          strip and hero background. */}
+      <header className="relative z-20 w-full">
+        <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-20 sm:h-24 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <img
+              src="/brand/logo-wordmark-alpha.png"
+              alt="Voxaris Pitch"
+              width={1672}
+              height={941}
+              className="h-12 sm:h-16 w-auto max-w-[260px] object-contain drop-shadow-[0_4px_24px_rgba(103,220,255,0.30)]"
+            />
+          </div>
+          {nav && <div className="hidden md:block">{nav}</div>}
+          <div className="hidden sm:flex items-center gap-2 text-[12px] font-mono uppercase tracking-[0.14em] text-slate-300">
+            <ShieldCheck size={13} className="text-mint" />
+            <span>Free · No-obligation</span>
+          </div>
+        </div>
+      </header>
 
-      <div className="relative z-10 w-full max-w-3xl px-4 mx-auto">
+      {/* Spacer pushes the rest into the rays */}
+      <div className="flex-1 flex flex-col items-center justify-center w-full pb-12">
+        {/* Announcement chip */}
+        <div className="relative z-10 mb-8">
+          <AnnouncementBadge text={announcementText} />
+        </div>
+
+        <div className="relative z-10 w-full max-w-3xl px-4 mx-auto">
         {/* Headline */}
         <div className="text-center mb-8">
           <h1 className="font-display text-[34px] sm:text-[48px] md:text-[56px] leading-[1.05] tracking-[-0.025em] font-semibold text-white">
@@ -169,15 +197,16 @@ export function BoltStyleHero({
           </div>
         </div>
 
-        {/* Trust */}
-        <div className="grid grid-cols-3 gap-3 mt-7">
-          <Trust icon={<Sparkles size={13} />} title="Satellite-measured" body="No tape measure visit needed" />
-          <Trust icon={<ShieldCheck size={13} />} title="Private" body="Your address is never sold" />
-          <Trust
-            icon={<ShieldCheck size={13} />}
-            title="No obligation"
-            body="See the price before sharing more"
-          />
+          {/* Trust */}
+          <div className="grid grid-cols-3 gap-3 mt-7">
+            <Trust icon={<Sparkles size={13} />} title="Satellite-measured" body="No tape measure visit needed" />
+            <Trust icon={<ShieldCheck size={13} />} title="Private" body="Your address is never sold" />
+            <Trust
+              icon={<ShieldCheck size={13} />}
+              title="No obligation"
+              body="See the price before sharing more"
+            />
+          </div>
         </div>
       </div>
     </div>

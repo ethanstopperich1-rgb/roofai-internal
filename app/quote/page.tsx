@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 import { AuroraButton } from "@/components/ui/aurora-button";
 import { BoltStyleHero, type QuoteHeroFormValues } from "@/components/ui/bolt-style-chat";
+import NavHeader from "@/components/ui/nav-header";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
 import type { AddressInfo, Material } from "@/types/estimate";
 import { BRAND_CONFIG } from "@/lib/branding";
@@ -200,18 +201,26 @@ export default function QuotePage() {
     }
   };
 
-  // Step 1 — bolt hero (no separate header / stepper / footer overlap)
+  // Step 1 — full-bleed bolt hero. No separate header strip — the logo
+  // lives INSIDE the bolt canvas (see BoltStyleHero) so there's no color
+  // seam between header and hero background.
   if (step === "Lead" && !submitted) {
     return (
-      <div className="min-h-screen relative">
-        <PublicHeader />
-        <BoltStyleHero
-          title="What will it cost to"
-          subtitle="Free, instant, no calls until you ask."
-          onSubmit={onLeadSubmit}
-          submitting={submitting}
-        />
-      </div>
+      <BoltStyleHero
+        title="What will it cost to"
+        subtitle="Free, instant, no calls until you ask."
+        onSubmit={onLeadSubmit}
+        submitting={submitting}
+        nav={
+          <NavHeader
+            items={[
+              { label: "Quote", href: "/quote" },
+              { label: "How It Works", href: "/quote#how" },
+              { label: "FAQ", href: "/quote#faq" },
+            ]}
+          />
+        }
+      />
     );
   }
 
@@ -280,9 +289,18 @@ function PublicHeader() {
           />
           <span className="hidden md:inline-block ml-1 chip text-[10px]">Quick Quote</span>
         </Link>
+
+        <NavHeader
+          items={[
+            { label: "Quote", href: "/quote" },
+            { label: "How It Works", href: "/quote#how" },
+            { label: "FAQ", href: "/quote#faq" },
+          ]}
+        />
+
         <div className="hidden sm:flex items-center gap-3 text-[12px] text-slate-300">
           <Check size={13} className="text-mint" />
-          <span>Free · No-obligation estimate</span>
+          <span>Free · No-obligation</span>
         </div>
       </div>
     </header>
