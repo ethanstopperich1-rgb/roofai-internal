@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { loadGoogle } from "@/lib/google";
 import { Satellite, Eye } from "lucide-react";
 
@@ -61,6 +61,7 @@ export default function MapView({
   const svRef = useRef<google.maps.StreetViewPanorama | null>(null);
   const polysRef = useRef<google.maps.Polygon[]>([]);
   const penMarkersRef = useRef<google.maps.Marker[]>([]);
+  const [svUnavailable, setSvUnavailable] = useState(false);
 
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) return;
@@ -85,18 +86,33 @@ export default function MapView({
       if (markerRef.current) markerRef.current.setMap(null);
       markerRef.current = new g.maps.Marker({ position: pos, map: mapRef.current });
 
-      if (!svRef.current) {
-        svRef.current = new g.maps.StreetViewPanorama(svEl.current, {
-          position: pos,
-          pov: { heading: 0, pitch: 0 },
-          visible: true,
-          disableDefaultUI: true,
-          addressControl: false,
+      // Probe Street View coverage before we try to render — many rural
+      // residential roads have no panorama at all and would otherwise
+      // show as a black tile with no explanation.
+      const svc = new g.maps.StreetViewService();
+      svc
+        .getPanorama({ location: pos, radius: 75, source: g.maps.StreetViewSource.OUTDOOR })
+        .then(({ data }) => {
+          setSvUnavailable(false);
+          const panoPos = data.location?.latLng ?? pos;
+          if (!svRef.current) {
+            svRef.current = new g.maps.StreetViewPanorama(svEl.current!, {
+              position: panoPos,
+              pov: { heading: 0, pitch: 0 },
+              visible: true,
+              disableDefaultUI: true,
+              addressControl: false,
+            });
+          } else {
+            svRef.current.setPosition(panoPos);
+            svRef.current.setVisible(true);
+          }
+        })
+        .catch(() => {
+          // No coverage within 75m — fall back to the "unavailable" overlay
+          setSvUnavailable(true);
+          if (svRef.current) svRef.current.setVisible(false);
         });
-      } else {
-        svRef.current.setPosition(pos);
-        svRef.current.setVisible(true);
-      }
 
       // Clear & redraw roof segment polygons
       for (const p of polysRef.current) p.setMap(null);
@@ -193,7 +209,21 @@ export default function MapView({
         icon={<Eye size={14} />}
         emptyTitle="Street View"
         emptyBody="On-the-ground panorama of the property"
-      />
+      >
+        {ready && svUnavailable && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-black/60 backdrop-blur-sm">
+            <div className="w-8 h-8 rounded-xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-slate-400 mb-3">
+              <Eye size={14} />
+            </div>
+            <div className="font-display text-[13px] font-semibold tracking-tight text-slate-200">
+              Street View unavailable
+            </div>
+            <div className="text-[11.5px] text-slate-500 mt-1 max-w-[260px] leading-relaxed">
+              Google hasn't driven this road. Common for rural and gated properties.
+            </div>
+          </div>
+        )}
+      </Tile>
     </div>
   );
 }
