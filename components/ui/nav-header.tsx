@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -32,10 +32,14 @@ interface CursorPosition {
  *     and the public quote routes (/, How It Works, Pricing, FAQ, Get
  *     Quote) with carrier-different content
  *   - Active route detection via Next.js usePathname so the cursor parks
- *     under the current page when no tab is being hovered
+ *     under the current page when no tab is being hovered. The cursor is
+ *     positioned via a ref array on mount (and on resize) so the active
+ *     tab's text — which is dark `#051019` and only legible against the
+ *     cyan pill — never renders without its background.
  */
 export default function NavHeader({ items, className = "" }: Props) {
   const pathname = usePathname() ?? "/";
+  const tabRefs = useRef<Array<HTMLLIElement | null>>([]);
   const [position, setPosition] = useState<CursorPosition>({
     left: 0,
     width: 0,
@@ -46,10 +50,34 @@ export default function NavHeader({ items, className = "" }: Props) {
     (i) => i.href === pathname || (i.href !== "/" && pathname.startsWith(i.href)),
   );
 
+  // Park cursor under the active tab on mount + whenever the active route
+  // changes. Without this, the active tab's dark text sits invisibly on
+  // the dark backdrop until something is hovered.
+  const parkOnActive = React.useCallback(() => {
+    if (activeIdx < 0) {
+      setPosition((pv) => ({ ...pv, opacity: 0 }));
+      return;
+    }
+    const el = tabRefs.current[activeIdx];
+    if (!el) return;
+    const { width } = el.getBoundingClientRect();
+    setPosition({ width, left: el.offsetLeft, opacity: 1 });
+  }, [activeIdx]);
+
+  useLayoutEffect(() => {
+    parkOnActive();
+  }, [parkOnActive]);
+
+  useEffect(() => {
+    const onResize = () => parkOnActive();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [parkOnActive]);
+
   return (
     <ul
       className={`relative mx-auto flex w-fit rounded-full border border-white/[0.10] bg-[#0c1118]/70 backdrop-blur-md p-1 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.04)] ${className}`}
-      onMouseLeave={() => setPosition((pv) => ({ ...pv, opacity: 0 }))}
+      onMouseLeave={parkOnActive}
     >
       {items.map((item, i) => (
         <Tab
@@ -57,6 +85,9 @@ export default function NavHeader({ items, className = "" }: Props) {
           href={item.href}
           setPosition={setPosition}
           isActive={i === activeIdx}
+          tabRef={(el) => {
+            tabRefs.current[i] = el;
+          }}
         >
           {item.label}
         </Tab>
@@ -71,16 +102,21 @@ const Tab = ({
   href,
   setPosition,
   isActive,
+  tabRef,
 }: {
   children: React.ReactNode;
   href: string;
   setPosition: (p: CursorPosition) => void;
   isActive?: boolean;
+  tabRef: (el: HTMLLIElement | null) => void;
 }) => {
   const ref = useRef<HTMLLIElement>(null);
   return (
     <li
-      ref={ref}
+      ref={(el) => {
+        ref.current = el;
+        tabRef(el);
+      }}
       onMouseEnter={() => {
         if (!ref.current) return;
         const { width } = ref.current.getBoundingClientRect();
