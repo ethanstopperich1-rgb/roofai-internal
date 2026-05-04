@@ -7,12 +7,16 @@ interface Props {
   /** Polygons in lat/lng space — same shape MapView consumes */
   polygons: Array<Array<{ lat: number; lng: number }>> | undefined;
   /** Optional total roof area in square feet for the centerpiece label.
-   *  When omitted we compute footprint × 1.118 from the polygons. */
+   *  When omitted we compute footprint × slopeMult(pitch) from the polygons. */
   totalRoofSqft?: number;
   /** When true, the polygon is being edited live — render a subtle pulse */
   editing?: boolean;
   /** Optional source label shown in the corner ("Solar · 4 facets", etc.) */
   sourceLabel?: string;
+  /** Average pitch in degrees. Used to project polygon footprint area →
+   *  roof surface area when totalRoofSqft isn't supplied. Falls back to
+   *  6/12 (26.57°) when null/undefined. */
+  pitchDegrees?: number | null;
 }
 
 const M_PER_DEG_LAT = 111_320;
@@ -56,11 +60,36 @@ const PALETTE = [
   { stroke: "#88e6ff", fill: "rgba(136,230,255,0.10)" }, // sky
 ];
 
+/**
+ * Point-in-polygon ray cast (used to disambiguate which side of an edge
+ * is "outside" so we don't park labels on top of another facet).
+ */
+function pointInPoly(p: { x: number; y: number }, poly: Array<{ x: number; y: number }>): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if (
+      yi > p.y !== yj > p.y &&
+      p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi
+    ) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+interface Rect { x: number; y: number; w: number; h: number; }
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
+}
+
 export default function RoofBlueprint({
   polygons,
   totalRoofSqft,
   editing,
   sourceLabel,
+  pitchDegrees,
 }: Props) {
   const data = useMemo(() => {
     if (!polygons || polygons.length === 0) return null;
@@ -158,7 +187,16 @@ export default function RoofBlueprint({
   );
   const [cmx, cmy] = project(cm.x, cm.y);
 
-  const surfaceSqft = totalRoofSqft ?? Math.round(data.footprintSqft * 1.118);
+  const slopeMult =
+    pitchDegrees != null && pitchDegrees > 0 && pitchDegrees < 60
+      ? 1 / Math.cos((pitchDegrees * Math.PI) / 180)
+      : 1.118;
+  const surfaceSqft = totalRoofSqft ?? Math.round(data.footprintSqft * slopeMult);
+
+  // Track placed label rects (in SVG viewbox coords) so successive labels
+  // don't overlap each other. We also use the polygon outline itself as a
+  // forbidden zone so labels sit clearly outside the eaves.
+  const placedLabelRects: Rect[] = [];
 
   return (
     <div className="glass rounded-3xl overflow-hidden border border-white/[0.07]">
@@ -226,50 +264,80 @@ export default function RoofBlueprint({
                   strokeWidth="1.6"
                   strokeLinejoin="round"
                 />
-                {/* Edge length labels */}
-                {edges.map((e, i) => {
-                  if (e.ft < 4) return null; // skip tiny edges
-                  const p = projected[i];
-                  const mx = (p.x1 + p.x2) / 2;
-                  const my = (p.y1 + p.y2) / 2;
-                  // Outward normal so labels sit just outside the eave
-                  const dx = p.x2 - p.x1;
-                  const dy = p.y2 - p.y1;
-                  const len = Math.hypot(dx, dy) || 1;
-                  // Rotate (dx,dy) 90° clockwise → (dy, -dx) is the outward normal
-                  // (assuming polygon is wound CCW after y-flip; some sources are CW
-                  //  so we just push the label away from the polygon centroid)
-                  const cx = projected.reduce((s, q) => s + q.x1, 0) / projected.length;
-                  const cy = projected.reduce((s, q) => s + q.y1, 0) / projected.length;
-                  const outx = mx - cx;
-                  const outy = my - cy;
-                  const olen = Math.hypot(outx, outy) || 1;
-                  const labelX = mx + (outx / olen) * 14;
-                  const labelY = my + (outy / olen) * 14;
-                  // Edge angle for tilting label
-                  let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-                  if (angle > 90) angle -= 180;
-                  if (angle < -90) angle += 180;
-                  const ftLabel = `${Math.round(e.ft)} ft`;
-                  return (
-                    <g key={`l-${i}`}>
-                      <text
-                        x={labelX}
-                        y={labelY}
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                        transform={`rotate(${angle}, ${labelX}, ${labelY})`}
-                        fontSize="10"
-                        fontFamily="ui-monospace, SFMono-Regular, monospace"
-                        fontWeight="600"
-                        fill={palette.stroke}
-                        opacity="0.85"
-                      >
-                        {ftLabel}
-                      </text>
-                    </g>
-                  );
-                })}
+                {/* Edge length labels — placed on the true edge normal,
+                    flipped to whichever side is outside the polygon, then
+                    checked against already-placed labels to avoid overlap. */}
+                {(() => {
+                  const polyPts = projected.map((q) => ({ x: q.x1, y: q.y1 }));
+                  return edges.map((e, i) => {
+                    if (e.ft < 4) return null; // skip tiny edges
+                    const p = projected[i];
+                    const mx = (p.x1 + p.x2) / 2;
+                    const my = (p.y1 + p.y2) / 2;
+                    const dx = p.x2 - p.x1;
+                    const dy = p.y2 - p.y1;
+                    const len = Math.hypot(dx, dy) || 1;
+                    // True edge normal — rotate (dx,dy) 90°. Either (dy,-dx)
+                    // or (-dy,dx) points outside the polygon; pick the one
+                    // whose probe point lands OUTSIDE.
+                    const nx = dy / len;
+                    const ny = -dx / len;
+                    const probe = { x: mx + nx * 0.5, y: my + ny * 0.5 };
+                    const outside = !pointInPoly(probe, polyPts);
+                    const sx = outside ? nx : -nx;
+                    const sy = outside ? ny : -ny;
+
+                    const ftLabel = `${Math.round(e.ft)} ft`;
+                    const labelW = ftLabel.length * 6.2 + 4;
+                    const labelH = 12;
+
+                    // Try increasing offsets so we don't collide with
+                    // previously-placed labels on adjacent short edges.
+                    let labelX = mx;
+                    let labelY = my;
+                    let placed = false;
+                    for (const offset of [14, 22, 30, 40]) {
+                      const tx = mx + sx * offset;
+                      const ty = my + sy * offset;
+                      const r: Rect = {
+                        x: tx - labelW / 2,
+                        y: ty - labelH / 2,
+                        w: labelW,
+                        h: labelH,
+                      };
+                      const collides = placedLabelRects.some((q) => rectsOverlap(q, r));
+                      if (!collides) {
+                        labelX = tx; labelY = ty; placedLabelRects.push(r);
+                        placed = true;
+                        break;
+                      }
+                    }
+                    if (!placed) return null; // skip rather than overlap
+
+                    // Edge angle for tilting label (kept upright)
+                    let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+                    if (angle > 90) angle -= 180;
+                    if (angle < -90) angle += 180;
+                    return (
+                      <g key={`l-${i}`}>
+                        <text
+                          x={labelX}
+                          y={labelY}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          transform={`rotate(${angle}, ${labelX}, ${labelY})`}
+                          fontSize="10"
+                          fontFamily="ui-monospace, SFMono-Regular, monospace"
+                          fontWeight="600"
+                          fill={palette.stroke}
+                          opacity="0.85"
+                        >
+                          {ftLabel}
+                        </text>
+                      </g>
+                    );
+                  });
+                })()}
               </g>
             );
           })}

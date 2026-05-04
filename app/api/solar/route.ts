@@ -16,15 +16,6 @@ type Segment = {
   boundingBox?: BoundingBox;
 };
 
-function bboxToPolygon(bbox: BoundingBox): Array<{ lat: number; lng: number }> {
-  const sw = { lat: bbox.sw.latitude, lng: bbox.sw.longitude };
-  const ne = { lat: bbox.ne.latitude, lng: bbox.ne.longitude };
-  const nw = { lat: ne.lat, lng: sw.lng };
-  const se = { lat: sw.lat, lng: ne.lng };
-  // counter-clockwise winding
-  return [nw, ne, se, sw];
-}
-
 function imageryDateString(d: { year?: number; month?: number; day?: number } | undefined): string | null {
   if (!d?.year) return null;
   const m = d.month ? String(d.month).padStart(2, "0") : "01";
@@ -97,9 +88,13 @@ export async function GET(req: Request) {
       totalArea
     : null;
 
-  const segmentPolygonsLatLng = segments
-    .filter((s) => s.boundingBox)
-    .map((s) => bboxToPolygon(s.boundingBox!));
+  // Solar `findClosest` only returns axis-aligned bounding boxes per
+  // facet — drawing those as roof polygons looks visibly wrong on any
+  // home that isn't north-aligned. We keep `segmentCount` / `pitch` /
+  // `sqft` from this endpoint (those are accurate metadata) and let the
+  // SAM × OSM pipeline produce the actual polygon. To get true per-facet
+  // polygons from Solar we'd need `dataLayers:get` (DSM raster) — TODO.
+  const segmentPolygonsLatLng: Array<Array<{ lat: number; lng: number }>> = [];
 
   const buildingFootprintM2 = stats?.wholeRoofStats?.groundAreaMeters2 ?? null;
   const buildingFootprintSqft =

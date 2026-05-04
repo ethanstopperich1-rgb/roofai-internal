@@ -33,6 +33,10 @@ interface Props {
   onPolygonsChanged?: (
     polygons: Array<Array<{ lat: number; lng: number }>>,
   ) => void;
+  /** Average roof pitch in degrees (from Solar API). When provided, the
+   *  floating sqft labels project footprint → slope area using cos(pitch)
+   *  instead of the hardcoded 6/12 default. */
+  pitchDegrees?: number | null;
 }
 
 /**
@@ -66,6 +70,7 @@ export default function MapView({
   metaBadges,
   editable = false,
   onPolygonsChanged,
+  pitchDegrees,
 }: Props) {
   // Stable ref to the latest callback so we don't have to re-bind polygon
   // event listeners every render.
@@ -228,9 +233,14 @@ export default function MapView({
           // Floating sqft label at polygon centroid (after animation finishes)
           if (g.maps.geometry?.spherical) {
             const areaM2 = g.maps.geometry.spherical.computeArea(path);
-            // Project polygon footprint → roof surface area at typical 6/12 pitch
-            // (assumed when we don't have a per-facet pitch). 1 / cos(26.57°) ≈ 1.118.
-            const sqft = Math.round(areaM2 * 10.7639 * 1.118);
+            // Project polygon footprint → roof surface area using the real
+            // pitch when Solar gave us one; otherwise fall back to 6/12
+            // (1 / cos(26.57°) ≈ 1.118).
+            const slopeMult =
+              pitchDegrees != null && pitchDegrees > 0 && pitchDegrees < 60
+                ? 1 / Math.cos((pitchDegrees * Math.PI) / 180)
+                : 1.118;
+            const sqft = Math.round(areaM2 * 10.7639 * slopeMult);
             if (sqft >= 200) {
               let cLat = 0, cLng = 0;
               for (const v of path) { cLat += v.lat; cLng += v.lng; }
@@ -302,7 +312,7 @@ export default function MapView({
         });
       }
     });
-  }, [lat, lng, segments, penetrations]);
+  }, [lat, lng, segments, penetrations, pitchDegrees]);
 
   if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) {
     return (

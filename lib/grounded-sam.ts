@@ -19,7 +19,12 @@ import sharp from "sharp";
 const MODEL =
   "schananas/grounded_sam:ee871c19efb1941f55f66a3d7d960428c8a5afcb77449547fe8e5a3ab9ebc21c";
 
-const IMAGE_SIZE_PX = 640;
+// Static Maps caps `size` at 640. With `scale=2` Google returns a 1280×1280
+// image at the same zoom — 4× the pixel count, free. We work entirely in
+// the upscaled space so contour trace + DP are pixel-precise.
+const IMAGE_TILE_PX = 640;
+const IMAGE_SCALE = 2;
+const IMAGE_PIXELS = IMAGE_TILE_PX * IMAGE_SCALE; // 1280
 const IMAGE_ZOOM = 20;
 
 // Tightly worded prompts. "rooftop shingles" performs noticeably better
@@ -38,14 +43,16 @@ const NEGATIVE_PROMPT =
 export interface GroundedRoofPolygon {
   /** Polygon vertices in lat/lng */
   latLng: Array<{ lat: number; lng: number }>;
-  /** Pixel polygon for diagnostics (640×640 image space) */
+  /** Pixel polygon for diagnostics (1280×1280 image space @ scale=2) */
   pixels: Array<[number, number]>;
   /** Mask area in pixels (proxy for confidence in the mask) */
   pixelArea: number;
 }
 
-const M_PER_PX = (lat: number, zoom = IMAGE_ZOOM) =>
-  (156_543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom);
+// Meters per pixel at given lat / zoom / scale. With scale=2 each pixel
+// covers half the ground distance of the un-scaled tile.
+const M_PER_PX = (lat: number, zoom = IMAGE_ZOOM, scale = IMAGE_SCALE) =>
+  (156_543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom) / scale;
 
 function pixelToLatLng(opts: {
   x: number;
@@ -54,9 +61,13 @@ function pixelToLatLng(opts: {
   centerLng: number;
   imgSize?: number;
   zoom?: number;
+  scale?: number;
 }): { lat: number; lng: number } {
-  const { x, y, centerLat, centerLng, imgSize = IMAGE_SIZE_PX, zoom = IMAGE_ZOOM } = opts;
-  const m = M_PER_PX(centerLat, zoom);
+  const {
+    x, y, centerLat, centerLng,
+    imgSize = IMAGE_PIXELS, zoom = IMAGE_ZOOM, scale = IMAGE_SCALE,
+  } = opts;
+  const m = M_PER_PX(centerLat, zoom, scale);
   const dx = x - imgSize / 2;
   const dy = y - imgSize / 2;
   return {
@@ -70,7 +81,9 @@ async function fetchSatelliteImage(opts: {
   lng: number;
   apiKey: string;
 }): Promise<{ base64: string; mimeType: "image/png" } | null> {
-  const url = `https://maps.googleapis.com/maps/api/staticmap?center=${opts.lat},${opts.lng}&zoom=${IMAGE_ZOOM}&size=${IMAGE_SIZE_PX}x${IMAGE_SIZE_PX}&maptype=satellite&key=${opts.apiKey}`;
+  // size= is capped at 640 by Google. scale=2 returns the same area at 1280×1280
+  // — 4× pixel count, no extra cost. Critical for tight contour tracing.
+  const url = `https://maps.googleapis.com/maps/api/staticmap?center=${opts.lat},${opts.lng}&zoom=${IMAGE_ZOOM}&size=${IMAGE_TILE_PX}x${IMAGE_TILE_PX}&scale=${IMAGE_SCALE}&maptype=satellite&key=${opts.apiKey}`;
   try {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return null;
@@ -82,16 +95,124 @@ async function fetchSatelliteImage(opts: {
   }
 }
 
+// ---------- Mask cleanup: hole-fill + morphological close ----------
+
+/**
+ * Fill interior holes (BG pixels enclosed by FG). We flood-fill the
+ * background starting from every border pixel — anything still BG after
+ * that is necessarily a hole and gets flipped to FG. Stops chimney /
+ * skylight artifacts in the mask from showing up as concave bites in
+ * the polygon outline.
+ */
+function fillHoles(mask: Uint8Array, w: number, h: number): void {
+  const visited = new Uint8Array(mask.length);
+  const stack: number[] = [];
+  // Seed every border pixel that's currently background
+  for (let x = 0; x < w; x++) {
+    if (!mask[x]) stack.push(x);
+    const bot = (h - 1) * w + x;
+    if (!mask[bot]) stack.push(bot);
+  }
+  for (let y = 0; y < h; y++) {
+    const left = y * w;
+    if (!mask[left]) stack.push(left);
+    const right = y * w + (w - 1);
+    if (!mask[right]) stack.push(right);
+  }
+  while (stack.length) {
+    const idx = stack.pop()!;
+    if (visited[idx]) continue;
+    if (mask[idx]) continue;
+    visited[idx] = 1;
+    const x = idx % w;
+    const y = (idx - x) / w;
+    if (x > 0) stack.push(idx - 1);
+    if (x < w - 1) stack.push(idx + 1);
+    if (y > 0) stack.push(idx - w);
+    if (y < h - 1) stack.push(idx + w);
+  }
+  // Anything not reached from the border is an interior hole — fill it
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i] && !visited[i]) mask[i] = 1;
+  }
+}
+
+/** Morphological dilate by `r` pixels (Chebyshev/box neighborhood). */
+function dilate(mask: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  if (r <= 0) return mask;
+  const out = new Uint8Array(mask.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 0;
+      const xs = Math.max(0, x - r);
+      const xe = Math.min(w - 1, x + r);
+      const ys = Math.max(0, y - r);
+      const ye = Math.min(h - 1, y + r);
+      for (let yy = ys; yy <= ye && !on; yy++) {
+        const row = yy * w;
+        for (let xx = xs; xx <= xe; xx++) {
+          if (mask[row + xx]) { on = 1; break; }
+        }
+      }
+      out[y * w + x] = on;
+    }
+  }
+  return out;
+}
+
+/** Morphological erode by `r` pixels (inverse of dilate). */
+function erode(mask: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  if (r <= 0) return mask;
+  const out = new Uint8Array(mask.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let off = 0;
+      const xs = Math.max(0, x - r);
+      const xe = Math.min(w - 1, x + r);
+      const ys = Math.max(0, y - r);
+      const ye = Math.min(h - 1, y + r);
+      for (let yy = ys; yy <= ye && !off; yy++) {
+        const row = yy * w;
+        for (let xx = xs; xx <= xe; xx++) {
+          if (!mask[row + xx]) { off = 1; break; }
+        }
+      }
+      out[y * w + x] = off ? 0 : 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Morphological close = dilate then erode. Removes 1–2 px gaps and
+ * jaggies on the boundary while preserving overall shape.
+ */
+function morphClose(mask: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  return erode(dilate(mask, w, h, r), w, h, r);
+}
+
 // ---------- Contour extraction (Moore-neighbor + Douglas-Peucker) ----------
 
 function maskToPolygon(
-  mask: Uint8Array,
+  rawMask: Uint8Array,
   width: number,
   height: number,
 ): { polygon: Array<[number, number]>; area: number } | null {
   let area = 0;
+  for (let i = 0; i < rawMask.length; i++) if (rawMask[i] > 0) area++;
+  if (area < 800) return null; // ~0.05% of 1280² — under that the mask is noise
+
+  // Step 1: morphological close (radius 3) — kills saw-tooth jaggies on
+  // the boundary. Step 2: hole-fill — chimneys/skylights/dormers don't
+  // bite chunks out of the polygon. Order matters: close first so we
+  // don't fill noise as "holes."
+  const closed = morphClose(rawMask, width, height, 3);
+  fillHoles(closed, width, height);
+  const mask = closed;
+
+  // Recount area on the cleaned mask — drives the area-rank check below
+  area = 0;
   for (let i = 0; i < mask.length; i++) if (mask[i] > 0) area++;
-  if (area < 200) return null;
 
   // Find leftmost-on pixel on the topmost-on row (a stable trace start)
   let startX = -1, startY = -1;
@@ -140,8 +261,12 @@ function maskToPolygon(
 
   if (boundary.length < 6) return null;
 
-  // Douglas-Peucker simplify (epsilon 4 px → clean polygon, no jaggies)
-  const simplified = douglasPeucker(boundary, 4);
+  // Douglas-Peucker simplify. At scale=2 (pixels are half the physical
+  // size of scale=1) we use epsilon=6 px ≈ 0.45 m of allowable edge
+  // simplification — same physical tolerance the v1 pipeline used at
+  // epsilon=3, but starting from a 4× higher-resolution mask so corners
+  // sit much closer to the actual roof boundary.
+  const simplified = douglasPeucker(boundary, 6);
   if (simplified.length < 4) return null;
   return { polygon: simplified, area };
 }
@@ -203,9 +328,11 @@ export async function refineRoofWithGroundedSam(opts: {
         image: dataUri,
         mask_prompt: POSITIVE_PROMPT,
         negative_mask_prompt: NEGATIVE_PROMPT,
-        // -ve = erosion. -4 keeps the outline just inside the eaves so
-        // the gutter shadow doesn't bleed into the polygon.
-        adjustment_factor: -4,
+        // -ve = erosion. We send a 1280×1280 image (scale=2) so each
+        // pixel is half the physical size of the v1 pipeline; -8 here
+        // preserves the same ~0.6m gutter-shadow erosion that worked at
+        // -4 in 640px space.
+        adjustment_factor: -8,
       },
     });
   } catch (err) {
@@ -239,7 +366,7 @@ export async function refineRoofWithGroundedSam(opts: {
       if (!res.ok) continue;
       const buf = Buffer.from(await res.arrayBuffer());
       const { data, info } = await sharp(buf)
-        .resize(IMAGE_SIZE_PX, IMAGE_SIZE_PX, { fit: "fill" })
+        .resize(IMAGE_PIXELS, IMAGE_PIXELS, { fit: "fill" })
         .grayscale()
         .raw()
         .toBuffer({ resolveWithObject: true });
@@ -260,7 +387,7 @@ export async function refineRoofWithGroundedSam(opts: {
 
   // Sanity check: roof shouldn't fill more than 70% of the tile (means
   // grounded_sam picked up the whole image / ground mask)
-  const fillFraction = best.area / (IMAGE_SIZE_PX * IMAGE_SIZE_PX);
+  const fillFraction = best.area / (IMAGE_PIXELS * IMAGE_PIXELS);
   if (fillFraction > 0.70) {
     console.warn(
       `[grounded-sam] mask too large (${(fillFraction * 100).toFixed(0)}% of image) — likely a ground mask`,

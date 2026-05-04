@@ -84,14 +84,26 @@ function clipSamToOsm(
     return null;
   }
   if (!result || result.length === 0) return null;
-  // Pick the largest piece by vertex count (proxy for area; cheap)
+  // Pick the largest piece by shoelace area. (v1 ranked by vertex count,
+  // which let a 6-vertex sliver beat a 4-vertex piece covering 95% of
+  // the roof — exactly the failure mode where a porch shadow split the
+  // mask and we kept the wrong half.)
+  const ringArea = (ring: Array<[number, number]>): number => {
+    let sum = 0;
+    for (let i = 0; i < ring.length - 1; i++) {
+      const [x1, y1] = ring[i];
+      const [x2, y2] = ring[i + 1];
+      sum += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(sum) / 2;
+  };
   let best: typeof result[number] | null = null;
-  let bestSize = 0;
+  let bestArea = 0;
   for (const piece of result) {
     if (!piece[0]) continue;
-    const ring = piece[0];
-    if (ring.length > bestSize) {
-      bestSize = ring.length;
+    const a = ringArea(piece[0]);
+    if (a > bestArea) {
+      bestArea = a;
       best = piece;
     }
   }

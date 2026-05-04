@@ -148,10 +148,13 @@ export default function HomePage() {
   }, [vision?.roofPolygon, address?.lat, address?.lng]);
 
   // Polygon source priority — best-quality first:
-  //   1. Solar API per-facet polygons (metros only, ~30% of US)
-  //   2. SAM compound pipeline (Grounded SAM "roof" × OSM clip — pixel-precise)
-  //   3. OpenStreetMap building footprint (human-traced, ~50-60% US)
-  //   4. Claude vision polygon (fallback for everywhere else)
+  //   1. SAM compound pipeline (Grounded SAM "roof" × OSM clip — pixel-precise)
+  //   2. OpenStreetMap building footprint (human-traced, ~50-60% US)
+  //   3. Claude vision polygon (fallback for everywhere else)
+  // Solar `findClosest` only exposes axis-aligned bbox-per-facet, which
+  // looks wrong on any non-north-aligned home — see app/api/solar/route.ts.
+  // The "solar" branch below is retained for forward-compat (DSM raster
+  // route is in the backlog) but never fires today.
   const polygonSource = useMemo<
     "edited" | "solar" | "sam" | "osm" | "ai" | "none"
   >(() => {
@@ -217,12 +220,23 @@ export default function HomePage() {
       }
       totalM2 += Math.abs(sum) / 2;
     }
-    // Polygon footprint × 1.118 (typical 6/12 pitch correction)
-    const sqft = Math.round(totalM2 * 10.7639 * 1.118);
+    // Project footprint → roof surface area using the real pitch when
+    // we have it (Solar `pitchDegrees`); fall back to the rep's selected
+    // assumptions.pitch; final fallback is 6/12 (26.57°). Surface =
+    // footprint / cos(pitch).
+    const PITCH_MAP: Record<string, number> = {
+      "4/12": 18.43, "5/12": 22.62, "6/12": 26.57, "7/12": 30.26, "8/12+": 35.0,
+    };
+    const pitchDeg =
+      solar?.pitchDegrees ??
+      PITCH_MAP[assumptions.pitch] ??
+      26.57;
+    const slopeMult = 1 / Math.cos((pitchDeg * Math.PI) / 180);
+    const sqft = Math.round(totalM2 * 10.7639 * slopeMult);
     if (sqft >= 200 && sqft <= 30_000) {
       setAssumptions((a) => ({ ...a, sqft }));
     }
-  }, [activePolygons, solar?.sqft]);
+  }, [activePolygons, solar?.sqft, solar?.pitchDegrees, assumptions.pitch]);
 
   const detailed = useMemo(
     () =>
@@ -531,6 +545,7 @@ export default function HomePage() {
               metaBadges={mapBadges}
               editable={polygonSource !== "none"}
               onPolygonsChanged={setLivePolygons}
+              pitchDegrees={solar?.pitchDegrees ?? null}
             />
           </section>
 
@@ -539,6 +554,7 @@ export default function HomePage() {
             <RoofBlueprint
               polygons={activePolygons}
               editing={polygonSource === "edited"}
+              pitchDegrees={solar?.pitchDegrees ?? null}
               sourceLabel={
                 polygonSource === "solar"
                   ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
