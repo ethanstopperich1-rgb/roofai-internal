@@ -21,6 +21,64 @@ const PALETTE = [
   "#88e6ff", // sky
 ];
 
+const CESIUM_VERSION = "1.141.0";
+const CESIUM_BASE = `https://cdn.jsdelivr.net/npm/cesium@${CESIUM_VERSION}/Build/Cesium/`;
+
+// Cesium is loaded entirely from CDN as a UMD bundle attached to window.Cesium.
+// We never `import 'cesium'` — that would pull Cesium's WASM through Turbopack's
+// strict-mode parser, which chokes on the binary blob (octal-escape error).
+// The CDN bundle keeps WASM as binary fetched at runtime by Cesium itself.
+type CesiumGlobal = typeof import("cesium");
+declare global {
+  interface Window {
+    Cesium?: CesiumGlobal;
+    CESIUM_BASE_URL?: string;
+  }
+}
+
+let cesiumLoadPromise: Promise<CesiumGlobal> | null = null;
+function loadCesium(): Promise<CesiumGlobal> {
+  if (typeof window === "undefined") return Promise.reject(new Error("ssr"));
+  if (window.Cesium) return Promise.resolve(window.Cesium);
+  if (cesiumLoadPromise) return cesiumLoadPromise;
+
+  window.CESIUM_BASE_URL = CESIUM_BASE;
+
+  cesiumLoadPromise = new Promise((resolve, reject) => {
+    // Stylesheet
+    if (!document.querySelector("link[data-cesium-widgets]")) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = `${CESIUM_BASE}Widgets/widgets.css`;
+      link.setAttribute("data-cesium-widgets", "true");
+      document.head.appendChild(link);
+    }
+    // Runtime
+    const existing = document.querySelector<HTMLScriptElement>(
+      "script[data-cesium-runtime]",
+    );
+    const onReady = () => {
+      if (window.Cesium) resolve(window.Cesium);
+      else reject(new Error("Cesium loaded but window.Cesium missing"));
+    };
+    if (existing) {
+      if (window.Cesium) onReady();
+      else existing.addEventListener("load", onReady);
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = `${CESIUM_BASE}Cesium.js`;
+    script.async = true;
+    script.setAttribute("data-cesium-runtime", "true");
+    script.addEventListener("load", onReady);
+    script.addEventListener("error", () =>
+      reject(new Error("Cesium CDN script failed to load")),
+    );
+    document.head.appendChild(script);
+  });
+  return cesiumLoadPromise;
+}
+
 /**
  * Interactive 3D viewer over Google Photorealistic 3D Tiles.
  *
@@ -28,19 +86,15 @@ const PALETTE = [
  * Earth uses — and drapes the roof polygon(s) onto the rooftop surface as
  * colored, glowing classifications. Auto-orbits the camera; click to pause.
  *
- * Cesium is heavy (~2.5MB gzipped), so this component is lazy-loaded by
- * PropertyContextPanel via next/dynamic. The Cesium runtime itself is also
- * `await import`-ed below so it never lands in the initial bundle.
- *
- * Requires NEXT_PUBLIC_GOOGLE_MAPS_KEY (must have "Map Tiles API" enabled
- * in the Google Cloud console — that's what powers Photorealistic 3D Tiles).
+ * Cesium is loaded from CDN at runtime (not bundled). Requires
+ * NEXT_PUBLIC_GOOGLE_MAPS_KEY with the Map Tiles API enabled in Google Cloud.
  */
 export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
-  const tilesetRef = useRef<unknown>(null);
   const polygonEntitiesRef = useRef<unknown[]>([]);
   const tickHandlerRef = useRef<(() => void) | null>(null);
+  const armTimerRef = useRef<number | null>(null);
 
   const [status, setStatus] = useState<"loading" | "ready" | "no-coverage" | "error">(
     "loading",
@@ -59,27 +113,17 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
     }
 
     (async () => {
-      const Cesium = await import("cesium");
-      // Required for Cesium to find its asset URLs (workers, glsl, css).
-      // We point at Cesium's CDN so we don't need to copy the dist into
-      // /public on every install. For a self-hosted production deploy,
-      // copy node_modules/cesium/Build/Cesium → /public/cesium and set
-      // CESIUM_BASE_URL = "/cesium/".
-      (window as unknown as { CESIUM_BASE_URL?: string }).CESIUM_BASE_URL =
-        "https://cdn.jsdelivr.net/npm/cesium@1.141.0/Build/Cesium/";
-      // Pull the widgets CSS lazily too — same reason as above.
-      if (!document.querySelector('link[data-cesium-widgets]')) {
-        const link = document.createElement("link");
-        link.rel = "stylesheet";
-        link.href =
-          "https://cdn.jsdelivr.net/npm/cesium@1.141.0/Build/Cesium/Widgets/widgets.css";
-        link.setAttribute("data-cesium-widgets", "true");
-        document.head.appendChild(link);
+      let Cesium: CesiumGlobal;
+      try {
+        Cesium = await loadCesium();
+      } catch (err) {
+        console.error("[Roof3DViewer] failed to load Cesium runtime:", err);
+        if (!cancelled) setStatus("error");
+        return;
       }
+      if (cancelled || !containerRef.current) return;
 
       Cesium.GoogleMaps.defaultApiKey = apiKey;
-
-      if (cancelled || !containerRef.current) return;
 
       const viewer = new Cesium.Viewer(containerRef.current, {
         baseLayerPicker: false,
@@ -102,23 +146,19 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
       if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
       viewer.scene.backgroundColor = Cesium.Color.fromCssColorString("#070a10");
       viewer.scene.globe.show = false;
-      // Hide Cesium's bottom-left credit container — Google attribution still
-      // shows in the credit display because the tileset contributes its own.
       (viewer.cesiumWidget.creditContainer as HTMLElement).style.opacity = "0.6";
 
       try {
         const tileset = await Cesium.createGooglePhotorealistic3DTileset();
         if (cancelled) return;
         viewer.scene.primitives.add(tileset);
-        tilesetRef.current = tileset;
         setStatus("ready");
       } catch (err) {
         console.warn("[Roof3DViewer] no 3D Tiles coverage:", err);
-        setStatus("no-coverage");
+        if (!cancelled) setStatus("no-coverage");
         return;
       }
 
-      // Compass: north up. Tilt down ~45° so we see the roof clearly.
       viewer.camera.flyTo({
         destination: Cesium.Cartesian3.fromDegrees(lng, lat - 0.0008, 220),
         orientation: {
@@ -129,151 +169,137 @@ export default function Roof3DViewer({ lat, lng, address, polygons }: Props) {
         duration: 1.6,
       });
 
-      // Auto-orbit: rotate the camera around the property at constant rate.
-      // We use lookAtTransform once after the flyTo settles, then increment
-      // heading per frame. User click cancels the orbit so they can free-look.
-      let armedOrbit = false;
-      const armOrbit = () => {
-        if (armedOrbit || cancelled) return;
-        armedOrbit = true;
+      // Auto-orbit: rotate around the property at constant rate. Click cancels.
+      armTimerRef.current = window.setTimeout(() => {
+        if (cancelled) return;
         const center = Cesium.Cartesian3.fromDegrees(lng, lat, 30);
         const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
         viewer.camera.lookAtTransform(
           transform,
-          new Cesium.HeadingPitchRange(
-            0,
-            Cesium.Math.toRadians(-35),
-            180, // 180m radius
-          ),
+          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-35), 180),
         );
         const tickHandler = () => {
-          if (orbitingRef.current) {
-            viewer.camera.rotateRight(0.0018);
-          }
+          if (orbitingRef.current) viewer.camera.rotateRight(0.0018);
         };
         viewer.scene.preRender.addEventListener(tickHandler);
         tickHandlerRef.current = tickHandler;
-      };
-      // Arm orbit ~2s after mount (after flyTo finishes)
-      const armTimer = window.setTimeout(armOrbit, 1700);
+      }, 1700);
 
-      // Click → pause orbit + free-look
       viewer.screenSpaceEventHandler.setInputAction(() => {
         setOrbiting(false);
       }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
-
-      // store cleanup
-      viewerRef.current = { viewer, armTimer };
     })().catch((err) => {
       console.error("[Roof3DViewer] init failed:", err);
-      setStatus("error");
+      if (!cancelled) setStatus("error");
     });
 
     return () => {
       cancelled = true;
-      const ref = viewerRef.current as
-        | { viewer: { destroy: () => void; scene: { preRender: { removeEventListener: (h: () => void) => void } } }; armTimer: number }
+      if (armTimerRef.current) {
+        window.clearTimeout(armTimerRef.current);
+        armTimerRef.current = null;
+      }
+      const viewer = viewerRef.current as
+        | {
+            destroy: () => void;
+            scene: { preRender: { removeEventListener: (h: () => void) => void } };
+          }
         | null;
-      if (ref) {
-        if (ref.armTimer) window.clearTimeout(ref.armTimer);
+      if (viewer) {
         if (tickHandlerRef.current) {
-          ref.viewer.scene.preRender.removeEventListener(tickHandlerRef.current);
+          try {
+            viewer.scene.preRender.removeEventListener(tickHandlerRef.current);
+          } catch {
+            /* already torn down */
+          }
           tickHandlerRef.current = null;
         }
         try {
-          ref.viewer.destroy();
+          viewer.destroy();
         } catch {
           /* viewer may already be torn down */
         }
       }
       viewerRef.current = null;
-      tilesetRef.current = null;
       polygonEntitiesRef.current = [];
     };
-    // We deliberately omit lat/lng from deps — re-init on those would tear
-    // the viewer down on every minor coordinate update. Address changes
-    // are handled by the camera-flyTo effect below.
+    // We deliberately omit lat/lng — re-init on coord change tears the whole
+    // viewer down. The flyTo effect below handles minor coordinate updates.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // -------- camera fly when lat/lng changes (without rebuilding viewer) --------
   useEffect(() => {
-    const ref = viewerRef.current as
-      | { viewer: { camera: { flyTo: (opts: unknown) => void } } }
+    const viewer = viewerRef.current as
+      | { camera: { flyTo: (opts: unknown) => void } }
       | null;
-    if (!ref || status !== "ready") return;
-    (async () => {
-      const Cesium = await import("cesium");
-      ref.viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(lng, lat - 0.0008, 220),
-        orientation: {
-          heading: 0,
-          pitch: Cesium.Math.toRadians(-40),
-          roll: 0,
-        },
-        duration: 1.2,
-      });
-    })();
+    if (!viewer || status !== "ready") return;
+    const Cesium = window.Cesium;
+    if (!Cesium) return;
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lng, lat - 0.0008, 220),
+      orientation: {
+        heading: 0,
+        pitch: Cesium.Math.toRadians(-40),
+        roll: 0,
+      },
+      duration: 1.2,
+    });
   }, [lat, lng, status]);
 
   // -------- redraw polygons when they change --------
   useEffect(() => {
-    const ref = viewerRef.current as
-      | { viewer: { entities: { add: (o: unknown) => unknown; remove: (e: unknown) => void } } }
+    const viewer = viewerRef.current as
+      | { entities: { add: (o: unknown) => unknown; remove: (e: unknown) => void } }
       | null;
-    if (!ref || status !== "ready") return;
-    (async () => {
-      const Cesium = await import("cesium");
-      // Clear old entities
-      for (const e of polygonEntitiesRef.current) {
-        try {
-          ref.viewer.entities.remove(e);
-        } catch {
-          /* already removed */
-        }
+    if (!viewer || status !== "ready") return;
+    const Cesium = window.Cesium;
+    if (!Cesium) return;
+
+    for (const e of polygonEntitiesRef.current) {
+      try {
+        viewer.entities.remove(e);
+      } catch {
+        /* already removed */
       }
-      polygonEntitiesRef.current = [];
-      if (!polygons || polygons.length === 0) return;
+    }
+    polygonEntitiesRef.current = [];
+    if (!polygons || polygons.length === 0) return;
 
-      polygons.forEach((poly, idx) => {
-        if (!poly || poly.length < 3) return;
-        const colorHex = PALETTE[idx % PALETTE.length];
-        const fill = Cesium.Color.fromCssColorString(colorHex).withAlpha(0.32);
-        const stroke = Cesium.Color.fromCssColorString(colorHex);
+    polygons.forEach((poly, idx) => {
+      if (!poly || poly.length < 3) return;
+      const colorHex = PALETTE[idx % PALETTE.length];
+      const fill = Cesium.Color.fromCssColorString(colorHex).withAlpha(0.32);
+      const stroke = Cesium.Color.fromCssColorString(colorHex);
 
-        const positions = Cesium.Cartesian3.fromDegreesArray(
-          poly.flatMap((v) => [v.lng, v.lat]),
-        );
+      const positions = Cesium.Cartesian3.fromDegreesArray(
+        poly.flatMap((v) => [v.lng, v.lat]),
+      );
 
-        // Filled polygon — projected onto the 3D mesh as a colored region.
-        // CESIUM_3D_TILE classification means it paints whatever surface
-        // (rooftop, wall, ground) the vertical column passes through.
-        const fillEntity = ref.viewer.entities.add({
-          polygon: {
-            hierarchy: positions,
-            material: fill,
-            classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
-          },
-        });
-        polygonEntitiesRef.current.push(fillEntity);
-
-        // Glowing outline — draped polyline along the same path.
-        const closed = [...positions, positions[0]];
-        const outlineEntity = ref.viewer.entities.add({
-          polyline: {
-            positions: closed,
-            width: 3,
-            material: new Cesium.PolylineGlowMaterialProperty({
-              glowPower: 0.25,
-              color: stroke,
-            }),
-            clampToGround: true,
-            classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
-          },
-        });
-        polygonEntitiesRef.current.push(outlineEntity);
+      const fillEntity = viewer.entities.add({
+        polygon: {
+          hierarchy: positions,
+          material: fill,
+          classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
+        },
       });
-    })();
+      polygonEntitiesRef.current.push(fillEntity);
+
+      const closed = [...positions, positions[0]];
+      const outlineEntity = viewer.entities.add({
+        polyline: {
+          positions: closed,
+          width: 3,
+          material: new Cesium.PolylineGlowMaterialProperty({
+            glowPower: 0.25,
+            color: stroke,
+          }),
+          clampToGround: true,
+          classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
+        },
+      });
+      polygonEntitiesRef.current.push(outlineEntity);
+    });
   }, [polygons, status]);
 
   return (

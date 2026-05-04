@@ -41,6 +41,7 @@ import {
   deriveRoofLengthsHeuristic,
   inferComplexityFromPolygons,
 } from "@/lib/roof-geometry";
+import { orthogonalizePolygon } from "@/lib/polygon";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
@@ -131,8 +132,15 @@ export default function HomePage() {
   // uses, so the polygon lines up with the satellite imagery underneath.
   const claudePolygonLatLng = useMemo(() => {
     if (!address?.lat || !address?.lng) return null;
-    const poly = vision?.roofPolygon;
-    if (!poly || poly.length < 3) return null;
+    const rawPoly = vision?.roofPolygon;
+    if (!rawPoly || rawPoly.length < 3) return null;
+    // Orthogonalize the Claude trace in pixel space before projection.
+    // Claude's vision-derived outlines are typically 8–14 vertices traced
+    // along a curvy approximation of the roof — orthogonalization snaps
+    // them to a clean rectilinear shape when the underlying roof actually
+    // is rectilinear (which is ~95% of residential properties). For curvy
+    // shapes the inner <50% guard bails so we don't distort organic outlines.
+    const poly = orthogonalizePolygon(rawPoly, 18);
     const lat = address.lat;
     const lng = address.lng;
     const mPerPx =
