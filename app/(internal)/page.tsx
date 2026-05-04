@@ -21,6 +21,10 @@ import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
 const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
   ssr: false,
 });
+const ParametricRoofViewer = dynamic(
+  () => import("@/components/ParametricRoofViewer"),
+  { ssr: false },
+);
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
 import { generatePdf, buildSummaryText } from "@/lib/pdf";
@@ -791,6 +795,16 @@ export default function HomePage() {
               />
             )}
           </section>
+
+          {/* ─── Parametric 3D roof framing (gables, ridges, eaves, rakes) ─ */}
+          {activePolygons && activePolygons.length > 0 && (
+            <ErrorBoundary>
+              <ParametricRoofViewer
+                polygon={activePolygons[0]}
+                pitch={assumptions.pitch}
+              />
+            </ErrorBoundary>
+          )}
 
           {/* ─── Architectural blueprint of the traced roof ─────────────── */}
           {activePolygons && activePolygons.length > 0 && (
