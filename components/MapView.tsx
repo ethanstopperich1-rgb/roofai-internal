@@ -61,6 +61,8 @@ export default function MapView({
   const svRef = useRef<google.maps.StreetViewPanorama | null>(null);
   const polysRef = useRef<google.maps.Polygon[]>([]);
   const penMarkersRef = useRef<google.maps.Marker[]>([]);
+  const labelMarkersRef = useRef<google.maps.Marker[]>([]);
+  const animTimersRef = useRef<number[]>([]);
   const [svUnavailable, setSvUnavailable] = useState(false);
 
   useEffect(() => {
@@ -122,24 +124,107 @@ export default function MapView({
           if (svRef.current) svRef.current.setVisible(false);
         });
 
-      // Clear & redraw roof segment polygons
+      // Clear previous polygons, sqft labels, and any in-flight animation timers
       for (const p of polysRef.current) p.setMap(null);
       polysRef.current = [];
+      for (const lm of labelMarkersRef.current) lm.setMap(null);
+      labelMarkersRef.current = [];
+      for (const t of animTimersRef.current) window.clearTimeout(t);
+      animTimersRef.current = [];
+
       if (segments && segments.length && mapRef.current) {
-        for (const path of segments) {
-          if (!path || path.length < 3) continue;
+        // Cool palette so multi-facet roofs read as visually distinct
+        // without screaming "rainbow." Single-polygon source uses [0].
+        const PALETTE: Array<{ stroke: string; fill: string }> = [
+          { stroke: "#67dcff", fill: "#38c5ee" }, // cyan
+          { stroke: "#5fe3b0", fill: "#34c89a" }, // mint
+          { stroke: "#c8a4ff", fill: "#a883e6" }, // lavender
+          { stroke: "#ffc878", fill: "#e0a14c" }, // gold
+          { stroke: "#ffa8d9", fill: "#e688be" }, // pink
+          { stroke: "#88e6ff", fill: "#5cc7ed" }, // sky
+        ];
+        const FILL_TARGET = 0.22;
+        const STROKE_TARGET = 0.95;
+        const ANIM_MS = 520;
+        const STAGGER_MS = 70;
+
+        segments.forEach((path, idx) => {
+          if (!path || path.length < 3) return;
+          const palette = PALETTE[idx % PALETTE.length];
           const poly = new g.maps.Polygon({
             paths: path,
-            strokeColor: "#67dcff",
-            strokeOpacity: 0.95,
+            strokeColor: palette.stroke,
+            strokeOpacity: 0,
             strokeWeight: 2,
-            fillColor: "#38c5ee",
-            fillOpacity: 0.2,
+            fillColor: palette.fill,
+            fillOpacity: 0,
             clickable: false,
-            map: mapRef.current,
+            map: mapRef.current!,
           });
           polysRef.current.push(poly);
-        }
+
+          // Animate stroke + fill from 0 → target with staggered start so
+          // multi-facet roofs trace in sequence (looks like AI scanning).
+          const startDelay = idx * STAGGER_MS;
+          const start = Date.now() + startDelay;
+          const tick = () => {
+            const elapsed = Date.now() - start;
+            const t = Math.max(0, Math.min(1, elapsed / ANIM_MS));
+            // ease-out cubic
+            const eased = 1 - Math.pow(1 - t, 3);
+            poly.setOptions({
+              strokeOpacity: eased * STROKE_TARGET,
+              fillOpacity: eased * FILL_TARGET,
+            });
+            if (t < 1) {
+              const id = window.setTimeout(tick, 16);
+              animTimersRef.current.push(id);
+            }
+          };
+          const startId = window.setTimeout(tick, startDelay);
+          animTimersRef.current.push(startId);
+
+          // Floating sqft label at polygon centroid (after animation finishes)
+          if (g.maps.geometry?.spherical) {
+            const areaM2 = g.maps.geometry.spherical.computeArea(path);
+            // Project polygon footprint → roof surface area at typical 6/12 pitch
+            // (assumed when we don't have a per-facet pitch). 1 / cos(26.57°) ≈ 1.118.
+            const sqft = Math.round(areaM2 * 10.7639 * 1.118);
+            if (sqft >= 200) {
+              let cLat = 0, cLng = 0;
+              for (const v of path) { cLat += v.lat; cLng += v.lng; }
+              cLat /= path.length; cLng /= path.length;
+
+              // Custom inline-SVG label that matches the polygon palette.
+              const label = `${sqft.toLocaleString()} sf`;
+              const textW = label.length * 7.2 + 18;
+              const svg = `
+                <svg xmlns='http://www.w3.org/2000/svg' width='${textW}' height='22'>
+                  <rect x='0' y='0' width='${textW}' height='22' rx='11' ry='11'
+                        fill='rgba(7,9,13,0.78)' stroke='${palette.stroke}' stroke-opacity='0.55' stroke-width='1' />
+                  <text x='${textW / 2}' y='15' text-anchor='middle'
+                        font-family='ui-monospace,SFMono-Regular,monospace' font-size='11' font-weight='600'
+                        fill='${palette.stroke}'>${label}</text>
+                </svg>
+              `;
+              const labelDelay = startDelay + ANIM_MS;
+              const labelId = window.setTimeout(() => {
+                const lm = new g.maps.Marker({
+                  position: { lat: cLat, lng: cLng },
+                  map: mapRef.current!,
+                  clickable: false,
+                  icon: {
+                    url: `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`,
+                    anchor: new g.maps.Point(textW / 2, 11),
+                  },
+                  zIndex: 9999,
+                });
+                labelMarkersRef.current.push(lm);
+              }, labelDelay);
+              animTimersRef.current.push(labelId);
+            }
+          }
+        });
       }
 
       // Clear & redraw penetration markers (numbered amber circles)
