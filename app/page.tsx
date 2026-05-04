@@ -9,6 +9,7 @@ import OutputButtons from "@/components/OutputButtons";
 import MapView from "@/components/MapView";
 import InsightsPanel from "@/components/InsightsPanel";
 import PropertyContextPanel from "@/components/PropertyContextPanel";
+import StormHistoryCard from "@/components/StormHistoryCard";
 import VisionPanel from "@/components/VisionPanel";
 import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
@@ -440,6 +441,7 @@ export default function HomePage() {
               address={address}
               onProperty={(p) => setPropertyAttomYearBuilt(p?.yearBuilt ?? null)}
             />
+            <StormHistoryCard lat={address?.lat} lng={address?.lng} />
             <div className="glass rounded-2xl p-5 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="font-display font-semibold tracking-tight">Customer & Notes</div>
