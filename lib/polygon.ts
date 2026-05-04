@@ -5,6 +5,59 @@
  */
 
 /**
+ * Sanity check: is the polygon plausibly "the building at this address"?
+ * Returns false when the polygon is clearly on a neighbour or wildly off
+ * — e.g. the geocoded address point is farther than `toleranceM` from any
+ * edge of the polygon AND not contained inside it. Blocks the wrong-house
+ * failure mode where AI traces the brightest roof in the tile rather than
+ * the actual target.
+ */
+export function polygonIsNearAddress(
+  poly: Array<{ lat: number; lng: number }>,
+  addressLat: number,
+  addressLng: number,
+  toleranceM: number = 15,
+): boolean {
+  if (!poly || poly.length < 3) return false;
+
+  // Point-in-polygon (ray cast in lat/lng — accurate enough at house scale)
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].lng, yi = poly[i].lat;
+    const xj = poly[j].lng, yj = poly[j].lat;
+    if (
+      yi > addressLat !== yj > addressLat &&
+      addressLng < ((xj - xi) * (addressLat - yi)) / (yj - yi) + xi
+    ) {
+      inside = !inside;
+    }
+  }
+  if (inside) return true;
+
+  // Not inside — measure distance to nearest edge in meters
+  const cosLat = Math.cos((addressLat * Math.PI) / 180);
+  const M = 111_320;
+  const px = addressLng * M * cosLat;
+  const py = addressLat * M;
+  let minDistSq = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const ax = a.lng * M * cosLat, ay = a.lat * M;
+    const bx = b.lng * M * cosLat, by = b.lat * M;
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-9) continue;
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+    const cx = ax + t * dx, cy = ay + t * dy;
+    const ex = px - cx, ey = py - cy;
+    const d2 = ex * ex + ey * ey;
+    if (d2 < minDistSq) minDistSq = d2;
+  }
+  return Math.sqrt(minDistSq) <= toleranceM;
+}
+
+/**
  * Drop vertices that are within `mergeDistance` of their neighbour.
  * Orthogonalization can leave near-duplicate vertices when adjacent
  * snapped lines intersect very close to the original vertex — these

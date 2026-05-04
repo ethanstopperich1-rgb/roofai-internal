@@ -46,7 +46,11 @@ import {
   deriveRoofLengthsHeuristic,
   inferComplexityFromPolygons,
 } from "@/lib/roof-geometry";
-import { orthogonalizePolygon, mergeNearbyVertices } from "@/lib/polygon";
+import {
+  orthogonalizePolygon,
+  mergeNearbyVertices,
+  polygonIsNearAddress,
+} from "@/lib/polygon";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
@@ -106,9 +110,16 @@ export default function HomePage() {
   >(null);
   // Polygon extracted client-side from the loaded 3D Tiles photogrammetric
   // mesh (Roof3DViewer samples elevations on a grid, thresholds above
-  // ground). Top-priority source — uses real geometric height data so
+  // ground). High-priority source — uses real geometric height data so
   // there's no AI/satellite-image guessing involved.
   const [tiles3dPolygon, setTiles3dPolygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
+  // Polygon from Claude reviewing 5 multi-angle renders of the 3D mesh
+  // (top-down + 4 obliques). HIGHEST-priority source — Claude can
+  // disambiguate the target house using the marker we draw in every view
+  // and triple-check the trace from cardinal angles. ~6-10s after 3D loads.
+  const [multiViewPolygon, setMultiViewPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
   // Live polygons after the rep edits a vertex. When set, overrides the
@@ -176,6 +187,25 @@ export default function HomePage() {
     });
   }, [vision?.roofPolygon, address?.lat, address?.lng]);
 
+  // Wrong-house guard. Every auto-detected polygon must contain (or be within
+  // 15 m of) the geocoded address. Catches the failure mode where AI traces
+  // the brightest neighbouring roof rather than the actual target. Returns
+  // the polygon when valid, null when it should be rejected.
+  const validateAtAddress = (
+    poly: Array<{ lat: number; lng: number }> | null,
+  ): Array<{ lat: number; lng: number }> | null => {
+    if (!poly || poly.length < 3) return null;
+    if (address?.lat == null || address?.lng == null) return poly;
+    return polygonIsNearAddress(poly, address.lat, address.lng, 15) ? poly : null;
+  };
+
+  const validMultiView = useMemo(() => validateAtAddress(multiViewPolygon), [multiViewPolygon, address?.lat, address?.lng]);
+  const validTiles3d = useMemo(() => validateAtAddress(tiles3dPolygon), [tiles3dPolygon, address?.lat, address?.lng]);
+  const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng]);
+  const validSam = useMemo(() => validateAtAddress(samRefinedPolygon), [samRefinedPolygon, address?.lat, address?.lng]);
+  const validOsm = useMemo(() => validateAtAddress(osmBuildingPolygon), [osmBuildingPolygon, address?.lat, address?.lng]);
+  const validClaude = useMemo(() => validateAtAddress(claudePolygonLatLng), [claudePolygonLatLng, address?.lat, address?.lng]);
+
   // Polygon source priority — best-quality first:
   //   1. 3D Tiles mesh — height-thresholded from Google's photogrammetry
   //                      (real geometric truth, no AI guessing)
@@ -185,26 +215,39 @@ export default function HomePage() {
   //   4. SAM 2 + OSM   — point-prompted SAM with OSM building clip
   //   5. OSM           — human-traced building outline (~50-60% US)
   //   6. Claude vision — last-resort AI trace
+  // Each source goes through the wrong-house guard above before being
+  // considered — a polygon that doesn't contain (or live very near to) the
+  // geocoded address is dropped on the floor regardless of source.
   const polygonSource = useMemo<
-    "edited" | "tiles3d" | "solar-mask" | "solar" | "sam" | "osm" | "ai" | "none"
+    | "edited"
+    | "tiles3d-vision"
+    | "tiles3d"
+    | "solar-mask"
+    | "solar"
+    | "sam"
+    | "osm"
+    | "ai"
+    | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
-    if (tiles3dPolygon) return "tiles3d";
-    if (solarMaskPolygon) return "solar-mask";
+    if (validMultiView) return "tiles3d-vision";
+    if (validTiles3d) return "tiles3d";
+    if (validSolarMask) return "solar-mask";
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
-    if (samRefinedPolygon) return "sam";
-    if (osmBuildingPolygon) return "osm";
-    if (claudePolygonLatLng) return "ai";
+    if (validSam) return "sam";
+    if (validOsm) return "osm";
+    if (validClaude) return "ai";
     return "none";
   }, [
     livePolygons,
-    tiles3dPolygon,
-    solarMaskPolygon,
+    validMultiView,
+    validTiles3d,
+    validSolarMask,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
-    samRefinedPolygon,
-    osmBuildingPolygon,
-    claudePolygonLatLng,
+    validSam,
+    validOsm,
+    validClaude,
   ]);
 
   // Source polygons — what MapView draws initially. Edited polygons don't
@@ -213,22 +256,24 @@ export default function HomePage() {
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    if (tiles3dPolygon) return [tiles3dPolygon];
-    if (solarMaskPolygon) return [solarMaskPolygon];
+    if (validMultiView) return [validMultiView];
+    if (validTiles3d) return [validTiles3d];
+    if (validSolarMask) return [validSolarMask];
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1)
       return solar.segmentPolygonsLatLng;
-    if (samRefinedPolygon) return [samRefinedPolygon];
-    if (osmBuildingPolygon) return [osmBuildingPolygon];
-    if (claudePolygonLatLng) return [claudePolygonLatLng];
+    if (validSam) return [validSam];
+    if (validOsm) return [validOsm];
+    if (validClaude) return [validClaude];
     return undefined;
   }, [
-    tiles3dPolygon,
-    solarMaskPolygon,
+    validMultiView,
+    validTiles3d,
+    validSolarMask,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
-    samRefinedPolygon,
-    osmBuildingPolygon,
-    claudePolygonLatLng,
+    validSam,
+    validOsm,
+    validClaude,
   ]);
 
   // Active polygons — what we use for sqft, lengths, blueprint, PDF.
@@ -390,6 +435,7 @@ export default function HomePage() {
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
     setTiles3dPolygon(null);
+    setMultiViewPolygon(null);
     setLivePolygons(null);
     hasUserEditedRef.current = false;
 
@@ -570,6 +616,7 @@ export default function HomePage() {
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
     setTiles3dPolygon(null);
+    setMultiViewPolygon(null);
     hasUserEditedRef.current = false;
   };
 
@@ -578,6 +625,7 @@ export default function HomePage() {
     if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
     if (polygonSource === "edited") badges.push("Edited");
+    else if (polygonSource === "tiles3d-vision") badges.push("3D AI verified");
     else if (polygonSource === "tiles3d") badges.push("3D mesh");
     else if (polygonSource === "solar-mask") badges.push("Solar mask");
     else if (polygonSource === "sam") badges.push("SAM 2 refined");
@@ -693,6 +741,9 @@ export default function HomePage() {
                 onTilesPolygonDetected={(poly) => {
                   if (!hasUserEditedRef.current) setTiles3dPolygon(poly);
                 }}
+                onMultiViewPolygonDetected={(poly) => {
+                  if (!hasUserEditedRef.current) setMultiViewPolygon(poly);
+                }}
               />
             )}
           </section>
@@ -704,21 +755,23 @@ export default function HomePage() {
               editing={polygonSource === "edited"}
               pitchDegrees={solar?.pitchDegrees ?? null}
               sourceLabel={
-                polygonSource === "tiles3d"
-                  ? "3D mesh"
-                  : polygonSource === "solar-mask"
-                    ? "Solar mask"
-                    : polygonSource === "solar"
-                      ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
-                      : polygonSource === "sam"
-                        ? "SAM 2 refined"
-                        : polygonSource === "osm"
-                          ? "OSM traced"
-                          : polygonSource === "ai"
-                            ? "AI traced"
-                            : polygonSource === "edited"
-                              ? "Edited by hand"
-                              : undefined
+                polygonSource === "tiles3d-vision"
+                  ? "3D AI verified"
+                  : polygonSource === "tiles3d"
+                    ? "3D mesh"
+                    : polygonSource === "solar-mask"
+                      ? "Solar mask"
+                      : polygonSource === "solar"
+                        ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
+                        : polygonSource === "sam"
+                          ? "SAM 2 refined"
+                          : polygonSource === "osm"
+                            ? "OSM traced"
+                            : polygonSource === "ai"
+                              ? "AI traced"
+                              : polygonSource === "edited"
+                                ? "Edited by hand"
+                                : undefined
               }
             />
           )}

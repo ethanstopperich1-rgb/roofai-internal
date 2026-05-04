@@ -14,12 +14,25 @@ interface Props {
   /** Provenance — polygons sourced from "ai" (Claude vision) are typically
    *  inaccurate, so we render their outline at lower opacity to avoid drawing
    *  attention to a wonky shape. */
-  polygonSource?: "edited" | "tiles3d" | "solar-mask" | "solar" | "sam" | "osm" | "ai";
+  polygonSource?:
+    | "edited"
+    | "tiles3d-vision"
+    | "tiles3d"
+    | "solar-mask"
+    | "solar"
+    | "sam"
+    | "osm"
+    | "ai";
   /** Fired once we've extracted a roof polygon from the 3D Tiles mesh by
    *  sampling elevations and thresholding above ground. Highest-quality
    *  source we have for any property in 3D Tiles coverage — uses real
    *  geometric height data rather than 2D AI guessing on the satellite tile. */
   onTilesPolygonDetected?: (polygon: Array<{ lat: number; lng: number }>) => void;
+  /** Fired after Claude reviews a top-down + 4 oblique multi-view of the
+   *  3D mesh and traces the roof. Highest-priority source — Claude can
+   *  disambiguate the target house from neighbours using the marker we
+   *  render in every view. */
+  onMultiViewPolygonDetected?: (polygon: Array<{ lat: number; lng: number }>) => void;
 }
 
 const PALETTE = [
@@ -383,6 +396,180 @@ async function extractRoofPolygonFromTiles(opts: {
   return { latLng, groundHeightM: groundHeight, roofHeightM: ceilingHeight };
 }
 
+// ============================================================================
+// Multi-view Claude analysis on the 3D mesh
+// ----------------------------------------------------------------------------
+// Snap the camera to a top-down orthographic view of the property + 4 oblique
+// views from north/east/south/west, capture each as PNG, send all five to
+// Claude with a "trace the roof of the centred house" prompt. Claude returns
+// a polygon in TOP-DOWN PIXEL COORDS, which we reverse-project back to
+// lat/lng using the orthographic projection (deterministic, no Cesium ray
+// casting needed).
+// ============================================================================
+
+const TOPDOWN_HALF_WIDTH_M = 35;       // top-down view covers ±35m around centerpoint
+const TOPDOWN_ALTITUDE_M = 250;
+const OBLIQUE_RANGE_M = 110;
+const OBLIQUE_PITCH_DEG = -45;
+const SETTLE_MS = 800;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function captureCanvasPng(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  viewer: any,
+): Promise<{ base64: string; width: number; height: number } | null> {
+  // Ensure the latest frame is rendered before we read pixels
+  viewer.scene.render();
+  await delay(60);
+  viewer.scene.render();
+  const canvas: HTMLCanvasElement = viewer.scene.canvas;
+  const dataUrl = canvas.toDataURL("image/png");
+  const m = dataUrl.match(/^data:image\/png;base64,(.+)$/);
+  if (!m) return null;
+  return { base64: m[1], width: canvas.width, height: canvas.height };
+}
+
+async function runMultiViewAnalysis(opts: {
+  Cesium: CesiumGlobal;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  viewer: any;
+  lat: number;
+  lng: number;
+  address?: string;
+}): Promise<Array<{ lat: number; lng: number }> | null> {
+  const { Cesium, viewer, lat, lng, address } = opts;
+
+  // Save the camera state so we can restore the user's interactive view
+  const saved = viewer.camera.position.clone();
+  const savedHeading = viewer.camera.heading;
+  const savedPitch = viewer.camera.pitch;
+  const savedRoll = viewer.camera.roll;
+
+  // Disable user interaction during capture so they can't move the camera
+  // mid-render. We restore it before returning (success or failure).
+  const ssc = viewer.scene.screenSpaceCameraController;
+  const sscEnabled = ssc.enableInputs;
+  ssc.enableInputs = false;
+
+  try {
+    // ---- TOP-DOWN ORTHOGRAPHIC ----
+    // We use a perspective view at high altitude with a narrow effective FOV
+    // so the projection is approximately orthographic. The reverse-projection
+    // math below treats it as exactly orthographic.
+    const center = Cesium.Cartesian3.fromDegrees(lng, lat, 0);
+    const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+    viewer.camera.lookAtTransform(
+      transform,
+      new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-89.9), TOPDOWN_ALTITUDE_M),
+    );
+    // Clamp the orthographic frustum so we know exactly what ground area is visible.
+    const canvas: HTMLCanvasElement = viewer.scene.canvas;
+    const aspect = canvas.width / canvas.height;
+    const orthoFrustum = new Cesium.OrthographicFrustum();
+    orthoFrustum.width = TOPDOWN_HALF_WIDTH_M * 2;
+    orthoFrustum.aspectRatio = aspect;
+    orthoFrustum.near = 1;
+    orthoFrustum.far = 5000;
+    const previousFrustum = viewer.camera.frustum;
+    viewer.camera.frustum = orthoFrustum;
+
+    await delay(SETTLE_MS);
+    const topDown = await captureCanvasPng(viewer);
+    if (!topDown) {
+      console.warn("[Roof3DViewer] top-down capture failed");
+      return null;
+    }
+
+    // Restore perspective frustum for oblique captures
+    viewer.camera.frustum = previousFrustum;
+
+    // ---- 4 OBLIQUE VIEWS (N, E, S, W) ----
+    const headings = [0, 90, 180, 270];
+    const obliques: Array<{ base64: string; headingDeg: number }> = [];
+    for (const headingDeg of headings) {
+      viewer.camera.lookAtTransform(
+        transform,
+        new Cesium.HeadingPitchRange(
+          Cesium.Math.toRadians(headingDeg),
+          Cesium.Math.toRadians(OBLIQUE_PITCH_DEG),
+          OBLIQUE_RANGE_M,
+        ),
+      );
+      await delay(SETTLE_MS);
+      const cap = await captureCanvasPng(viewer);
+      if (cap) obliques.push({ base64: cap.base64, headingDeg });
+    }
+
+    // ---- Send to Claude ----
+    let result;
+    try {
+      const res = await fetch("/api/3d-vision-multiview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          address,
+          topDown: { base64: topDown.base64, halfWidthM: TOPDOWN_HALF_WIDTH_M },
+          obliques,
+        }),
+      });
+      if (!res.ok) {
+        console.warn("[Roof3DViewer] multi-view API → ", res.status);
+        return null;
+      }
+      result = await res.json();
+    } catch (err) {
+      console.warn("[Roof3DViewer] multi-view fetch error:", err);
+      return null;
+    }
+
+    const polygonPx: Array<[number, number]> = result?.polygon ?? [];
+    if (polygonPx.length < 3) {
+      console.warn("[Roof3DViewer] Claude returned no usable polygon");
+      return null;
+    }
+
+    // ---- Reverse-project top-down pixels → lat/lng ----
+    // Top-down is orthographic, centred on (lng, lat), covering ±halfWidthM
+    // along the SHORTER axis. Map pixel (x, y) on the canvas (origin top-left)
+    // to ground offsets, then to lat/lng.
+    const W = topDown.width;
+    const H = topDown.height;
+    const cosLat = Math.cos((lat * Math.PI) / 180);
+    const groundWidth = TOPDOWN_HALF_WIDTH_M * 2;
+    const groundHeight = (H / W) * groundWidth;
+    const M_PER_DEG_LAT = 111_320;
+
+    const polygonLatLng = polygonPx.map(([x, y]) => {
+      const dx = ((x - W / 2) / W) * groundWidth; // east meters
+      const dy = ((y - H / 2) / H) * groundHeight; // south meters (image y grows down)
+      return {
+        lng: lng + dx / (M_PER_DEG_LAT * cosLat),
+        lat: lat - dy / M_PER_DEG_LAT,
+      };
+    });
+
+    console.log(
+      `[Roof3DViewer] multi-view Claude → ${polygonLatLng.length} verts, ${result?.sqftEstimate ?? "?"} sf, conf ${result?.confidence ?? "?"} — ${result?.reason ?? ""}`,
+    );
+    return polygonLatLng;
+  } finally {
+    // Restore user's camera + controls
+    try {
+      viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+      viewer.camera.position = saved;
+      viewer.camera.setView({
+        orientation: { heading: savedHeading, pitch: savedPitch, roll: savedRoll },
+      });
+    } catch {
+      /* best-effort restore */
+    }
+    ssc.enableInputs = sscEnabled;
+  }
+}
+
 let cesiumLoadPromise: Promise<CesiumGlobal> | null = null;
 function loadCesium(): Promise<CesiumGlobal> {
   if (typeof window === "undefined") return Promise.reject(new Error("ssr"));
@@ -443,6 +630,7 @@ export default function Roof3DViewer({
   polygons,
   polygonSource,
   onTilesPolygonDetected,
+  onMultiViewPolygonDetected,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
@@ -450,13 +638,17 @@ export default function Roof3DViewer({
   const tickHandlerRef = useRef<(() => void) | null>(null);
   const armTimerRef = useRef<number | null>(null);
   const recenterRef = useRef<(() => void) | null>(null);
+  const markerEntityRef = useRef<unknown>(null);
   const onTilesCallbackRef = useRef(onTilesPolygonDetected);
   onTilesCallbackRef.current = onTilesPolygonDetected;
+  const onMultiViewCallbackRef = useRef(onMultiViewPolygonDetected);
+  onMultiViewCallbackRef.current = onMultiViewPolygonDetected;
 
   const [status, setStatus] = useState<"loading" | "ready" | "no-coverage" | "error">(
     "loading",
   );
   const [extracting, setExtracting] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [orbiting, setOrbiting] = useState(true);
   const orbitingRef = useRef(true);
   orbitingRef.current = orbiting;
@@ -523,11 +715,31 @@ export default function Roof3DViewer({
         viewer.scene.primitives.add(tileset);
         setStatus("ready");
 
+        // Add a red ground-pin marker at the target address so every captured
+        // multi-view image has the target unambiguously marked. Claude uses
+        // this to disambiguate the right house from neighbours.
+        const addMarker = () => {
+          if (markerEntityRef.current) return;
+          const ent = viewer.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(lng, lat, 0),
+            point: {
+              pixelSize: 18,
+              color: Cesium.Color.fromCssColorString("#ff2828"),
+              outlineColor: Cesium.Color.WHITE,
+              outlineWidth: 3,
+              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+          });
+          markerEntityRef.current = ent;
+        };
+        addMarker();
+
         // Kick off the polygon extraction. Runs in the background so the
         // viewer is interactive while we sample 3,600 height points and
         // trace the roof boundary. ~2-4s end-to-end on first load.
         setExtracting(true);
-        extractRoofPolygonFromTiles({
+        const extractPromise = extractRoofPolygonFromTiles({
           Cesium,
           viewer,
           centerLat: lat,
@@ -543,6 +755,32 @@ export default function Roof3DViewer({
           .finally(() => {
             if (!cancelled) setExtracting(false);
           });
+
+        // After geometric extraction settles (or fails), run the multi-view
+        // Claude analysis as the authoritative source. Claude can disambiguate
+        // the target house from neighbours using the marker we render in
+        // every view, AND triple-check from 4 cardinal angles. ~6-10s extra.
+        extractPromise.then(async () => {
+          if (cancelled) return;
+          if (!onMultiViewCallbackRef.current) return;
+          setAnalyzing(true);
+          try {
+            const polygon = await runMultiViewAnalysis({
+              Cesium,
+              viewer,
+              lat,
+              lng,
+              address,
+            });
+            if (!cancelled && polygon && onMultiViewCallbackRef.current) {
+              onMultiViewCallbackRef.current(polygon);
+            }
+          } catch (err) {
+            console.warn("[Roof3DViewer] multi-view analysis failed:", err);
+          } finally {
+            if (!cancelled) setAnalyzing(false);
+          }
+        });
       } catch (err) {
         console.warn("[Roof3DViewer] no 3D Tiles coverage:", err);
         if (!cancelled) setStatus("no-coverage");
@@ -739,10 +977,10 @@ export default function Roof3DViewer({
         </div>
       )}
 
-      {status === "ready" && extracting && (
+      {status === "ready" && (extracting || analyzing) && (
         <div className="absolute top-2.5 left-2.5 z-10 chip chip-accent backdrop-blur-md bg-[#07090d]/65">
           <Sparkles size={11} className="animate-pulse" />
-          <span>Reading 3D mesh…</span>
+          <span>{analyzing ? "Multi-view review…" : "Reading 3D mesh…"}</span>
         </div>
       )}
       {status === "ready" && (
