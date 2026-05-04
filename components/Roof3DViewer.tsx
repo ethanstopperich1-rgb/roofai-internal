@@ -65,7 +65,15 @@ declare global {
 
 const EXTRACT_RADIUS_M = 30;
 const EXTRACT_GRID = 60; // 60x60 = 3,600 samples at 1m spacing
-const ROOF_HEIGHT_THRESHOLD_M = 2.2; // anything > ground + this is roof
+const ROOF_HEIGHT_MIN_M = 2.2; // anything > ground + this is roof candidate
+// Cap roof "ceiling" — anything taller than ground + this is a TREE, not a roof.
+// Typical residential 1-story roof peaks at ~5m above ground, 2-story at ~7-8m.
+// We pick 10m as a generous cap that catches all reasonable residential roofs
+// while excluding mature shade trees (often 12-15m+ in the Southeast US).
+// Diagnosed on 5385 Henley Rd, Mt. Juliet TN: 95th-percentile ceiling was 17m
+// above ground (a tall tree), causing the connected-component step to lock
+// onto a tree blob instead of the actual roof.
+const ROOF_HEIGHT_MAX_M = 10;
 
 /** Convert (lat, lng, gridIndex) to a Cesium Cartographic at the cell center. */
 function buildSamplingGrid(
@@ -97,47 +105,97 @@ function buildSamplingGrid(
 
 /** Flood-fill the connected component containing the center pixel (or the
  *  nearest "on" pixel to it). Returns a mask containing ONLY that component. */
+/**
+ * Pick the largest connected component whose centroid is within
+ * `proximityRadiusCells` of the image center, and return a mask
+ * containing ONLY that component. Falls back to "component containing
+ * center pixel" when no large nearby component is found.
+ *
+ * Why pick by area+proximity instead of just "component containing
+ * center": on wooded rural properties, trees often scatter small
+ * connected components NEAR the geocoded address — sometimes one
+ * happens to land on the center pixel. The original "seed at center"
+ * strategy would lock onto that tree component and miss the actual
+ * roof a few cells away. Picking the LARGEST nearby component is a
+ * stronger signal for "this is the building" because trees are
+ * typically <100 cells while a residential roof is 200+ cells.
+ *
+ * MIN_COMPONENT_CELLS gates which components are even considered —
+ * tiny tree blobs (chimneys, antennas, single tree branches above
+ * threshold) get filtered out entirely.
+ */
 function isolateCenterComponent(
   mask: Uint8Array,
   width: number,
   height: number,
+  proximityRadiusCells = 20,
+  minComponentCells = 80,
 ): Uint8Array | null {
   const cx = Math.floor(width / 2);
   const cy = Math.floor(height / 2);
-  let seedX = -1, seedY = -1;
-  if (mask[cy * width + cx]) {
-    seedX = cx; seedY = cy;
-  } else {
-    const maxR = Math.max(width, height);
-    outer: for (let r = 1; r < maxR; r++) {
-      for (let dx = -r; dx <= r; dx++) {
-        for (let dy = -r; dy <= r; dy++) {
-          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
-          const x = cx + dx, y = cy + dy;
-          if (x < 0 || y < 0 || x >= width || y >= height) continue;
-          if (mask[y * width + x]) {
-            seedX = x; seedY = y;
-            break outer;
-          }
-        }
+
+  // First pass: label connected components. visited[i] = component id (1+) or 0 = unvisited.
+  const visited = new Uint16Array(mask.length);
+  let nextId = 1;
+  const components: Array<{
+    id: number;
+    cells: number;
+    sumX: number;
+    sumY: number;
+  }> = [];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (!mask[idx] || visited[idx]) continue;
+      // Flood-fill this component
+      const id = nextId++;
+      const stack: number[] = [idx];
+      let cells = 0, sumX = 0, sumY = 0;
+      while (stack.length) {
+        const i = stack.pop()!;
+        if (visited[i] || !mask[i]) continue;
+        visited[i] = id;
+        cells++;
+        const ix = i % width;
+        const iy = (i - ix) / width;
+        sumX += ix;
+        sumY += iy;
+        if (ix > 0) stack.push(i - 1);
+        if (ix < width - 1) stack.push(i + 1);
+        if (iy > 0) stack.push(i - width);
+        if (iy < height - 1) stack.push(i + width);
       }
+      components.push({ id, cells, sumX, sumY });
     }
   }
-  if (seedX < 0) return null;
+
+  if (components.length === 0) return null;
+
+  // Pick largest component within proximity radius (centroid distance)
+  let best: typeof components[number] | null = null;
+  for (const c of components) {
+    if (c.cells < minComponentCells) continue;
+    const ccx = c.sumX / c.cells;
+    const ccy = c.sumY / c.cells;
+    const dist = Math.hypot(ccx - cx, ccy - cy);
+    if (dist > proximityRadiusCells) continue;
+    if (!best || c.cells > best.cells) best = c;
+  }
+
+  // Fallback: component containing center pixel, if nothing matched
+  if (!best) {
+    const centerComponent = visited[cy * width + cx];
+    if (centerComponent > 0) {
+      best = components.find((c) => c.id === centerComponent) ?? null;
+    }
+  }
+
+  if (!best) return null;
 
   const out = new Uint8Array(mask.length);
-  const stack: number[] = [seedY * width + seedX];
-  while (stack.length) {
-    const idx = stack.pop()!;
-    if (out[idx]) continue;
-    if (!mask[idx]) continue;
-    out[idx] = 1;
-    const x = idx % width;
-    const y = (idx - x) / width;
-    if (x > 0) stack.push(idx - 1);
-    if (x < width - 1) stack.push(idx + 1);
-    if (y > 0) stack.push(idx - width);
-    if (y < height - 1) stack.push(idx + width);
+  for (let i = 0; i < visited.length; i++) {
+    if (visited[i] === best.id) out[i] = 1;
   }
   return out;
 }
@@ -342,16 +400,22 @@ async function extractRoofPolygonFromTiles(opts: {
   // Estimate ground level: 10th percentile of valid heights.
   const sorted = Array.from(heights).filter((h) => Number.isFinite(h)).sort((a, b) => a - b);
   const groundHeight = sorted[Math.floor(sorted.length * 0.1)];
-  const ceilingHeight = sorted[Math.floor(sorted.length * 0.95)];
+  // Roof ceiling = HARD CAP at ground + ROOF_HEIGHT_MAX_M (10m), regardless of
+  // what the percentile suggests. The previous "95th percentile of all heights"
+  // approach broke on wooded properties: tall trees pushed the ceiling to
+  // 15-17m above ground, so the mask included tree canopies, and the
+  // connected-component step locked onto a tree blob near the geocoded center
+  // instead of the actual roof. Hard-capping kills trees > 10m before they
+  // contaminate the mask.
+  const ceilingHeight = groundHeight + ROOF_HEIGHT_MAX_M;
 
-  // Threshold to binary roof mask. Anything more than ROOF_HEIGHT_THRESHOLD_M
-  // above ground = roof. Cap by ceilingHeight to avoid trees being labeled roof
-  // (trees sometimes survive photogrammetry as tall blobs).
+  // Threshold to binary roof mask. h ∈ [ground + 2.2m, ground + 10m] = roof
+  // candidate. Below 2.2m = ground noise / shrubs / vehicles. Above 10m = trees.
   const mask = new Uint8Array(EXTRACT_GRID * EXTRACT_GRID);
   for (let i = 0; i < heights.length; i++) {
     const h = heights[i];
     if (!Number.isFinite(h)) continue;
-    if (h > groundHeight + ROOF_HEIGHT_THRESHOLD_M && h <= ceilingHeight + 1) {
+    if (h > groundHeight + ROOF_HEIGHT_MIN_M && h <= ceilingHeight) {
       mask[i] = 1;
     }
   }
