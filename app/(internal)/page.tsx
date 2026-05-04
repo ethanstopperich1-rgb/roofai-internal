@@ -17,6 +17,7 @@ import MeasurementsPanel from "@/components/MeasurementsPanel";
 import RoofBlueprint from "@/components/RoofBlueprint";
 import PolygonSizeWarning from "@/components/PolygonSizeWarning";
 import PhotoUploadPanel from "@/components/PhotoUploadPanel";
+import ImageryStormBanner from "@/components/ImageryStormBanner";
 import type { PhotoMeta } from "@/types/photo";
 import dynamic from "next/dynamic";
 import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
@@ -841,6 +842,13 @@ export default function HomePage() {
               }
             />
           )}
+
+          {/* ─── Imagery × storm correlation (multi-temporal) ──────────── */}
+          <ImageryStormBanner
+            imageryDate={solar?.imageryDate ?? null}
+            lat={address?.lat}
+            lng={address?.lng}
+          />
 
           {/* ─── Polygon size sanity check ──────────────────────────────── */}
           <PolygonSizeWarning
