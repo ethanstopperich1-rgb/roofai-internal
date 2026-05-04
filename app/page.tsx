@@ -151,9 +151,13 @@ export default function HomePage() {
     [assumptions.sqft, assumptions.complexity],
   );
 
-  const runEstimate = async () => {
-    if (!addressText.trim()) return;
-    const addr: AddressInfo = address ?? { formatted: addressText.trim() };
+  const runEstimate = async (explicitAddr?: AddressInfo) => {
+    // Accept an explicit address from the autocomplete pick so we don't
+    // race with React state. Falls back to current state for the
+    // Estimate-button / Enter-key paths.
+    const addr: AddressInfo =
+      explicitAddr ?? address ?? { formatted: addressText.trim() };
+    if (!addr.formatted?.trim()) return;
     setAddress(addr);
     setShown(true);
     setSolar(null);

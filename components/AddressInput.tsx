@@ -6,7 +6,10 @@ import type { AddressInfo } from "@/types/estimate";
 
 interface Props {
   onSelect: (a: AddressInfo) => void;
-  onSubmit: () => void;
+  /** Trigger the estimate. Optionally accepts an explicit address so callers
+   *  can skip the round-trip through React state when picking from the
+   *  autocomplete dropdown (state hasn't flushed yet at that moment). */
+  onSubmit: (address?: AddressInfo) => void;
   value: string;
   onChange: (s: string) => void;
 }
@@ -71,18 +74,24 @@ export default function AddressInput({ onSelect, onSubmit, value, onChange }: Pr
     onChange(s.text);
     setOpen(false);
     setSuggestions([]);
+    let addr: AddressInfo;
     try {
       const res = await fetch(`/api/places/details?placeId=${s.placeId}`);
       const data = await res.json();
-      onSelect({
+      addr = {
         formatted: data.formatted ?? s.text,
         zip: data.zip,
         lat: data.lat,
         lng: data.lng,
-      });
+      };
     } catch {
-      onSelect({ formatted: s.text });
+      addr = { formatted: s.text };
     }
+    onSelect(addr);
+    // Auto-trigger estimate immediately — saves the rep one click and
+    // avoids the case where they pick the right house but forget to hit
+    // Estimate. Pass addr explicitly so runEstimate doesn't read stale state.
+    onSubmit(addr);
   };
 
   const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -137,7 +146,7 @@ export default function AddressInput({ onSelect, onSubmit, value, onChange }: Pr
         {loading && (
           <Loader2 size={15} className="animate-spin text-slate-400 flex-shrink-0" />
         )}
-        <button onClick={onSubmit} className="btn btn-primary flex-shrink-0 px-4 py-2">
+        <button onClick={() => onSubmit()} className="btn btn-primary flex-shrink-0 px-4 py-2">
           Estimate
           <span className="kbd !bg-black/20 !text-[#0c1118]/80 !border-black/10">↵</span>
         </button>

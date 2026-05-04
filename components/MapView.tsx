@@ -76,8 +76,16 @@ export default function MapView({
           mapTypeId: "satellite",
           tilt: 0,
           disableDefaultUI: true,
-          zoomControl: true,
-          gestureHandling: "greedy",
+          // Lock the map so reps can't accidentally drag/zoom off the
+          // property. Polygons + pin always stay aligned with what the
+          // estimate is computed on.
+          gestureHandling: "none",
+          keyboardShortcuts: false,
+          clickableIcons: false,
+          draggable: false,
+          zoomControl: false,
+          scrollwheel: false,
+          disableDoubleClickZoom: true,
         });
       } else {
         mapRef.current.setCenter(pos);
