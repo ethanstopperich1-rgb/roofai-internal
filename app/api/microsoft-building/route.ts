@@ -26,7 +26,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
   }
 
-  const cached = getCached<MicrosoftBuildingResult | null>("ms-buildings", lat, lng);
+  const cached = await getCached<MicrosoftBuildingResult | null>("ms-buildings", lat, lng);
   if (cached !== null) {
     if (cached === undefined) {
       return NextResponse.json(
@@ -39,13 +39,13 @@ export async function GET(req: Request) {
 
   const result = await fetchMicrosoftBuildingPolygon({ lat, lng });
   if (!result) {
-    setCached<MicrosoftBuildingResult | null>("ms-buildings", lat, lng, null);
+    await setCached<MicrosoftBuildingResult | null>("ms-buildings", lat, lng, null);
     return NextResponse.json(
       { error: "no_coverage", message: "No Microsoft Building Footprint near this address." },
       { status: 404 },
     );
   }
 
-  setCached("ms-buildings", lat, lng, result);
+  await setCached("ms-buildings", lat, lng, result);
   return NextResponse.json(result);
 }

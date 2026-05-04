@@ -14,6 +14,7 @@
     "@googlemaps/js-api-loader": "^1.16.8",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
+    "@upstash/redis": "^1.37.0",
     "@vercel/blob": "^2.3.3",
     "cesium": "^1.141.0",
     "clsx": "^2.1.1",

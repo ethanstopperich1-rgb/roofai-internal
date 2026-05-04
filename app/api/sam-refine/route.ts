@@ -208,7 +208,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const cached = getCached<SamRefineCachedResult>("sam-refine", lat, lng);
+  const cached = await getCached<SamRefineCachedResult>("sam-refine", lat, lng);
   if (cached) return NextResponse.json(cached);
 
   // Run OSM lookup + Grounded SAM in parallel. SAM throws specific errors
@@ -324,7 +324,7 @@ export async function POST(req: Request) {
           polygon: osmResult.latLng,
           source: "osm-fallback",
         };
-        setCached("sam-refine", lat, lng, result);
+        await setCached("sam-refine", lat, lng, result);
         return NextResponse.json(result);
       }
       return NextResponse.json(
@@ -342,6 +342,6 @@ export async function POST(req: Request) {
     source: candidate.source,
     ...(qa && { qa }),
   };
-  setCached("sam-refine", lat, lng, result);
+  await setCached("sam-refine", lat, lng, result);
   return NextResponse.json(result);
 }

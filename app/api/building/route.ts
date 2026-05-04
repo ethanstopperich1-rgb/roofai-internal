@@ -20,7 +20,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
   }
 
-  const cached = getCached<BuildingPolygon | null>("building", lat, lng);
+  const cached = await getCached<BuildingPolygon | null>("building", lat, lng);
   if (cached !== null) {
     if (cached === undefined) {
       return NextResponse.json(
@@ -33,13 +33,13 @@ export async function GET(req: Request) {
 
   const result = await fetchBuildingPolygon({ lat, lng });
   if (!result) {
-    setCached<BuildingPolygon | null>("building", lat, lng, null);
+    await setCached<BuildingPolygon | null>("building", lat, lng, null);
     return NextResponse.json(
       { error: "no_building", message: "OSM has no building near this address." },
       { status: 404 },
     );
   }
 
-  setCached("building", lat, lng, result);
+  await setCached("building", lat, lng, result);
   return NextResponse.json(result);
 }

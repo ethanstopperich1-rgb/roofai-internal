@@ -29,7 +29,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Missing Google key" }, { status: 503 });
   }
 
-  const cached = getCached<SolarMaskPolygon | null>("solar-mask", lat, lng);
+  const cached = await getCached<SolarMaskPolygon | null>("solar-mask", lat, lng);
   if (cached !== null) {
     if (cached === undefined) {
       return NextResponse.json(
@@ -42,13 +42,13 @@ export async function GET(req: Request) {
 
   const result = await fetchSolarRoofMask({ lat, lng, apiKey });
   if (!result) {
-    setCached<SolarMaskPolygon | null>("solar-mask", lat, lng, null);
+    await setCached<SolarMaskPolygon | null>("solar-mask", lat, lng, null);
     return NextResponse.json(
       { error: "no_coverage", message: "Solar mask not available for this address." },
       { status: 404 },
     );
   }
 
-  setCached("solar-mask", lat, lng, result);
+  await setCached("solar-mask", lat, lng, result);
   return NextResponse.json(result);
 }

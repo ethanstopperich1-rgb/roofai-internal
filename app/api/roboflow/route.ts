@@ -61,7 +61,7 @@ export async function GET(req: Request) {
     );
   }
 
-  const cached = getCached<RoboflowResult | null>("roboflow", lat, lng);
+  const cached = await getCached<RoboflowResult | null>("roboflow", lat, lng);
   if (cached !== null) {
     if (cached === undefined) {
       return NextResponse.json(
@@ -97,14 +97,14 @@ export async function GET(req: Request) {
   }
 
   if (!result) {
-    setCached<RoboflowResult | null>("roboflow", lat, lng, null);
+    await setCached<RoboflowResult | null>("roboflow", lat, lng, null);
     return NextResponse.json(
       { error: "no_polygon", message: "Roboflow returned no usable polygon." },
       { status: 404 },
     );
   }
 
-  setCached("roboflow", lat, lng, result);
+  await setCached("roboflow", lat, lng, result);
   return buildResponse(result);
 }
 

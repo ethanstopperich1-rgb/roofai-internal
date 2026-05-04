@@ -14,7 +14,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
   }
 
-  const cached = getCached<RoofVision>("vision", lat, lng);
+  const cached = await getCached<RoofVision>("vision", lat, lng);
   if (cached) return NextResponse.json(cached);
 
   const mapsKey =
@@ -33,6 +33,6 @@ export async function GET(req: Request) {
     imageMimeType: img.mimeType,
   });
 
-  setCached("vision", lat, lng, vision);
+  await setCached("vision", lat, lng, vision);
   return NextResponse.json(vision);
 }

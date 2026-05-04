@@ -68,7 +68,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
   }
 
-  const cached = getCached<SolarSummary>("solar", lat, lng);
+  const cached = await getCached<SolarSummary>("solar", lat, lng);
   if (cached) return NextResponse.json(cached);
 
   const url =
@@ -92,7 +92,7 @@ export async function GET(req: Request) {
         segments: [],
         dominantAzimuthDeg: null,
       };
-      setCached("solar", lat, lng, empty);
+      await setCached("solar", lat, lng, empty);
       return NextResponse.json(empty);
     }
     const text = await res.text();
@@ -155,6 +155,6 @@ export async function GET(req: Request) {
     yearlyKwhPotential: stats?.maxSunshineHoursPerYear ?? null,
   };
 
-  setCached("solar", lat, lng, summary);
+  await setCached("solar", lat, lng, summary);
   return NextResponse.json(summary);
 }
