@@ -24,6 +24,124 @@ interface Props {
     | "osm"
     | "microsoft-buildings"
     | "ai";
+  /** When provided, the viewer captures top-down + 4 oblique screenshots
+   *  of the loaded 3D mesh, POSTs them to /api/verify-polygon-multiview
+   *  along with the active polygon, and reports Claude's verdict via this
+   *  callback. Skipped when the rep edited (livePolygons in parent) since
+   *  manual edits override AI verification. */
+  onMultiViewVerified?: (result: { ok: boolean; confidence: number; reason: string }) => void;
+}
+
+// Multi-view capture geometry. These constants control the camera poses used
+// for verification screenshots; tuned to match what the model expects to see.
+const VERIFY_TOPDOWN_HALF_WIDTH_M = 35;   // top-down covers ±35m around centerpoint
+const VERIFY_TOPDOWN_ALTITUDE_M = 250;
+const VERIFY_OBLIQUE_RANGE_M = 130;
+const VERIFY_OBLIQUE_PITCH_DEG = -45;
+const VERIFY_SETTLE_MS = 1200;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+interface CapturedView { base64: string; width: number; height: number }
+interface CapturedMultiView {
+  topDown: CapturedView & { halfWidthM: number };
+  obliques: Array<CapturedView & { headingDeg: number }>;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function captureCanvasPng(viewer: any): Promise<CapturedView | null> {
+  viewer.scene.render();
+  await delay(60);
+  viewer.scene.render();
+  const canvas: HTMLCanvasElement = viewer.scene.canvas;
+  const dataUrl = canvas.toDataURL("image/png");
+  const m = dataUrl.match(/^data:image\/png;base64,(.+)$/);
+  if (!m) return null;
+  return { base64: m[1], width: canvas.width, height: canvas.height };
+}
+
+/**
+ * Snap the camera to top-down orthographic + 4 oblique poses, capture each
+ * frame as PNG. Used by the multi-view verification flow — Claude looks at
+ * 5 images of the property + the candidate polygon overlaid on each, and
+ * answers "does this match the actual roof?"
+ *
+ * Restores the user's previous camera state on exit (success or failure).
+ * Disables ScreenSpaceCameraController inputs during capture so the user
+ * can't move the camera mid-render.
+ */
+async function captureMultiViewForVerify(opts: {
+  Cesium: CesiumGlobal;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  viewer: any;
+  lat: number;
+  lng: number;
+}): Promise<CapturedMultiView | null> {
+  const { Cesium, viewer, lat, lng } = opts;
+  const saved = viewer.camera.position.clone();
+  const savedHeading = viewer.camera.heading;
+  const savedPitch = viewer.camera.pitch;
+  const savedRoll = viewer.camera.roll;
+  const ssc = viewer.scene.screenSpaceCameraController;
+  const sscEnabled = ssc.enableInputs;
+  ssc.enableInputs = false;
+
+  try {
+    // Top-down orthographic
+    const center = Cesium.Cartesian3.fromDegrees(lng, lat, 0);
+    const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+    viewer.camera.lookAtTransform(
+      transform,
+      new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-89.9), VERIFY_TOPDOWN_ALTITUDE_M),
+    );
+    const canvas: HTMLCanvasElement = viewer.scene.canvas;
+    const aspect = canvas.width / canvas.height;
+    const orthoFrustum = new Cesium.OrthographicFrustum();
+    orthoFrustum.width = VERIFY_TOPDOWN_HALF_WIDTH_M * 2;
+    orthoFrustum.aspectRatio = aspect;
+    orthoFrustum.near = 1;
+    orthoFrustum.far = 5000;
+    const previousFrustum = viewer.camera.frustum;
+    viewer.camera.frustum = orthoFrustum;
+    await delay(VERIFY_SETTLE_MS);
+    const topDown = await captureCanvasPng(viewer);
+    if (!topDown) return null;
+    viewer.camera.frustum = previousFrustum;
+
+    // 4 oblique views (N, E, S, W)
+    const obliques: CapturedMultiView["obliques"] = [];
+    for (const headingDeg of [0, 90, 180, 270]) {
+      viewer.camera.lookAtTransform(
+        transform,
+        new Cesium.HeadingPitchRange(
+          Cesium.Math.toRadians(headingDeg),
+          Cesium.Math.toRadians(VERIFY_OBLIQUE_PITCH_DEG),
+          VERIFY_OBLIQUE_RANGE_M,
+        ),
+      );
+      await delay(VERIFY_SETTLE_MS);
+      const cap = await captureCanvasPng(viewer);
+      if (cap) obliques.push({ ...cap, headingDeg });
+    }
+
+    return {
+      topDown: { ...topDown, halfWidthM: VERIFY_TOPDOWN_HALF_WIDTH_M },
+      obliques,
+    };
+  } finally {
+    try {
+      viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+      viewer.camera.position = saved;
+      viewer.camera.setView({
+        orientation: { heading: savedHeading, pitch: savedPitch, roll: savedRoll },
+      });
+    } catch {
+      /* best-effort */
+    }
+    ssc.enableInputs = sscEnabled;
+  }
 }
 
 const PALETTE = [
@@ -110,6 +228,7 @@ export default function Roof3DViewer({
   address,
   polygons,
   polygonSource,
+  onMultiViewVerified,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
@@ -124,6 +243,11 @@ export default function Roof3DViewer({
   // the actual ground; the camera framing constants below (110m / -42°)
   // are tuned for this default.
   const pivotAltitudeRef = useRef(200);
+  const onVerifiedRef = useRef(onMultiViewVerified);
+  onVerifiedRef.current = onMultiViewVerified;
+  // Don't re-verify the same polygon on every render. Key by (source +
+  // first vertex + length) and only fire once per unique polygon.
+  const verifiedPolygonRef = useRef<string | null>(null);
 
   const [status, setStatus] = useState<"loading" | "ready" | "no-coverage" | "error">(
     "loading",
@@ -424,6 +548,114 @@ export default function Roof3DViewer({
       polygonEntitiesRef.current.push(outlineEntity);
     });
   }, [polygons, polygonSource, status]);
+
+  // -------- Multi-view Claude verification --------
+  // After the 3D mesh is loaded AND a polygon is rendered, capture top-down
+  // + 4 oblique screenshots, send all 5 to Claude with a "does this polygon
+  // match the actual roof?" prompt. Claude's verdict feeds back to the
+  // parent which decides whether to ship the polygon or fall through.
+  //
+  // Skipped for:
+  //   - "edited" (rep authoritative)
+  //   - "ai" (Claude verifying Claude is circular)
+  //   - "tiles3d" (legacy source no longer in chain; safety check)
+  // Caching: verifiedPolygonRef prevents re-verification of the same polygon
+  // on React re-renders.
+  useEffect(() => {
+    const viewer = viewerRef.current as
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      | any
+      | null;
+    if (!viewer || status !== "ready") return;
+    if (!polygons || polygons.length === 0) return;
+    if (!onVerifiedRef.current) return;
+    if (
+      polygonSource === "edited" ||
+      polygonSource === "ai" ||
+      polygonSource === "tiles3d"
+    ) return;
+    const Cesium = window.Cesium;
+    if (!Cesium) return;
+
+    // Pick the largest polygon as primary (matches what page.tsx renders)
+    const primary = polygons.reduce<Array<{ lat: number; lng: number }> | null>(
+      (best, p) => {
+        if (!p || p.length < 3) return best;
+        return !best || p.length > best.length ? p : best;
+      },
+      null,
+    );
+    if (!primary) return;
+
+    const key = `${polygonSource}:${primary[0].lat.toFixed(5)},${primary[0].lng.toFixed(5)}:${primary.length}`;
+    if (verifiedPolygonRef.current === key) return;
+    verifiedPolygonRef.current = key;
+
+    let cancelled = false;
+    (async () => {
+      console.log(`[Roof3DViewer] starting multi-view capture for [${polygonSource}]`);
+      const captured = await captureMultiViewForVerify({
+        Cesium,
+        viewer,
+        lat,
+        lng,
+      });
+      if (cancelled) return;
+      if (!captured) {
+        console.warn("[Roof3DViewer] multi-view capture failed");
+        return;
+      }
+      // Restore camera framing — captureMultiView restores prior pose,
+      // but recenterRef pulls back to our drone-hover orbit.
+      recenterRef.current?.();
+
+      try {
+        const res = await fetch("/api/verify-polygon-multiview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lat,
+            lng,
+            address,
+            source: polygonSource,
+            polygon: primary,
+            topDown: {
+              base64: captured.topDown.base64,
+              halfWidthM: captured.topDown.halfWidthM,
+            },
+            obliques: captured.obliques.map((o) => ({
+              base64: o.base64,
+              headingDeg: o.headingDeg,
+            })),
+          }),
+        });
+        if (!res.ok) {
+          console.warn("[Roof3DViewer] multi-view verify API error:", res.status);
+          return;
+        }
+        const data = (await res.json()) as {
+          ok?: boolean;
+          confidence?: number;
+          reason?: string;
+        };
+        if (cancelled) return;
+        const result = {
+          ok: !!data.ok,
+          confidence: typeof data.confidence === "number" ? data.confidence : 0.5,
+          reason: typeof data.reason === "string" ? data.reason : "",
+        };
+        console.log(
+          `[Roof3DViewer] multi-view Claude [${polygonSource}]: ok=${result.ok} conf=${result.confidence.toFixed(2)} — ${result.reason}`,
+        );
+        onVerifiedRef.current?.(result);
+      } catch (err) {
+        console.warn("[Roof3DViewer] multi-view verify error:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [polygons, polygonSource, status, lat, lng, address]);
 
 
   return (

@@ -252,6 +252,58 @@ export default function HomePage() {
     return v.confidence < 0.7; // ok=false but Claude isn't sure → keep
   };
 
+  // MS Buildings hallucination cross-check. When BOTH Roboflow and MS
+  // Buildings have polygons for the same address, compare areas + centroid
+  // distance. If they disagree wildly (Roboflow's polygon is 3× the size
+  // of MS's footprint, OR centroid is > 25m away), Roboflow has likely
+  // hallucinated — traced a paved area or the neighbour's roof. Demote.
+  // MS Buildings serves as a sanity-check authority for Roboflow because
+  // it's pre-traced from satellite imagery (different model, different
+  // training data) and contains the geocoded address point.
+  const passesMsHallucinationCheck = (
+    candidate: Array<{ lat: number; lng: number }> | null,
+  ): boolean => {
+    if (!candidate || candidate.length < 3) return true;
+    if (!msBuildingPolygon || msBuildingPolygon.length < 3) return true; // no MS reference
+    const cosLat = Math.cos(((candidate[0].lat) * Math.PI) / 180);
+    const M_PER_DEG_LAT = 111_320;
+    const polygonAreaSqM = (poly: Array<{ lat: number; lng: number }>): number => {
+      let sum = 0;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+        sum += a.lng * b.lat - b.lng * a.lat;
+      }
+      // Convert from deg² to m² via local linear approximation
+      const degSq = Math.abs(sum) / 2;
+      return degSq * (M_PER_DEG_LAT * M_PER_DEG_LAT) * cosLat;
+    };
+    const centroid = (poly: Array<{ lat: number; lng: number }>) => {
+      let lat = 0, lng = 0;
+      for (const p of poly) { lat += p.lat; lng += p.lng; }
+      return { lat: lat / poly.length, lng: lng / poly.length };
+    };
+    const aArea = polygonAreaSqM(candidate);
+    const bArea = polygonAreaSqM(msBuildingPolygon);
+    const ratio = aArea / Math.max(bArea, 1);
+    const ac = centroid(candidate);
+    const bc = centroid(msBuildingPolygon);
+    const dxM = (ac.lng - bc.lng) * M_PER_DEG_LAT * cosLat;
+    const dyM = (ac.lat - bc.lat) * M_PER_DEG_LAT;
+    const centroidDistM = Math.hypot(dxM, dyM);
+    // Reject when:
+    //   - candidate is > 3× larger than MS footprint (over-trace into yard)
+    //   - candidate is < 0.3× MS footprint (only tracing a portion of the building)
+    //   - centroid is > 25m from MS footprint centroid (wrong building)
+    if (ratio > 3.0 || ratio < 0.3 || centroidDistM > 25) {
+      console.warn(
+        `[hallucination] candidate vs MS Footprint: area ratio=${ratio.toFixed(2)}, centroid dist=${centroidDistM.toFixed(1)}m — flagging as hallucination`,
+      );
+      return false;
+    }
+    return true;
+  };
+
   // Pattern D: footprint-coverage check. A roof segmenter (Roboflow / SAM)
   // or Claude can latch onto the high-contrast center section and miss
   // adjoining wings — the polygon passes both the wrong-house guard
@@ -322,12 +374,12 @@ export default function HomePage() {
     // coverage gate is skipped on them — they're the ground truth Solar's
     // footprint comes from.
     if (validSolarMask && passesClaude("solar-mask") && passesCoverage(validSolarMask)) return "solar-mask";
-    if (validRoboflow && passesClaude("roboflow") && passesCoverage(validRoboflow)) return "roboflow";
+    if (validRoboflow && passesClaude("roboflow") && passesCoverage(validRoboflow) && passesMsHallucinationCheck(validRoboflow)) return "roboflow";
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1 && passesCoverageMulti(solar.segmentPolygonsLatLng)) return "solar";
     if (validSam && passesClaude("sam") && passesCoverage(validSam)) return "sam";
     if (validOsm && passesClaude("osm")) return "osm";
     if (validMsBuilding && passesClaude("microsoft-buildings")) return "microsoft-buildings";
-    if (validClaude && passesClaude("ai") && passesCoverage(validClaude)) return "ai";
+    if (validClaude && passesClaude("ai") && passesCoverage(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
     return "none";
   }, [
     livePolygons,
@@ -341,6 +393,7 @@ export default function HomePage() {
     validMsBuilding,
     validClaude,
     claudeVerifications,
+    msBuildingPolygon,
   ]);
 
   // Source polygons — what MapView draws initially. Edited polygons don't
@@ -381,49 +434,14 @@ export default function HomePage() {
   // Live edits override source.
   const activePolygons = livePolygons ?? sourcePolygons;
 
-  // Pattern C: ask Claude to verify the active polygon. Debounced 1500ms
-  // so we don't spam the API while sources are still racing. Skipped for
-  // tiles3d (already mesh-derived), edited (rep approved), and ai (Claude
-  // already drew it — verifying his own answer adds no new information).
-  // One call per (source, polygon-hash); cached in state.
-  useEffect(() => {
-    if (!address?.lat || !address?.lng) return;
-    if (polygonSource === "none" || polygonSource === "tiles3d" ||
-        polygonSource === "edited" || polygonSource === "ai") return;
-    if (!activePolygons || activePolygons.length === 0) return;
-    const primary = activePolygons.reduce<Array<{ lat: number; lng: number }> | null>(
-      (best, p) => (!best || p.length > best.length ? p : best),
-      null,
-    );
-    if (!primary || primary.length < 3) return;
-    // Don't re-verify if we already have a result for this source.
-    if (claudeVerifications[polygonSource]) return;
-
-    const lat = address.lat;
-    const lng = address.lng;
-    const source = polygonSource;
-    const timer = setTimeout(() => {
-      fetch("/api/verify-polygon", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat, lng, polygon: primary, source }),
-      })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (!data) return;
-          setClaudeVerifications((cur) => ({
-            ...cur,
-            [source]: {
-              ok: !!data.ok,
-              confidence: typeof data.confidence === "number" ? data.confidence : 0.5,
-              reason: typeof data.reason === "string" ? data.reason : "",
-            },
-          }));
-        })
-        .catch(() => {});
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [activePolygons, polygonSource, address?.lat, address?.lng, claudeVerifications]);
+  // Single-image Claude verification was previously triggered here from
+  // /api/verify-polygon. That endpoint still exists as a fallback but the
+  // 3D viewer now drives multi-view verification via Roof3DViewer's
+  // onMultiViewVerified callback (see /api/verify-polygon-multiview).
+  // Multi-view is strictly more informative — it has top-down + 4 oblique
+  // views with the polygon overlaid, lets Claude check cross-view
+  // consistency. The single-image route remains for callers without 3D
+  // (e.g. ssr / scripts).
 
   // Drop penetration markers that fall outside our active roof polygon —
   // Vision occasionally tags vents/skylights on neighboring houses since the
@@ -942,6 +960,13 @@ export default function HomePage() {
                 address={address.formatted}
                 polygons={activePolygons}
                 polygonSource={polygonSource === "none" ? undefined : polygonSource}
+                onMultiViewVerified={(result) => {
+                  if (!polygonSource || polygonSource === "none") return;
+                  setClaudeVerifications((cur) => ({
+                    ...cur,
+                    [polygonSource]: result,
+                  }));
+                }}
               />
             )}
           </section>
