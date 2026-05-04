@@ -190,20 +190,48 @@ function longestAxis(poly: Array<{ x: number; y: number }>): {
 /* ─── Build mesh ──────────────────────────────────────────────────── */
 
 /**
+ * Detect whether a polygon is too complex for the single-ridge algorithm.
+ * Complex = many vertices, or has interior (reflex) angles, or the longest-
+ * axis ridge would pass close to non-axis-aligned edges (multi-bay).
+ *
+ * Returns true when we should fall back to the centroid-apex hip-roof
+ * representation rather than a single linear ridge.
+ */
+function isComplexPolygon(pts: Array<{ x: number; y: number }>): boolean {
+  if (pts.length > 6) return true;
+  // Detect reflex angles (interior angle > 180° → polygon is concave)
+  // After ensureCCW the cross-product of consecutive edges should be
+  // positive at every convex vertex; a negative cross = reflex.
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[(i - 1 + pts.length) % pts.length];
+    const cur = pts[i];
+    const next = pts[(i + 1) % pts.length];
+    const e1x = cur.x - prev.x;
+    const e1y = cur.y - prev.y;
+    const e2x = next.x - cur.x;
+    const e2y = next.y - cur.y;
+    const cross = e1x * e2y - e1y * e2x;
+    if (cross < -0.01) return true; // reflex
+  }
+  return false;
+}
+
+/**
  * Build a parametric roof mesh from a footprint polygon + uniform pitch.
  *
  * Strategy:
  *   - Project to local meters
- *   - Find longest-axis ridge
- *   - For each polygon vertex, decide eave or rake (roughly: edges parallel to
- *     ridge axis = eaves; edges perpendicular = rakes)
- *   - Generate triangle fan from each polygon edge to the ridge centerline
- *   - Calculate ridge height from perpendicular distance × tan(pitch)
+ *   - Detect complexity. Complex polygons (multi-bay, many reflex angles)
+ *     fall back to a centroid-apex hip roof — ALL polygon edges become slope
+ *     faces converging on a single peak above the centroid. Visually clean
+ *     for irregular shapes; not a "real" gable but unambiguously readable.
+ *   - Simple polygons (≤6 vertices, all-convex) get the linear-ridge algorithm:
+ *     find the longest axis, project each edge midpoint onto it, fan
+ *     triangles from each edge to its projected apex.
  *
- * Works well for: rectangles, hexagons, near-convex polygons.
- * Approximate but visually plausible for: L-shapes, T-shapes (single ridge).
- * For multi-bay homes, the user can edit polygon vertices in MapView; we'll
- * upgrade to a real straight skeleton in v2.
+ * Works perfectly for rectangles, hexagons, octagons.
+ * Falls back gracefully for L/T/U/multi-bay homes.
+ * V2 (later) will use a real straight-skeleton with per-edge pitches.
  */
 export function buildParametricRoof(
   polygon: LL[],
@@ -213,6 +241,13 @@ export function buildParametricRoof(
   const origin = centroidOfPolygon(polygon);
   let pts = polygon.map((p) => lonLatToMeters(p, origin));
   pts = ensureCCW(pts);
+  // Smooth out spike artifacts from upstream polygon sources (SAM, Roboflow,
+  // Solar mask) that produce 1m-scale zigzags along what should be a clean
+  // eave. We do this at the meters-projection stage so the smoothing is
+  // distance-aware (1.5m tolerance ≈ noise threshold for residential roofs).
+  pts = simplifyPolygon(pts, 1.5);
+  pts = collapseColinearVertices(pts, 0.2);
+  if (pts.length < 3) return null;
 
   const pitchRad = pitchToRadians(opts.pitch);
   const tanPitch = Math.tan(pitchRad);
@@ -241,6 +276,14 @@ export function buildParametricRoof(
       out.push({ x: cur.x + (bx / blen) * overhangM, y: cur.y + (by / blen) * overhangM });
     }
     pts = ensureCCW(out);
+  }
+
+  // ─── Complexity branch ────────────────────────────────────────────
+  // For multi-bay / reflex / >6-vertex polygons, the single-ridge algorithm
+  // produces overlapping triangles (every edge midpoint projects to the
+  // same ridge segment). Fall back to a centroid-apex hip roof instead.
+  if (isComplexPolygon(pts)) {
+    return buildHipRoofFallback(pts, pitchRad, origin);
   }
 
   const axis = longestAxis(pts);
@@ -350,9 +393,206 @@ export function buildParametricRoof(
   };
 }
 
+/**
+ * Douglas-Peucker polygon simplification. `tolerance` is in the same units
+ * as the input (meters in our case). Removes vertices that contribute less
+ * than `tolerance` distance to the perceived shape.
+ */
+function simplifyPolygon(
+  pts: Array<{ x: number; y: number }>,
+  tolerance: number,
+): Array<{ x: number; y: number }> {
+  if (pts.length < 4) return pts;
+
+  const perpDist = (
+    p: { x: number; y: number },
+    a: { x: number; y: number },
+    b: { x: number; y: number },
+  ): number => {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-9) return Math.hypot(p.x - a.x, p.y - a.y);
+    const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+    const tClamped = Math.max(0, Math.min(1, t));
+    const px = a.x + tClamped * dx;
+    const py = a.y + tClamped * dy;
+    return Math.hypot(p.x - px, p.y - py);
+  };
+
+  const dp = (
+    pts: Array<{ x: number; y: number }>,
+    start: number,
+    end: number,
+    keep: boolean[],
+  ) => {
+    let maxD = 0,
+      idx = -1;
+    for (let i = start + 1; i < end; i++) {
+      const d = perpDist(pts[i], pts[start], pts[end]);
+      if (d > maxD) {
+        maxD = d;
+        idx = i;
+      }
+    }
+    if (maxD > tolerance && idx >= 0) {
+      keep[idx] = true;
+      dp(pts, start, idx, keep);
+      dp(pts, idx, end, keep);
+    }
+  };
+
+  // Treat the polygon as a closed loop — split at the two vertices furthest
+  // apart along the polygon perimeter to avoid a degenerate split near a
+  // run of collinear points.
+  const n = pts.length;
+  let maxDist = 0,
+    farIdx = 0;
+  for (let i = 1; i < n; i++) {
+    const d = Math.hypot(pts[i].x - pts[0].x, pts[i].y - pts[0].y);
+    if (d > maxDist) {
+      maxDist = d;
+      farIdx = i;
+    }
+  }
+  const keep = new Array<boolean>(n).fill(false);
+  keep[0] = true;
+  keep[farIdx] = true;
+  dp(pts, 0, farIdx, keep);
+  // Second half — wrap by re-indexing
+  const wrapped = [...pts.slice(farIdx), ...pts.slice(0, farIdx + 1)];
+  const wrapKeep = new Array<boolean>(wrapped.length).fill(false);
+  wrapKeep[0] = true;
+  wrapKeep[wrapped.length - 1] = true;
+  dp(wrapped, 0, wrapped.length - 1, wrapKeep);
+  for (let i = 1; i < wrapped.length - 1; i++) {
+    if (wrapKeep[i]) {
+      const origIdx = (farIdx + i) % n;
+      keep[origIdx] = true;
+    }
+  }
+
+  const out = pts.filter((_, i) => keep[i]);
+  return out.length >= 3 ? out : pts;
+}
+
+/**
+ * Drop vertices where three consecutive points are nearly collinear. Useful
+ * after Douglas-Peucker leaves runs of points along a straight eave that
+ * each contributed marginal perpendicular distance.
+ */
+function collapseColinearVertices(
+  pts: Array<{ x: number; y: number }>,
+  tolerance: number,
+): Array<{ x: number; y: number }> {
+  if (pts.length < 4) return pts;
+  const out: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[(i - 1 + pts.length) % pts.length];
+    const cur = pts[i];
+    const next = pts[(i + 1) % pts.length];
+    const e1x = cur.x - prev.x;
+    const e1y = cur.y - prev.y;
+    const e2x = next.x - cur.x;
+    const e2y = next.y - cur.y;
+    const cross = Math.abs(e1x * e2y - e1y * e2x);
+    const len = Math.hypot(e1x, e1y) + Math.hypot(e2x, e2y);
+    const perpDist = len > 0 ? cross / len : 0;
+    if (perpDist > tolerance) out.push(cur);
+  }
+  return out.length >= 3 ? out : pts;
+}
+
 function distance3(a: Vec3, b: Vec3): number {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const dz = b.z - a.z;
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+/**
+ * Hip-roof fallback: every polygon edge becomes a slope face converging on
+ * a single apex above the polygon centroid. Used for multi-bay / reflex
+ * polygons where the linear-ridge algorithm produces overlapping triangles.
+ *
+ * Visually: a clean tent / pyramid rising from the building footprint.
+ * Architecturally: not a "real" multi-bay gable but unambiguously legible.
+ */
+function buildHipRoofFallback(
+  pts: Array<{ x: number; y: number }>,
+  pitchRad: number,
+  origin: LL,
+): RoofMesh {
+  // Centroid (area-weighted via shoelace formula)
+  let cx = 0,
+    cy = 0,
+    a2 = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p1 = pts[i];
+    const p2 = pts[(i + 1) % pts.length];
+    const cross = p1.x * p2.y - p2.x * p1.y;
+    cx += (p1.x + p2.x) * cross;
+    cy += (p1.y + p2.y) * cross;
+    a2 += cross;
+  }
+  a2 *= 0.5;
+  const cxF = cx / (6 * a2) || 0;
+  const cyF = cy / (6 * a2) || 0;
+
+  // Average distance from centroid to polygon edges drives the apex height
+  let avgInradius = 0;
+  let nEdges = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p1 = pts[i];
+    const p2 = pts[(i + 1) % pts.length];
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const len = Math.hypot(dx, dy) || 1;
+    // Perpendicular distance from centroid to this edge (line)
+    const dist = Math.abs(((cxF - p1.x) * dy - (cyF - p1.y) * dx) / len);
+    avgInradius += dist;
+    nEdges++;
+  }
+  avgInradius = nEdges > 0 ? avgInradius / nEdges : 1;
+  const apexHeight = avgInradius * Math.tan(pitchRad);
+
+  const apex: Vec3 = { x: cxF, y: cyF, z: apexHeight };
+
+  const triangles: Vec3[] = [];
+  const edges: RoofEdge[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p1 = pts[i];
+    const p2 = pts[(i + 1) % pts.length];
+    const a3: Vec3 = { x: p1.x, y: p1.y, z: 0 };
+    const b3: Vec3 = { x: p2.x, y: p2.y, z: 0 };
+    triangles.push(a3, b3, apex);
+    edges.push({ kind: "eave", a: a3, b: b3, lengthM: distance3(a3, b3) });
+    edges.push({ kind: "hip", a: a3, b: apex, lengthM: distance3(a3, apex) });
+  }
+
+  const footprintM2 = Math.abs(signedArea2D(pts));
+  const surfaceM2 = footprintM2 / Math.cos(pitchRad);
+  const eaveLf = edges
+    .filter((e) => e.kind === "eave")
+    .reduce((s, e) => s + e.lengthM * FT_PER_M, 0);
+  const hipLf = edges
+    .filter((e) => e.kind === "hip")
+    .reduce((s, e) => s + e.lengthM * FT_PER_M, 0);
+
+  return {
+    triangles,
+    edges,
+    stats: {
+      footprintSqft: Math.round(footprintM2 * SQFT_PER_SQM),
+      roofSurfaceSqft: Math.round(surfaceM2 * SQFT_PER_SQM),
+      ridgeLf: 0,
+      hipLf: Math.round(hipLf),
+      valleyLf: 0,
+      eaveLf: Math.round(eaveLf),
+      rakeLf: 0,
+      ridgeHeightFt: Math.round(apexHeight * FT_PER_M * 10) / 10,
+    },
+    origin,
+    localToLatLng: (x, y) => metersToLonLat(x, y, origin),
+  };
 }

@@ -1,8 +1,8 @@
 "use client";
 
 import { useMemo, useRef } from "react";
-import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
-import { OrbitControls, Edges } from "@react-three/drei";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { OrbitControls, Environment, ContactShadows } from "@react-three/drei";
 import * as THREE from "three";
 import { Layers, Ruler, RotateCw } from "lucide-react";
 import {
@@ -23,9 +23,12 @@ interface Props {
   compact?: boolean;
 }
 
-const EAVE_COLOR = "#67dcff";
-const RIDGE_COLOR = "#5fe3b0";
-const RAKE_COLOR = "#9ba8bf";
+/* ─── Edge palette (Voxaris cyan/mint accent) ─────────────────────────── */
+const EAVE_COLOR = "#67dcff"; // cy-300
+const RIDGE_COLOR = "#5fe3b0"; // mint
+const HIP_COLOR = "#f3b14b"; // amber
+const VALLEY_COLOR = "#ff7a8a"; // rose
+const RAKE_COLOR = "#a8b1c2"; // slate-300
 
 export default function ParametricRoofViewer({
   polygon,
@@ -45,6 +48,11 @@ export default function ParametricRoofViewer({
       </div>
     );
   }
+
+  // Camera framing — fit the model's footprint diagonal
+  const bbox = computeBoundingRadius(mesh);
+  const camDist = Math.max(8, bbox.r * 2.4);
+  const camY = Math.max(5, bbox.r * 1.3);
 
   return (
     <div className="glass rounded-3xl overflow-hidden border border-white/[0.07]">
@@ -67,37 +75,71 @@ export default function ParametricRoofViewer({
         </div>
       </div>
 
-      <div className={compact ? "h-[320px] relative" : "h-[440px] relative"}>
+      <div
+        className={compact ? "h-[320px] relative" : "h-[440px] relative"}
+        style={{
+          // Soft horizon gradient so the dark mesh isn't fighting the page bg
+          background:
+            "radial-gradient(ellipse at 50% 0%, rgba(103,220,255,0.08) 0%, rgba(11,14,20,0.85) 55%, rgba(7,9,13,1) 100%)",
+        }}
+      >
         <Canvas
           shadows
           dpr={[1, 2]}
-          camera={{ position: [12, 9, 14], fov: 38, near: 0.1, far: 200 }}
-          gl={{ antialias: true, alpha: true }}
-          style={{ background: "transparent" }}
+          camera={{ position: [camDist * 0.7, camY, camDist], fov: 36, near: 0.1, far: 400 }}
+          gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
         >
           <SceneLights />
+          {/* drei Environment provides cheap PBR reflections for the metal-ish material */}
+          <Environment preset="city" environmentIntensity={0.45} />
+
+          {/* Ground plane — receives shadows + has a subtle radial gradient */}
+          <GroundPlane />
+
+          {/* Soft contact shadow under the building footprint */}
+          <ContactShadows
+            position={[0, 0.005, 0]}
+            opacity={0.55}
+            scale={Math.max(20, bbox.r * 4)}
+            blur={2.4}
+            far={Math.max(8, bbox.r * 2)}
+            color="#000a14"
+          />
+
           <RoofMeshObject mesh={mesh} />
           <RoofEdgesOverlay edges={mesh.edges} />
-          <FootprintGrid mesh={mesh} />
+
           <OrbitControls
             enablePan={false}
-            minDistance={6}
-            maxDistance={40}
-            maxPolarAngle={Math.PI / 2 - 0.05}
-            target={[0, 1.0, 0]}
+            minDistance={Math.max(4, bbox.r * 1.4)}
+            maxDistance={Math.max(40, bbox.r * 5)}
+            maxPolarAngle={Math.PI / 2 - 0.07}
+            minPolarAngle={Math.PI / 8}
+            target={[0, mesh.stats.ridgeHeightFt > 0 ? Math.min(2.5, bbox.r * 0.25) : 0, 0]}
+            enableDamping
+            dampingFactor={0.08}
+            autoRotate
+            autoRotateSpeed={0.45}
           />
         </Canvas>
 
         {/* Stats overlay */}
         <div className="pointer-events-none absolute left-3 bottom-3 right-3 flex flex-wrap gap-1.5">
           <Stat value={mesh.stats.roofSurfaceSqft.toLocaleString()} unit="sf" label="surface" />
-          <Stat value={mesh.stats.ridgeLf.toString()} unit="lf" label="ridge" />
+          {mesh.stats.ridgeLf > 0 && (
+            <Stat value={mesh.stats.ridgeLf.toString()} unit="lf" label="ridge" />
+          )}
+          {mesh.stats.hipLf > 0 && (
+            <Stat value={mesh.stats.hipLf.toString()} unit="lf" label="hip" />
+          )}
           <Stat value={mesh.stats.eaveLf.toString()} unit="lf" label="eaves" />
-          <Stat value={mesh.stats.rakeLf.toString()} unit="lf" label="rakes" />
+          {mesh.stats.rakeLf > 0 && (
+            <Stat value={mesh.stats.rakeLf.toString()} unit="lf" label="rakes" />
+          )}
           <Stat
             value={mesh.stats.ridgeHeightFt.toString()}
             unit="ft"
-            label="ridge height"
+            label="peak"
             icon={<Ruler size={9} className="text-cy-300" />}
           />
         </div>
@@ -109,28 +151,37 @@ export default function ParametricRoofViewer({
 /* ─── Scene pieces ─────────────────────────────────────────────────── */
 
 function SceneLights() {
-  const ref = useRef<THREE.DirectionalLight | null>(null);
   return (
     <>
-      <ambientLight intensity={0.35} color={"#9bcafe"} />
-      <hemisphereLight args={["#cfe9ff", "#0a0d12", 0.5]} />
+      {/* Cool ambient fill from the sky */}
+      <hemisphereLight args={["#cee9ff", "#0a0d12", 0.7]} />
+      {/* Warm key light from upper-left, cast soft shadow */}
       <directionalLight
-        ref={ref}
-        position={[10, 16, 8]}
-        intensity={1.4}
-        color={"#fff7e6"}
+        position={[14, 22, 10]}
+        intensity={2.4}
+        color={"#fff4d6"}
         castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+        shadow-camera-near={1}
+        shadow-camera-far={80}
+        shadow-camera-left={-30}
+        shadow-camera-right={30}
+        shadow-camera-top={30}
+        shadow-camera-bottom={-30}
+        shadow-bias={-0.0006}
       />
+      {/* Cool rim light from behind to separate the silhouette */}
+      <directionalLight position={[-10, 10, -12]} intensity={0.55} color={"#67dcff"} />
+      {/* Subtle fill underneath to keep eaves visible */}
+      <pointLight position={[0, 4, 0]} intensity={0.25} color={"#a0d8ff"} />
     </>
   );
 }
 
 function RoofMeshObject({ mesh }: { mesh: RoofMesh }) {
-  // Build a BufferGeometry from triangle vertex list. R3F coordinate convention:
-  // X right, Y up, Z toward camera. Our roof math is X east, Y north, Z up,
-  // so we map: roof.x → r3f.x, roof.z → r3f.y, roof.y → r3f.z.
+  // Build BufferGeometry. R3F coords: X right / Y up / Z toward camera.
+  // Roof math coords: X east / Y north / Z up. Map roof.x→x, roof.z→y, roof.y→-z.
   const geom = useMemo(() => {
     const positions = new Float32Array(mesh.triangles.length * 3);
     let i = 0;
@@ -144,89 +195,100 @@ function RoofMeshObject({ mesh }: { mesh: RoofMesh }) {
     g.computeVertexNormals();
     return g;
   }, [mesh]);
-
-  // Subtle drift on hover indicator — but we keep the mesh rock-still
-  useFrame(() => {});
+  // Subtle barely-perceptible breathing keeps the surface alive
+  const ref = useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const t = clock.getElapsedTime();
+    ref.current.position.y = Math.sin(t * 0.6) * 0.015;
+  });
 
   return (
-    <group>
-      {/* Solid roof body */}
-      <mesh geometry={geom} castShadow receiveShadow>
-        <meshStandardMaterial
-          color={"#2a2f3b"}
-          roughness={0.55}
-          metalness={0.18}
-          flatShading
-          side={THREE.DoubleSide}
-        />
-        <Edges color="#3a4356" threshold={15} />
-      </mesh>
-    </group>
+    <mesh ref={ref} geometry={geom} castShadow receiveShadow>
+      {/*
+        Slate-blue PBR with brushed-metal feel — readable from any angle,
+        hides the dark muddy look the previous flat-shaded grey had.
+        Slight emissive on top so eaves stay readable in shadow.
+      */}
+      <meshStandardMaterial
+        color={"#3a4356"}
+        roughness={0.62}
+        metalness={0.32}
+        emissive={"#0c1320"}
+        emissiveIntensity={0.55}
+        envMapIntensity={0.7}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
   );
 }
 
 function RoofEdgesOverlay({ edges }: { edges: RoofEdge[] }) {
-  return (
-    <group>
-      {edges.map((e, i) => (
-        <EdgeLine key={i} edge={e} />
-      ))}
-    </group>
-  );
-}
-
-function EdgeLine({ edge }: { edge: RoofEdge }) {
-  const color =
-    edge.kind === "eave"
-      ? EAVE_COLOR
-      : edge.kind === "ridge"
-        ? RIDGE_COLOR
-        : edge.kind === "valley"
-          ? "#ff7a8a"
-          : edge.kind === "hip"
-            ? "#f3b14b"
-            : RAKE_COLOR;
-  const points = useMemo(
-    () => [
-      new THREE.Vector3(edge.a.x, edge.a.z, -edge.a.y),
-      new THREE.Vector3(edge.b.x, edge.b.z, -edge.b.y),
-    ],
-    [edge],
-  );
+  // Build one consolidated LineSegments geometry — vastly fewer draw calls
+  // than per-edge primitives. Per-edge color via vertexColors.
   const geom = useMemo(() => {
-    const g = new THREE.BufferGeometry().setFromPoints(points);
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const colorFor = (kind: RoofEdge["kind"]) => {
+      const c = new THREE.Color(
+        kind === "eave"
+          ? EAVE_COLOR
+          : kind === "ridge"
+            ? RIDGE_COLOR
+            : kind === "hip"
+              ? HIP_COLOR
+              : kind === "valley"
+                ? VALLEY_COLOR
+                : RAKE_COLOR,
+      );
+      return [c.r, c.g, c.b];
+    };
+    for (const e of edges) {
+      // Slight lift off the surface so lines don't z-fight with the mesh
+      const lift = 0.02;
+      positions.push(e.a.x, e.a.z + lift, -e.a.y);
+      positions.push(e.b.x, e.b.z + lift, -e.b.y);
+      const c = colorFor(e.kind);
+      colors.push(...c, ...c);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    g.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
     return g;
-  }, [points]);
-  // Use lineSegments so each edge stays crisp regardless of camera distance
-  return (
-    <primitive
-      object={(() => {
-        const m = new THREE.LineBasicMaterial({
-          color,
-          linewidth: 2,
-          transparent: true,
-          opacity: edge.kind === "eave" || edge.kind === "ridge" ? 0.95 : 0.7,
-        });
-        const line = new THREE.LineSegments(geom, m);
-        return line;
-      })()}
-    />
-  );
+  }, [edges]);
+
+  const lines = useMemo(() => {
+    const m = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+    });
+    return new THREE.LineSegments(geom, m);
+  }, [geom]);
+  return <primitive object={lines} />;
 }
 
-function FootprintGrid({ mesh }: { mesh: RoofMesh }) {
-  // 24m x 24m blueprint grid centered on roof, dim cyan
-  const size = 32;
-  const divisions = 16;
+function GroundPlane() {
+  // Subtle dark disc with faint cyan grid
   const grid = useMemo(() => {
-    const g = new THREE.GridHelper(size, divisions, "#1f2632", "#161b25");
+    const size = 64;
+    const divisions = 32;
+    const g = new THREE.GridHelper(size, divisions, "#1f2a3a", "#141b27");
     (g.material as THREE.Material).transparent = true;
     (g.material as THREE.Material).opacity = 0.55;
-    g.position.y = -0.01;
+    g.position.y = -0.005;
     return g;
   }, []);
-  void mesh;
-  return <primitive object={grid} />;
+  return (
+    <>
+      <primitive object={grid} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.006, 0]} receiveShadow>
+        <circleGeometry args={[40, 64]} />
+        <meshStandardMaterial color={"#0a0e16"} roughness={1} metalness={0} />
+      </mesh>
+    </>
+  );
 }
 
 /* ─── Floating stats chip ──────────────────────────────────────────── */
@@ -257,11 +319,19 @@ function Stat({
   );
 }
 
+/* helper: bounding radius for camera framing */
+function computeBoundingRadius(mesh: RoofMesh): { r: number } {
+  let max = 0;
+  for (const v of mesh.triangles) {
+    const d = Math.hypot(v.x, v.z, v.y);
+    if (d > max) max = d;
+  }
+  return { r: Math.max(4, max) };
+}
+
 /* helper export so other components can compute the same stats */
 export function getRoofStats(polygon: LL[] | null, pitch: string | number | null) {
   if (!polygon || !pitch) return null;
   const r = buildParametricRoof(polygon, { pitch });
   return r?.stats ?? null;
 }
-
-export type { ThreeEvent };
