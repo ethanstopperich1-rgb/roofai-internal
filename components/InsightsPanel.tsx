@@ -51,7 +51,7 @@ export default function InsightsPanel({ estimate }: { estimate: Estimate }) {
           <div>
             <div className="font-display font-semibold tracking-tight text-[14px]">AI Sales Insights</div>
             <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500 -mt-0.5">
-              Gemini · 2.0 Flash
+              Pitch Intelligence
             </div>
           </div>
         </div>

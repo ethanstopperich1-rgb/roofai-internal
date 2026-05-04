@@ -1,106 +1,88 @@
-# RoofAI Internal
+# Voxaris Pitch
 
-Fast internal roofing estimator for sales reps and office staff. Type an address → in 5 seconds you get **AI-measured roof geometry** (Google Solar API), an **AI roof assessment** (Claude vision: material, condition, complexity, damage signals), a live editable estimate, and a **proposal PDF** ready to hand to the customer.
+**Estimate to deal in five minutes.** The closing tool for roofing teams.
 
-For insurance / restoration jobs, flip the **Insurance Claim** toggle — the PDF gains a full **Xactimate-style line-item breakdown** (RFG SHGLR, RFG ARCH, RFG IWS, etc.) suitable for adjuster review.
+Voxaris Pitch turns an address into a signed proposal. Type the property in, and Pitch auto-measures the roof, assesses the material and condition, prices a tiered quote, and outputs a branded PDF — all in under five seconds.
+
+This is a proprietary internal product owned by Voxaris.
+
+## Features
+
+- **One-shot estimate** — address autocomplete → instant roof size, pitch, material, complexity
+- **Tiered proposal generator** — Good / Better / Best with built-in financing math (7.99% APR, 84 months)
+- **Live Xactimate-style line items** — for insurance work, full per-code breakdown
+- **Storm history radar** — flags insurance-eligible properties automatically
+- **Property context** — stories, year built, beds/baths, lot size, current weather
+- **Pitch Vision** — material / age / damage / penetrations from satellite
+- **Pitch Intelligence** — tactical sales notes per property
+- **3D flyover** — cinematic property video on demand
+- **Map hero** — satellite + Street View + roof segment overlays + penetration pins
+- **Customer share link** — `pitch.voxaris.io/p/<id>` proposal page, white-labeled
+- **One-click export** — PDF · Email · Copy summary · Share link
+- **Power-user shortcuts** — ⌘S save · ⌘P PDF · ⌘E email · ⌘N new · ⌘K focus address
 
 ## Stack
 
-- Next.js 15 (App Router) + React 19 + TypeScript
-- Tailwind CSS v4
-- Google Maps JS + Solar API + Static Maps + Street View
-- **Claude (Anthropic) vision** — `/api/vision` roof inspector
-- **Google Gemini** — `/api/insights` sales tactics
-- jsPDF (proposal export)
-- localStorage (MVP) — Supabase / Vercel Postgres in Phase 2
+Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4 · Vercel
 
 ## Run locally
 
 ```bash
-cp .env.local.example .env.local
-# fill in keys (see Required environment variables below)
+cp .env.local.example .env.local   # fill in keys
 npm install
 npm run dev
 # open http://localhost:3000
 ```
 
-## Required environment variables
+## Environment variables
 
 | Var | Purpose |
 | --- | --- |
-| `NEXT_PUBLIC_GOOGLE_MAPS_KEY` | Maps JS, Places, Geocoding, Street View on the client |
-| `GOOGLE_SERVER_KEY` *(optional)* | Server-only Google key for Solar API + Static Maps. Falls back to the public key. |
-| `ANTHROPIC_API_KEY` | Claude vision (`/api/vision`) — material/condition/damage |
-| `GEMINI_API_KEY` | Gemini sales notes (`/api/insights`) |
+| `NEXT_PUBLIC_GOOGLE_MAPS_KEY` | Browser map tiles, autocomplete, Street View |
+| `GOOGLE_SERVER_KEY` | Server-side property data |
+| `GCP_SERVICE_ACCOUNT_KEY` | Storm history (base64-encoded JSON) |
+| `ANTHROPIC_API_KEY` | Vision panel |
+| `GEMINI_API_KEY` | Sales intelligence panel |
+| `REPLICATE_API_TOKEN` | Roof outline refinement |
+| `ATTOM_API_KEY` | Property records |
 
-The app degrades gracefully when keys are missing:
-- No `ANTHROPIC_API_KEY` → vision returns a low-confidence mock; the UI label says "set ANTHROPIC_API_KEY"
-- No Google key → autocomplete and map are disabled, but address-typed text still works for a manual estimate
+The app degrades gracefully when keys are missing — the panels that require them surface a quiet "unavailable" state without breaking the rest of the flow.
 
-### Branding overrides (optional)
+## White-label
 
-Set these to white-label per client:
+Edit `lib/branding.ts` or set per-deployment env overrides:
 
 ```
-ROOFAI_COMPANY_NAME=Acme Roofing
-ROOFAI_PHONE=(555) 123-4567
-ROOFAI_EMAIL=estimates@acmeroofing.com
-ROOFAI_PRIMARY_COLOR=#0a0d12
-ROOFAI_ACCENT_COLOR=#38bdf8
-ROOFAI_SHOW_XACTIMATE=true   # restoration roofers — show line items by default
+PITCH_COMPANY_NAME=Acme Roofing
+PITCH_PHONE=(555) 123-4567
+PITCH_EMAIL=estimates@acmeroofing.com
+PITCH_PRIMARY_COLOR=#0a0d12
+PITCH_ACCENT_COLOR=#67dcff
+PITCH_SHOW_XACTIMATE=true
 ```
 
-Or edit `lib/branding.ts` directly (also where you tune `materialPriceOverrides` per market).
-
-### Google APIs to enable
-
-In Google Cloud Console for the same project:
-
-- **Maps JavaScript API**
-- **Places API (New)**
-- **Geocoding API**
-- **Maps Static API** (used by `/api/vision` to feed Claude)
-- **Solar API** (used by `/api/solar`)
-- (Phase 2) Aerial View API
-
-Restrict the **public** key by HTTP referrer (your domain), and the **server** key by IP / unrestricted.
+`materialPriceOverrides` lets you tune $/sq pricing per market without touching code.
 
 ## Routes
 
-- `/` — Quick Estimate (the main tool)
-- `/history` — Last 200 saved estimates
-- `/admin` — Filter by ZIP / staff / date
-
-## API routes
-
-- `GET /api/solar?lat&lng` — Solar API summary: sqft, pitch, segment count, segment polygons (lat/lng), imagery quality + date, building footprint. Cached in-memory by lat/lng.
-- `GET /api/vision?lat&lng` — Claude reads a satellite tile and returns material, age estimate, complexity, visible features, visible damage, and a one-sentence sales note. Cached in-memory by lat/lng.
-- `POST /api/insights` — Gemini three-bullet sales tactics for the current estimate.
-- `GET /api/estimates` / `POST /api/estimates` — stub for Phase 2 Supabase wiring.
+- `/` — Main estimator
+- `/p/[id]` — Customer-facing proposal (read-only, share via link)
+- `/history` — Saved estimates
+- `/admin` — Pipeline overview · filter by ZIP / staff / date
 
 ## Pricing engine
 
-Two engines, both in `lib/pricing.ts`:
+Two engines in `lib/pricing.ts`:
 
-1. **Flat headline pricing** — `computeBase()` / `computeTotal()` powers the big number on Results. `material_rate × pitch_factor × sqft + addons`. Tweak `MATERIAL_RATES` for region adjustments.
-2. **Xactimate-style line items** — `buildDetailedEstimate()` returns 13+ trade codes (RFG SHGLR, RFG IWS, RFG ARCH, etc.) with quantities, unit costs, waste factors, steep-pitch surcharges, complexity adjustments, O&P. Powers the line-item panel and the insurance-claim PDF. Pricing comes from `lib/branding.ts` so a contractor can tune material costs without code changes.
-
-## What's new in this branch (`feat/vision-and-line-items`)
-
-- 🤖 **Claude vision** roof assessment panel (material, age, complexity, damage, sales note)
-- 🧮 **Xactimate-style line-items engine** — full breakdown with codes, quantities, O&P
-- 🛠️ **Service-type selector** in Assumptions — new / reroof / layover / repair (priced differently)
-- 🎯 **Complexity selector** — simple / moderate / complex (auto-set by vision when confident)
-- 🛡️ **Insurance claim toggle** — flips PDF to full Xactimate detail
-- 🗺️ **Roof segment polygons** drawn on the satellite map (Solar API bounding boxes)
-- 🏷️ **Imagery quality / date / segment count** badges on the map
-- 🏢 **`BRAND_CONFIG`** in `lib/branding.ts` for one-file white-labeling per client
-- 💾 **In-memory cache** for Solar + Vision results (TODO: swap for Vercel KV in Phase 2)
-- 📄 **PDF v2** — header now uses BRAND_CONFIG colors/contact; insurance-claim PDFs include the full line-item table
+1. **Headline pricing** (`computeBase` / `computeTotal`) — material × pitch × multipliers + add-ons. Powers the big number on the hero card.
+2. **Itemized engine** (`buildDetailedEstimate`) — 13+ line items with quantities, waste factors, steep-pitch surcharges, complexity adjustments, O&P. Powers the line-item panel and the insurance-claim PDF. All pricing pulled from `BRAND_CONFIG` so contractors can tune material costs without code changes.
 
 ## Phase 2 backlog
 
-- Replace in-memory `lib/cache.ts` with Vercel KV / Upstash for cross-invocation cache
-- Wire Supabase (estimates table) — replace `lib/storage.ts` with `POST /api/estimates`
-- Aerial View 3D embed
+- Cross-invocation cache (Vercel KV / Upstash) for property + measurement results
+- Persistent storage (Supabase) — replace localStorage in `lib/storage.ts`
+- Multi-tenant workspaces + RLS
 - Real auth (Clerk / NextAuth) replacing the staff name field
+- E-signature on the customer proposal page
+- On-site deposit intake (Stripe)
+- CRM webhook for outbound estimate push

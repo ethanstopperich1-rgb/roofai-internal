@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Search, Loader2, ArrowUp, ArrowDown, CornerDownLeft, MapPin } from "lucide-react";
 import type { AddressInfo } from "@/types/estimate";
+import { AuroraButton } from "@/components/ui/aurora-button";
 
 interface Props {
   onSelect: (a: AddressInfo) => void;
@@ -137,10 +138,13 @@ export default function AddressInput({ onSelect, onSubmit, value, onChange }: Pr
         {loading && (
           <Loader2 size={15} className="animate-spin text-slate-400 flex-shrink-0" />
         )}
-        <button onClick={onSubmit} className="btn btn-primary flex-shrink-0 px-4 py-2">
+        <AuroraButton
+          onClick={onSubmit}
+          className="flex-shrink-0 px-5 py-2.5 font-medium text-[14px] tracking-tight inline-flex items-center gap-2"
+        >
           Estimate
-          <span className="kbd !bg-black/20 !text-[#0c1118]/80 !border-black/10">↵</span>
-        </button>
+          <span className="kbd">↵</span>
+        </AuroraButton>
       </div>
 
       {open && suggestions.length > 0 && (

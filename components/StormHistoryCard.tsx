@@ -84,7 +84,7 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
           <div>
             <div className="font-display font-semibold tracking-tight text-[15px]">Storm History</div>
             <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500 -mt-0.5">
-              NOAA · 5-year radius {s?.radiusMiles ?? 3} mi
+              5-year radius · {s?.radiusMiles ?? 3} mi
             </div>
           </div>
         </div>
@@ -105,13 +105,13 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
       {loading && (
         <div className="flex items-center gap-2 text-[12px] text-slate-400">
           <Loader2 size={12} className="animate-spin text-cy-300" />
-          Querying NOAA via BigQuery…
+          Loading storm history…
         </div>
       )}
 
       {error && !loading && (
         <div className="text-[11.5px] text-slate-500 italic leading-relaxed">
-          Storm data unavailable: {error.replace("_", " ")}
+          Storm data unavailable.
         </div>
       )}
 

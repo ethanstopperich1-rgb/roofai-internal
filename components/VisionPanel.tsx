@@ -61,7 +61,7 @@ export default function VisionPanel({ vision, loading, error }: Props) {
           <div>
             <div className="font-display font-semibold tracking-tight text-[15px]">AI Roof Assessment</div>
             <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500 -mt-0.5">
-              Claude · Vision
+              Pitch Vision
             </div>
           </div>
         </div>
@@ -76,7 +76,7 @@ export default function VisionPanel({ vision, loading, error }: Props) {
       {loading && !vision && (
         <div className="flex items-center gap-2 text-[13px] text-slate-400">
           <Loader2 size={13} className="animate-spin text-cy-300" />
-          Claude is reading the satellite image…
+          Analyzing satellite imagery…
         </div>
       )}
 

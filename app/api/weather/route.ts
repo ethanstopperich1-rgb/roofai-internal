@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
+import { parseLatLng } from "@/lib/validate";
 
 export async function GET(req: Request) {
   const apiKey = process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
   if (!apiKey) return NextResponse.json({ error: "Missing key" }, { status: 503 });
-  const { searchParams } = new URL(req.url);
-  const lat = searchParams.get("lat");
-  const lng = searchParams.get("lng");
-  if (!lat || !lng) return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
+  const ll = parseLatLng(new URL(req.url).searchParams);
+  if (!ll) return NextResponse.json({ error: "valid lat & lng required" }, { status: 400 });
+  const { lat, lng } = ll;
 
   const url = `https://weather.googleapis.com/v1/currentConditions:lookup?key=${apiKey}&location.latitude=${lat}&location.longitude=${lng}`;
   const res = await fetch(url);

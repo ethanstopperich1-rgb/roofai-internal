@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Bricolage_Grotesque } from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
+import { GradientBackground } from "@/components/ui/gradient-background-4";
 
 const geist = Geist({
   subsets: ["latin"],
@@ -31,9 +32,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="en"
       className={`dark ${geist.variable} ${geistMono.variable} ${bricolage.variable}`}
     >
-      <body className="min-h-screen antialiased">
+      <body className="min-h-screen antialiased relative">
+        <GradientBackground />
         <Header />
-        <main className="max-w-[1280px] mx-auto px-6 lg:px-10 py-8">{children}</main>
+        <main className="relative z-[1] max-w-[1280px] mx-auto px-6 lg:px-10 py-8">{children}</main>
       </body>
     </html>
   );

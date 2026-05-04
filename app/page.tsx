@@ -14,6 +14,8 @@ import VisionPanel from "@/components/VisionPanel";
 import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
+import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
 import { generatePdf, buildSummaryText } from "@/lib/pdf";
 import { saveEstimate } from "@/lib/storage";
@@ -96,11 +98,11 @@ export default function HomePage() {
   }, [propertyAttomYearBuilt]);
 
   useEffect(() => {
-    const s = localStorage.getItem("roofai.staff");
+    const s = localStorage.getItem("pitch.staff");
     if (s) setStaff(s);
   }, []);
   useEffect(() => {
-    if (staff) localStorage.setItem("roofai.staff", staff);
+    if (staff) localStorage.setItem("pitch.staff", staff);
   }, [staff]);
 
   const { low, high } = useMemo(() => {
@@ -299,7 +301,7 @@ export default function HomePage() {
     const badges: string[] = [];
     if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
-    if (refinedPolygons) badges.push(`SAM • ${refinedPolygons.length} facets`);
+    if (refinedPolygons) badges.push(`Refined • ${refinedPolygons.length} facets`);
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
     if (solar?.pitch) badges.push(`Pitch ${solar.pitch}`);
     return badges;
@@ -327,7 +329,7 @@ export default function HomePage() {
             <div className="hidden md:flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-slate-500">
               <span>address</span>
               <span className="w-3 h-px bg-slate-600" />
-              <span>solar + vision</span>
+              <span>analyze</span>
               <span className="w-3 h-px bg-slate-600" />
               <span>review</span>
               <span className="w-3 h-px bg-slate-600" />
@@ -357,7 +359,7 @@ export default function HomePage() {
           today?
         </h1>
         <p className="text-[13.5px] text-slate-400 mb-6 max-w-xl">
-          Type or paste an address. Pick a suggestion — Solar API + Claude vision run in parallel.
+          Type or paste an address. Pick a suggestion — Pitch auto-measures and assesses the roof.
         </p>
 
         <AddressInput
@@ -369,6 +371,16 @@ export default function HomePage() {
       </section>
 
       {!shown && <EmptyState />}
+
+      {/* ─── Quantum-pulse loader: full-screen overlay while Solar+Vision run ─── */}
+      {visionLoading && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-md bg-black/55 float-in"
+          aria-live="polite"
+        >
+          <QuantumPulseLoader text="Generating" />
+        </div>
+      )}
 
       {shown && (
         <>
@@ -403,8 +415,8 @@ export default function HomePage() {
                   {refining
                     ? "Tracing roof…"
                     : refinedPolygons
-                      ? `SAM · ${refinedPolygons.length} facets`
-                      : "Refine outline (SAM)"}
+                      ? `Refined · ${refinedPolygons.length} facets`
+                      : "Refine outline"}
                 </button>
                 {refineError && (
                   <div
@@ -427,15 +439,17 @@ export default function HomePage() {
           </section>
 
           {/* ─── Headline price card — full width ──────────────────────── */}
-          <ResultsPanel
-            address={estimate.address}
-            assumptions={assumptions}
-            total={total}
-            baseLow={estimate.baseLow}
-            baseHigh={estimate.baseHigh}
-            isInsuranceClaim={isInsuranceClaim}
-            onInsuranceChange={setIsInsuranceClaim}
-          />
+          <ErrorBoundary>
+            <ResultsPanel
+              address={estimate.address}
+              assumptions={assumptions}
+              total={total}
+              baseLow={estimate.baseLow}
+              baseHigh={estimate.baseHigh}
+              isInsuranceClaim={isInsuranceClaim}
+              onInsuranceChange={setIsInsuranceClaim}
+            />
+          </ErrorBoundary>
 
           {/* ─── Two-col grid for everything else ─────────────────────── */}
           <div className="grid lg:grid-cols-3 gap-6 float-in">
@@ -501,8 +515,8 @@ function EmptyState() {
   const tips = [
     {
       icon: <Sparkles size={14} className="text-cy-300" />,
-      title: "Solar + Vision auto-fill on address pick",
-      body: "Roof size, pitch, material, complexity — pulled from Google Solar API and Claude vision in parallel.",
+      title: "Auto-measure on address pick",
+      body: "Roof size, pitch, material, complexity — measured and assessed by Pitch in seconds.",
     },
     {
       icon: <Plus size={14} className="text-mint" />,

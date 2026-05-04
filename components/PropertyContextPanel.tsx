@@ -155,7 +155,7 @@ export default function PropertyContextPanel({ address, onProperty }: Props) {
       {!property && propertyError && (
         <div className="text-[10.5px] text-slate-500 italic">
           {propertyError === "not_found"
-            ? "ATTOM has no record for this address."
+            ? "No public record for this address."
             : "Property data unavailable."}
         </div>
       )}
