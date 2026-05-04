@@ -460,6 +460,15 @@ export default function Roof3DViewer({
   const armTimerRef = useRef<number | null>(null);
   const recenterRef = useRef<(() => void) | null>(null);
   const markerEntityRef = useRef<unknown>(null);
+  // Pivot altitude (meters above WGS84 ellipsoid) for the camera orbit.
+  // Defaults to 200m as a "more right than wrong" first-frame value: works
+  // for most US locations from sea level to ~500m ground elevation. Once
+  // the 3D Tiles extraction finishes, we sample the ACTUAL mesh ground
+  // height and update this ref so the orbit pivots at the real roof level.
+  // The original 30m default put the pivot underground anywhere inland
+  // (Mt. Juliet TN at 170m elevation → pivot 140m underground → orbit
+  // sweeps through the ground).
+  const pivotAltitudeRef = useRef(200);
   const onTilesCallbackRef = useRef(onTilesPolygonDetected);
   onTilesCallbackRef.current = onTilesPolygonDetected;
 
@@ -564,6 +573,14 @@ export default function Roof3DViewer({
         // Kick off the polygon extraction. Runs in the background so the
         // viewer is interactive while we sample 3,600 height points and
         // trace the roof boundary. ~2-4s end-to-end on first load.
+        //
+        // Side-benefit: `result.groundHeightM` is the mesh-sampled ground
+        // elevation at the property — exactly what we need to fix the
+        // camera orbit pivot. Default pivot was 30m above the WGS84
+        // ellipsoid, which lands underground for any property above sea
+        // level (Mt. Juliet TN at 170m → pivot 140m underground →
+        // orbit sweeps through the ground). Once we know the real
+        // ground height, we update pivotAltitudeRef and re-recenter.
         setExtracting(true);
         const extractPromise = extractRoofPolygonFromTiles({
           Cesium,
@@ -575,6 +592,12 @@ export default function Roof3DViewer({
             if (cancelled) return;
             if (result && onTilesCallbackRef.current) {
               onTilesCallbackRef.current(result.latLng);
+            }
+            if (result && Number.isFinite(result.groundHeightM)) {
+              // Pivot 5m above ground — keeps the rooftop centred in
+              // frame for typical 1- and 2-story residential homes.
+              pivotAltitudeRef.current = result.groundHeightM + 5;
+              recenterRef.current?.();
             }
           })
           .catch((err) => console.warn("[Roof3DViewer] extract failed:", err))
@@ -601,10 +624,18 @@ export default function Roof3DViewer({
       // framing the user explicitly preferred. Tightening (90 / 150 m) put
       // the camera inside the eaves; widening (250 m) lost the property in
       // the neighborhood. This is the Goldilocks setting; do not retune.
-      // (Pivot at lat,lng,30m so the look-target is a few meters above
-      // ground level — keeps the rooftop in the visual center of frame.)
+      //
+      // Pivot ALTITUDE comes from `pivotAltitudeRef` — meters above the
+      // WGS84 ellipsoid. Initial default 200m is a coarse fallback; once
+      // extractRoofPolygonFromTiles samples the real mesh ground height
+      // (a few seconds in), we update the ref to (groundHeightM + 5m) and
+      // re-pivot so the orbit centres on the actual roof.
       const recenter = () => {
-        const center = Cesium.Cartesian3.fromDegrees(lng, lat, 30);
+        const center = Cesium.Cartesian3.fromDegrees(
+          lng,
+          lat,
+          pivotAltitudeRef.current,
+        );
         const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
         viewer.camera.lookAtTransform(
           transform,
@@ -668,8 +699,13 @@ export default function Roof3DViewer({
   }, []);
 
   // -------- recenter when lat/lng changes (without rebuilding viewer) --------
+  // Reset pivotAltitudeRef to the conservative default — we don't know
+  // the new property's ground height yet, and any previous value (set by
+  // the previous extract) is from the wrong location. The next extract
+  // call will refine to the actual mesh height.
   useEffect(() => {
     if (status !== "ready") return;
+    pivotAltitudeRef.current = 200;
     recenterRef.current?.();
   }, [lat, lng, status]);
 
