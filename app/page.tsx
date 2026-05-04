@@ -39,7 +39,7 @@ import {
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
-import { Plus, RotateCcw, Sparkles, Zap } from "lucide-react";
+import { Plus, RotateCcw, Sparkles, Zap, Sparkle, Loader2 } from "lucide-react";
 
 const DEFAULT_ASSUMPTIONS: Assumptions = {
   sqft: 2200,
@@ -78,6 +78,11 @@ export default function HomePage() {
   const [visionError, setVisionError] = useState<string>("");
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [propertyAttomYearBuilt, setPropertyAttomYearBuilt] = useState<number | null>(null);
+  const [refinedPolygons, setRefinedPolygons] = useState<
+    Array<Array<{ lat: number; lng: number }>> | null
+  >(null);
+  const [refining, setRefining] = useState(false);
+  const [refineError, setRefineError] = useState<string>("");
 
   // ATTOM yearBuilt → ageYears (rep can still override manually)
   useEffect(() => {
@@ -104,18 +109,21 @@ export default function HomePage() {
 
   const total = useMemo(() => computeTotal(assumptions, addOns), [assumptions, addOns]);
 
+  // Prefer SAM-refined polygons over Solar API bounding boxes when both exist
+  const activePolygons = refinedPolygons ?? solar?.segmentPolygonsLatLng;
+
   const detailed = useMemo(
     () =>
       buildDetailedEstimate(assumptions, addOns, {
         buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-        segmentCount: solar?.segmentCount,
-        segmentPolygonsLatLng: solar?.segmentPolygonsLatLng,
+        segmentCount: refinedPolygons?.length ?? solar?.segmentCount,
+        segmentPolygonsLatLng: activePolygons,
       }),
-    [assumptions, addOns, solar]
+    [assumptions, addOns, solar, refinedPolygons, activePolygons]
   );
 
   const lengths = useMemo(() => {
-    const polys = solar?.segmentPolygonsLatLng;
+    const polys = activePolygons;
     const complexity = assumptions.complexity ?? "moderate";
     if (polys && polys.length > 1) {
       const pitchDegrees =
@@ -131,11 +139,11 @@ export default function HomePage() {
     return deriveRoofLengthsHeuristic({
       totalRoofSqft: assumptions.sqft,
       buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-      segmentCount: solar?.segmentCount,
+      segmentCount: refinedPolygons?.length ?? solar?.segmentCount,
       complexity,
       pitch: assumptions.pitch,
     });
-  }, [assumptions, solar]);
+  }, [assumptions, solar, refinedPolygons, activePolygons]);
 
   const waste = useMemo(
     () => buildWasteTable(assumptions.sqft, assumptions.complexity ?? "moderate"),
@@ -150,6 +158,8 @@ export default function HomePage() {
     setSolar(null);
     setVision(null);
     setVisionError("");
+    setRefinedPolygons(null);
+    setRefineError("");
 
     if (addr.lat == null || addr.lng == null) {
       setAssumptions((a) => ({
@@ -255,16 +265,44 @@ export default function HomePage() {
     setVision(null);
     setVisionError("");
     setIsInsuranceClaim(false);
+    setRefinedPolygons(null);
+    setRefineError("");
   };
 
-  const mapBadges = solar
-    ? [
-        solar.imageryDate ? `Imagery ${solar.imageryDate}` : "",
-        solar.imageryQuality !== "UNKNOWN" ? `Quality ${solar.imageryQuality}` : "",
-        solar.segmentCount > 0 ? `${solar.segmentCount} segments` : "",
-        solar.pitch ? `Pitch ${solar.pitch}` : "",
-      ].filter(Boolean)
-    : [];
+  const refineOutline = async () => {
+    if (!address?.lat || !address?.lng || refining) return;
+    setRefining(true);
+    setRefineError("");
+    try {
+      const res = await fetch("/api/refine-polygons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat: address.lat, lng: address.lng }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? `refine_${res.status}`);
+      }
+      const data = (await res.json()) as {
+        polygons: Array<{ latLng: Array<{ lat: number; lng: number }> }>;
+      };
+      setRefinedPolygons(data.polygons.map((p) => p.latLng));
+    } catch (err) {
+      setRefineError(err instanceof Error ? err.message : "failed");
+    } finally {
+      setRefining(false);
+    }
+  };
+
+  const mapBadges = (() => {
+    const badges: string[] = [];
+    if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
+    if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
+    if (refinedPolygons) badges.push(`SAM • ${refinedPolygons.length} facets`);
+    else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
+    if (solar?.pitch) badges.push(`Pitch ${solar.pitch}`);
+    return badges;
+  })();
 
   return (
     <div className="space-y-7">
@@ -355,15 +393,48 @@ export default function HomePage() {
             </div>
           </div>
           <div className="space-y-6">
-            <div className="h-[440px]">
+            <div className="h-[440px] relative">
               <MapView
                 lat={address?.lat}
                 lng={address?.lng}
                 address={address?.formatted}
-                segments={solar?.segmentPolygonsLatLng}
+                segments={activePolygons}
                 metaBadges={mapBadges}
               />
+              {address?.lat && (
+                <div className="absolute right-3 top-3 z-10">
+                  <button
+                    onClick={refineOutline}
+                    disabled={refining}
+                    className="btn btn-ghost py-1.5 px-3 text-[11px] backdrop-blur"
+                    style={{
+                      background: "rgba(15, 19, 26, 0.75)",
+                      borderColor: "rgba(95, 227, 176, 0.35)",
+                    }}
+                  >
+                    {refining ? (
+                      <Loader2 size={11} className="animate-spin" />
+                    ) : (
+                      <Sparkle size={11} className="text-mint" />
+                    )}
+                    {refining
+                      ? "Tracing roof..."
+                      : refinedPolygons
+                        ? "Re-trace"
+                        : "Refine outline (SAM)"}
+                  </button>
+                </div>
+              )}
             </div>
+            {refineError && (
+              <div className="rounded-xl border border-rose/20 bg-rose/[0.06] px-4 py-2.5 text-[12px] text-rose">
+                {refineError === "no_polygons"
+                  ? "Couldn't extract a clean roof outline from this property."
+                  : refineError === "Missing REPLICATE_API_TOKEN"
+                    ? "Set REPLICATE_API_TOKEN in .env.local to enable SAM refinement."
+                    : `Refinement failed: ${refineError}`}
+              </div>
+            )}
             <PropertyContextPanel
               address={address}
               onProperty={(p) => setPropertyAttomYearBuilt(p?.yearBuilt ?? null)}
