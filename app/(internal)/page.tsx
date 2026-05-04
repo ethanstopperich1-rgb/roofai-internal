@@ -151,6 +151,14 @@ export default function HomePage() {
   const [validationScores, setValidationScores] = useState<
     Partial<Record<string, number>>
   >({});
+  // Pattern-C Claude verification: independent yes/no check on the rendered
+  // polygon. Catches semantic errors the mesh can't see (wrong building at
+  // correct roof height, polygon over a covered patio, etc). When Claude
+  // flags an issue with high confidence (ok=false, conf>0.7), we treat the
+  // source as failed and fall through. Otherwise just show as a warning.
+  const [claudeVerifications, setClaudeVerifications] = useState<
+    Partial<Record<string, { ok: boolean; confidence: number; reason: string }>>
+  >({});
   // Live polygons after the rep edits a vertex. When set, overrides the
   // auto-detected source polygons everywhere (lengths, sqft, blueprint, PDF).
   // Reset to null on every new estimate so we always start from auto-detect.
@@ -248,6 +256,16 @@ export default function HomePage() {
     return score === undefined ? true : score >= MIN_VALIDATION_SCORE;
   };
 
+  // Pattern C: Claude flagged the polygon as wrong with high confidence?
+  // Demote. Low-confidence flags are just informational (rep may notice a
+  // small edge issue but the polygon is mostly right).
+  const passesClaude = (source: string) => {
+    const v = claudeVerifications[source];
+    if (!v) return true;
+    if (v.ok) return true;
+    return v.confidence < 0.7; // ok=false but Claude isn't sure → keep
+  };
+
   // Polygon source priority — best-quality first:
   //   1. 3D Tiles mesh    — height-thresholded from Google's photogrammetry
   //                         (real geometric truth, no AI guessing)
@@ -285,13 +303,13 @@ export default function HomePage() {
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
     if (validTiles3d) return "tiles3d";
-    if (validSolarMask && passesValidation("solar-mask")) return "solar-mask";
-    if (validRoboflow && passesValidation("roboflow")) return "roboflow";
+    if (validSolarMask && passesValidation("solar-mask") && passesClaude("solar-mask")) return "solar-mask";
+    if (validRoboflow && passesValidation("roboflow") && passesClaude("roboflow")) return "roboflow";
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
-    if (validSam && passesValidation("sam")) return "sam";
-    if (validOsm && passesValidation("osm")) return "osm";
-    if (validMsBuilding && passesValidation("microsoft-buildings")) return "microsoft-buildings";
-    if (validClaude && passesValidation("ai")) return "ai";
+    if (validSam && passesValidation("sam") && passesClaude("sam")) return "sam";
+    if (validOsm && passesValidation("osm") && passesClaude("osm")) return "osm";
+    if (validMsBuilding && passesValidation("microsoft-buildings") && passesClaude("microsoft-buildings")) return "microsoft-buildings";
+    if (validClaude && passesValidation("ai") && passesClaude("ai")) return "ai";
     return "none";
   }, [
     livePolygons,
@@ -305,6 +323,7 @@ export default function HomePage() {
     validMsBuilding,
     validClaude,
     validationScores,
+    claudeVerifications,
   ]);
 
   // Source polygons — what MapView draws initially. Edited polygons don't
@@ -338,6 +357,50 @@ export default function HomePage() {
   // Active polygons — what we use for sqft, lengths, blueprint, PDF.
   // Live edits override source.
   const activePolygons = livePolygons ?? sourcePolygons;
+
+  // Pattern C: ask Claude to verify the active polygon. Debounced 1500ms
+  // so we don't spam the API while sources are still racing. Skipped for
+  // tiles3d (already mesh-derived), edited (rep approved), and ai (Claude
+  // already drew it — verifying his own answer adds no new information).
+  // One call per (source, polygon-hash); cached in state.
+  useEffect(() => {
+    if (!address?.lat || !address?.lng) return;
+    if (polygonSource === "none" || polygonSource === "tiles3d" ||
+        polygonSource === "edited" || polygonSource === "ai") return;
+    if (!activePolygons || activePolygons.length === 0) return;
+    const primary = activePolygons.reduce<Array<{ lat: number; lng: number }> | null>(
+      (best, p) => (!best || p.length > best.length ? p : best),
+      null,
+    );
+    if (!primary || primary.length < 3) return;
+    // Don't re-verify if we already have a result for this source.
+    if (claudeVerifications[polygonSource]) return;
+
+    const lat = address.lat;
+    const lng = address.lng;
+    const source = polygonSource;
+    const timer = setTimeout(() => {
+      fetch("/api/verify-polygon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat, lng, polygon: primary, source }),
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!data) return;
+          setClaudeVerifications((cur) => ({
+            ...cur,
+            [source]: {
+              ok: !!data.ok,
+              confidence: typeof data.confidence === "number" ? data.confidence : 0.5,
+              reason: typeof data.reason === "string" ? data.reason : "",
+            },
+          }));
+        })
+        .catch(() => {});
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [activePolygons, polygonSource, address?.lat, address?.lng, claudeVerifications]);
 
   // Drop penetration markers that fall outside our active roof polygon —
   // Vision occasionally tags vents/skylights on neighboring houses since the
@@ -721,6 +784,7 @@ export default function HomePage() {
     setRoboflowPolygon(null);
     setMsBuildingPolygon(null);
     setValidationScores({});
+    setClaudeVerifications({});
     setTiles3dPolygon(null);
     hasUserEditedRef.current = false;
   };
