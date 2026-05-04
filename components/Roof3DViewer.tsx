@@ -305,6 +305,9 @@ async function extractRoofPolygonFromTiles(opts: {
   centerLng: number;
 }): Promise<ExtractedRoofPolygon | null> {
   const { Cesium, viewer, centerLat, centerLng } = opts;
+  console.log(
+    `[Roof3DViewer] extract starting at ${centerLat.toFixed(5)}, ${centerLng.toFixed(5)}`,
+  );
   const grid = buildSamplingGrid(Cesium, centerLat, centerLng);
 
   // Sample heights from the loaded 3D tileset. This forces all relevant
@@ -369,11 +372,19 @@ async function extractRoofPolygonFromTiles(opts: {
 
   // Trace, simplify, orthogonalize, merge dups
   const boundary = traceBoundary(isolated, EXTRACT_GRID, EXTRACT_GRID);
-  if (!boundary) return null;
+  if (!boundary) {
+    console.warn("[Roof3DViewer] boundary trace returned no perimeter");
+    return null;
+  }
   const simplified = douglasPeucker(boundary, 1.2);
   const orthoResult = bestOrthogonalize({ poly: simplified, toleranceDeg: 14 });
   const ortho = mergeNearbyVertices(orthoResult.polygon, 1);
-  if (ortho.length < 4) return null;
+  if (ortho.length < 4) {
+    console.warn(
+      `[Roof3DViewer] simplify/ortho produced too few vertices (${ortho.length}, need ≥ 4)`,
+    );
+    return null;
+  }
 
   // Project grid (col, row) → lat/lng using the bbox we built the grid from
   const { south, north, west, east } = grid.bbox;
@@ -620,10 +631,17 @@ export default function Roof3DViewer({
         return;
       }
 
-      // Camera framing: 180 m radius at -35° pitch — original "drone hover"
-      // framing the user explicitly preferred. Tightening (90 / 150 m) put
-      // the camera inside the eaves; widening (250 m) lost the property in
-      // the neighborhood. This is the Goldilocks setting; do not retune.
+      // Camera framing: 110 m range at -42° pitch on the corrected pivot.
+      // The previous 180m / -35° was the "Goldilocks" tuning ON TOP of the
+      // broken underground pivot — when the pivot was 140m below ground,
+      // the broken-but-balanced view actually framed the building OK
+      // (camera ended up just-above-ground). Now that the pivot is at the
+      // actual roof level (groundHeightM + 5m), the old 180m range pulls
+      // the camera 100m+ above ground; manual tilt-up sends it to space
+      // and the building disappears from frame. 110m / -42° puts the
+      // camera ~74m above ground, ~82m horizontal — closer drone-hover
+      // feel where the building fills the frame and a manual tilt still
+      // keeps the property in view.
       //
       // Pivot ALTITUDE comes from `pivotAltitudeRef` — meters above the
       // WGS84 ellipsoid. Initial default 200m is a coarse fallback; once
@@ -639,7 +657,7 @@ export default function Roof3DViewer({
         const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
         viewer.camera.lookAtTransform(
           transform,
-          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-35), 180),
+          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-42), 110),
         );
       };
       recenterRef.current = recenter;
