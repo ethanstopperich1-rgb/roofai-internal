@@ -308,9 +308,15 @@ export default function HomePage() {
   return (
     <div className="space-y-7">
       {/* ─── Hero / address bar ─────────────────────────────────────── */}
-      <section className="glass-strong rounded-3xl p-7 md:p-9 relative overflow-hidden">
+      {/* No overflow-hidden here so the autocomplete dropdown can extend
+          past the section's bottom edge. The gradient blob below uses
+          isolation: isolate to keep its rounded-3xl clipping local. */}
+      <section
+        className="glass-strong rounded-3xl p-7 md:p-9 relative"
+        style={{ isolation: "isolate" }}
+      >
         <div
-          className="absolute -top-32 -right-24 w-[420px] h-[420px] rounded-full blur-3xl pointer-events-none opacity-50"
+          className="absolute -top-32 -right-24 w-[420px] h-[420px] rounded-full blur-3xl pointer-events-none opacity-50 -z-10"
           style={{ background: "radial-gradient(closest-side, rgba(103,220,255,0.18), transparent)" }}
         />
         <div className="relative flex items-end justify-between gap-6 mb-6 flex-wrap">
