@@ -689,14 +689,14 @@ export default function HomePage() {
             <div className="chip chip-accent">
               <Zap size={11} /> Quick Estimate
             </div>
-            <div className="hidden md:flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-slate-500">
+            <div className="hidden md:flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-slate-300">
               <span>address</span>
-              <span className="w-3 h-px bg-slate-600" />
+              <span className="w-3 h-px bg-slate-400/60" />
               <span>analyze</span>
-              <span className="w-3 h-px bg-slate-600" />
+              <span className="w-3 h-px bg-slate-400/60" />
               <span>review</span>
-              <span className="w-3 h-px bg-slate-600" />
-              <span className="text-cy-300">deliver</span>
+              <span className="w-3 h-px bg-slate-400/60" />
+              <span className="text-cy-300 font-semibold">deliver</span>
             </div>
           </div>
           <div className="flex items-stretch gap-2 w-full sm:w-auto">
