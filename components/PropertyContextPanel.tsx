@@ -20,16 +20,10 @@ type Props = {
 export default function PropertyContextPanel({ address }: Props) {
   const [weather, setWeather] = useState<Weather | null>(null);
 
-  // Reset all per-property state when the address changes — otherwise the
-  // previous house's aerial flyover / weather lingers on the right rail
-  // when a rep starts a new estimate.
+  // Reset weather when address changes — otherwise the previous property's
+  // weather lingers on the right rail when a rep starts a new estimate.
   useEffect(() => {
     setWeather(null);
-    setAerial(null);
-    setAerialLoading(false);
-    setShowVideo(false);
-    setProperty(null);
-    setPropertyError("");
   }, [address?.formatted, address?.lat, address?.lng]);
 
   useEffect(() => {
