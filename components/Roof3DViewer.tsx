@@ -370,7 +370,14 @@ async function extractRoofPolygonFromTiles(opts: {
     return null;
   }
 
-  // Trace, simplify, orthogonalize, merge dups
+  // Trace, simplify, orthogonalize, merge dups.
+  // Fallback chain: ortho (best) → simplified → raw boundary. On rural
+  // properties with coarse photogrammetric mesh, the boundary trace can
+  // produce an irregular shape that DP+ortho compress all the way down
+  // to a line segment (2 vertices). When that happens we keep the less
+  // pretty but at-least-valid earlier stages of the pipeline rather than
+  // losing the source entirely. (Verified on 5385 Henley Rd, Mt. Juliet
+  // TN — ortho collapsed to 2 verts, simplified had ~12, raw had ~40.)
   const boundary = traceBoundary(isolated, EXTRACT_GRID, EXTRACT_GRID);
   if (!boundary) {
     console.warn("[Roof3DViewer] boundary trace returned no perimeter");
@@ -378,10 +385,24 @@ async function extractRoofPolygonFromTiles(opts: {
   }
   const simplified = douglasPeucker(boundary, 1.2);
   const orthoResult = bestOrthogonalize({ poly: simplified, toleranceDeg: 14 });
-  const ortho = mergeNearbyVertices(orthoResult.polygon, 1);
-  if (ortho.length < 4) {
+  const orthoMerged = mergeNearbyVertices(orthoResult.polygon, 1);
+
+  let ortho: Array<[number, number]>;
+  if (orthoMerged.length >= 4) {
+    ortho = orthoMerged;
+  } else if (simplified.length >= 4) {
     console.warn(
-      `[Roof3DViewer] simplify/ortho produced too few vertices (${ortho.length}, need ≥ 4)`,
+      `[Roof3DViewer] ortho collapsed to ${orthoMerged.length} verts; falling back to simplified ${simplified.length}-vert polygon`,
+    );
+    ortho = simplified;
+  } else if (boundary.length >= 4) {
+    console.warn(
+      `[Roof3DViewer] simplify+ortho both collapsed; falling back to raw boundary (${boundary.length} verts)`,
+    );
+    ortho = boundary;
+  } else {
+    console.warn(
+      `[Roof3DViewer] all reduction stages produced <4 vertices (boundary=${boundary.length}, simplified=${simplified.length}, ortho=${orthoMerged.length})`,
     );
     return null;
   }
