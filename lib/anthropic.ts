@@ -33,7 +33,16 @@ Rules:
 - estimatedAgeYears is your best integer guess based on visual condition (5..30).
 - complexity: simple = simple gable/hip; moderate = a few cuts, dormers, or wings; complex = many segments, intersections, multiple wings.
 - penetrations: list every roof penetration you can see (vents, chimneys, skylights, plumbing stacks, satellite dishes). x/y are pixel coordinates in the 640x640 image (0,0 = top-left). approxSizeFt is your best guess of the diameter in feet (typical: vent 0.5-1, stack 0.5, chimney 2-4, skylight 2-4). Limit to 12 most prominent.
-- roofPolygon: trace the EXACT outline of the roof edges. Use 8-14 vertices in clockwise order. Each vertex must sit DIRECTLY on the gutter line / eave / rake — not on the lawn next to it. Stay strictly INSIDE the actual roof material; if you're unsure whether a pixel is roof or yard, exclude it (under-trace is fine, over-trace is not). Treat the shadow falling off the eaves as OUTSIDE the polygon. Do not include driveways, lawns, decks, pools, attached pergolas, or chimneys-that-stick-out-past-the-roof. If two unconnected roof sections exist, return the polygon for the LARGEST one. If you cannot confidently locate the roof, return an empty array. Pixel coordinates in the 640x640 image (0,0 = top-left).
+- roofPolygon: a TIGHT outline of just the roof material. STRICT REQUIREMENTS:
+   * USE EXACTLY 4-8 VERTICES. Do not use 9+. Residential roofs are rectangular, L-shaped, or T-shaped — never oval, never round, never hexagonal. If you're tempted to draw a curve, you're tracing wrong (probably hitting tree shadow). Snap to a small number of straight edges.
+   * EVERY edge must be either roughly parallel or roughly perpendicular to one other edge (rectilinear). Diagonal edges only at 45° corners on octagonal additions. No free-form polygons.
+   * Each vertex must sit ON the actual roof line (gutter / eave / rake / ridge end) visible in the image. NOT on the lawn, driveway, deck, or shadow.
+   * UNDER-TRACE AGGRESSIVELY. If the boundary is ambiguous (tree shadow, low contrast, dark eave shadow), pull the vertex INWARD toward the clearly-visible roof. A polygon 15% smaller than the truth is acceptable; a polygon larger than the truth is a failure.
+   * Typical residential roof in this image will fill 8-25% of the tile area. If you find yourself drawing a polygon larger than 30% of the image, you are wrong — restart and trace more conservatively.
+   * Forbidden inclusions: driveways, lawns, decks, patios, pools, pergolas, sheds, chimneys-that-stick-out, tree canopy, tree shadows, neighboring roofs.
+   * If two unconnected roof sections exist (main house + detached garage), return the polygon for the LARGEST one only.
+   * If you cannot confidently see the roof boundary, return an empty array (better than guessing).
+   * Vertices in clockwise order. Pixel coordinates in the 640x640 image (0,0 = top-left).
 - salesNotes: ONE sentence a sales rep can say to the homeowner — what you'd notice walking the roof. Be concrete, no fluff.
 - confidence is 0..1.`;
 
@@ -90,8 +99,28 @@ function cleanRoofPolygon(input: unknown): Array<[number, number]> {
     out.push([Math.round(x), Math.round(y)]);
     if (out.length >= 16) break;
   }
-  // Need at least 3 vertices to form a polygon
-  return out.length >= 3 ? out : [];
+  if (out.length < 3) return [];
+
+  // Sanity check: reject polygons that exceed plausible residential roof
+  // size. Anything > 35% of the 640×640 tile (143,360 px²) is almost
+  // certainly the model painting yard + house + driveway. Better to drop
+  // the polygon and let the source-priority chain fall back than show a
+  // wildly wrong outline (and an inflated sqft) to the rep.
+  let area = 0;
+  for (let i = 0; i < out.length; i++) {
+    const a = out[i];
+    const b = out[(i + 1) % out.length];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  area = Math.abs(area) / 2;
+  const fillFraction = area / (640 * 640);
+  if (fillFraction > 0.35) {
+    console.warn(
+      `[anthropic] roof polygon too large (${(fillFraction * 100).toFixed(0)}% of tile) — discarding`,
+    );
+    return [];
+  }
+  return out;
 }
 
 function clean(json: unknown): RoofVision {

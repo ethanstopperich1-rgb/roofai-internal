@@ -5,6 +5,78 @@
  */
 
 /**
+ * Principal-axis bounding rectangle. Computes the 2D PCA of a polygon's
+ * vertices and returns the minimum oriented rectangle aligned with its
+ * dominant direction.
+ *
+ * Used for Claude AI source polygons — Claude consistently returns oval /
+ * curved traces of what are actually rectangular suburban roofs. Rather
+ * than orthogonalize-and-pray (which fails when no edges happen to be
+ * cardinal-aligned), we just collapse the trace to its oriented bounding
+ * rectangle. Guarantees a clean 4-vertex output that matches the building's
+ * dominant axis. Reps can edit corners to add L/T-shape detail manually.
+ *
+ * For non-rectangular footprints (octagonal, round) this loses fidelity,
+ * but residential roofs are virtually never round, and a too-aggressive
+ * rectangle is far easier to fix than a bad oval.
+ */
+export function principalAxisRect(
+  poly: Array<[number, number]>,
+): Array<[number, number]> {
+  if (poly.length < 4) return poly;
+
+  // Centroid
+  let cx = 0, cy = 0;
+  for (const [x, y] of poly) { cx += x; cy += y; }
+  cx /= poly.length;
+  cy /= poly.length;
+
+  // Sample-covariance components (use vertex set; for finer fit, sample
+  // points along edges, but vertex sample is fine for short polygons)
+  let sxx = 0, sxy = 0, syy = 0;
+  for (const [x, y] of poly) {
+    const dx = x - cx;
+    const dy = y - cy;
+    sxx += dx * dx;
+    sxy += dx * dy;
+    syy += dy * dy;
+  }
+
+  // Closed-form 2×2 symmetric eigendecomposition: the major axis angle is
+  // 0.5·atan2(2·sxy, sxx − syy).
+  const angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+
+  // Rotate every vertex into axis-aligned space, find min/max, build 4
+  // corners, rotate back to image coordinates.
+  const cos = Math.cos(-angle);
+  const sin = Math.sin(-angle);
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  for (const [x, y] of poly) {
+    const dx = x - cx;
+    const dy = y - cy;
+    const u = dx * cos - dy * sin;
+    const v = dx * sin + dy * cos;
+    if (u < minU) minU = u;
+    if (u > maxU) maxU = u;
+    if (v < minV) minV = v;
+    if (v > maxV) maxV = v;
+  }
+
+  const cosBack = Math.cos(angle);
+  const sinBack = Math.sin(angle);
+  const corners: Array<[number, number]> = [
+    [minU, minV],
+    [maxU, minV],
+    [maxU, maxV],
+    [minU, maxV],
+  ];
+  return corners.map(([u, v]) => [
+    cx + u * cosBack - v * sinBack,
+    cy + u * sinBack + v * cosBack,
+  ]);
+}
+
+/**
  * Orthogonalize a polygon by snapping every edge to the nearest 0° / 90°
  * offset from the dominant building axis (defined as the angle of the
  * longest edge). Roofs are ~95% rectilinear — even L/T/U-shaped houses
@@ -24,6 +96,12 @@
 export function orthogonalizePolygon(
   poly: Array<[number, number]>,
   toleranceDeg: number = 14,
+  /** When true, bypass the < 50% perimeter bail rule. Useful for sources
+   *  like Claude vision that consistently return curved/oval traces of
+   *  what should be rectangular roofs — we'd rather force the snap and
+   *  accept distortion on truly round shapes (which residential roofs
+   *  basically never are) than ship the curvy original. */
+  forceSnap: boolean = false,
 ): Array<[number, number]> {
   if (poly.length < 4) return poly;
   const n = poly.length;
@@ -71,7 +149,7 @@ export function orthogonalizePolygon(
     }
   }
 
-  if (alignedLength / totalLength < 0.5) return poly;
+  if (!forceSnap && alignedLength / totalLength < 0.5) return poly;
 
   const m = edges.length;
   const result: Array<[number, number]> = [];

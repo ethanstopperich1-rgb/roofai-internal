@@ -46,7 +46,7 @@ import {
   deriveRoofLengthsHeuristic,
   inferComplexityFromPolygons,
 } from "@/lib/roof-geometry";
-import { orthogonalizePolygon } from "@/lib/polygon";
+import { principalAxisRect } from "@/lib/polygon";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
@@ -139,13 +139,14 @@ export default function HomePage() {
     if (!address?.lat || !address?.lng) return null;
     const rawPoly = vision?.roofPolygon;
     if (!rawPoly || rawPoly.length < 3) return null;
-    // Orthogonalize the Claude trace in pixel space before projection.
-    // Claude's vision-derived outlines are typically 8–14 vertices traced
-    // along a curvy approximation of the roof — orthogonalization snaps
-    // them to a clean rectilinear shape when the underlying roof actually
-    // is rectilinear (which is ~95% of residential properties). For curvy
-    // shapes the inner <50% guard bails so we don't distort organic outlines.
-    const poly = orthogonalizePolygon(rawPoly, 18);
+    // Force the Claude trace to its principal-axis bounding rectangle.
+    // Claude consistently returns oval / curved 8–14 vertex traces of what
+    // are actually rectangular suburban roofs. Soft orthogonalization
+    // (snap-to-cardinal-when-aligned) doesn't help when the original has
+    // no axis-aligned edges. PCA bbox always returns a clean 4-vertex
+    // rectangle aligned with the building's dominant direction; rep can
+    // hand-edit corners on the satellite map to add L/T-shape detail.
+    const poly = principalAxisRect(rawPoly);
     const lat = address.lat;
     const lng = address.lng;
     const mPerPx =
@@ -567,7 +568,7 @@ export default function HomePage() {
               <span className="text-cy-300">deliver</span>
             </div>
           </div>
-          <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="flex items-stretch gap-2 w-full sm:w-auto">
             <input
               className="input flex-1 sm:flex-none sm:w-44 text-[13px]"
               placeholder="Your name"
@@ -575,8 +576,12 @@ export default function HomePage() {
               onChange={(e) => setStaff(e.target.value)}
             />
             {shown && (
-              <button className="btn btn-ghost flex-shrink-0" onClick={reset}>
-                <RotateCcw size={14} /> <span className="hidden sm:inline">New</span>
+              <button
+                onClick={reset}
+                className="flex-shrink-0 inline-flex items-center justify-center gap-1.5 px-3.5 rounded-[0.7rem] border border-white/[0.075] bg-black/30 text-slate-200 text-[13px] font-medium tracking-tight transition hover:border-white/[0.18] hover:bg-black/40"
+              >
+                <RotateCcw size={13} />
+                <span className="hidden sm:inline">New</span>
               </button>
             )}
           </div>
