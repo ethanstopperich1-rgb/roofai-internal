@@ -232,14 +232,31 @@ function scoreAndRankMasks(
   });
 
   // Drop only the obviously wrong:
-  //   - tiny (< 0.3% of image)
-  //   - background (> 65% of image)
-  //   - silly-thin (> 12:1)
+  //   - tiny specks (< 0.1% of image)
+  //   - full-scene background (> 85% of image)
+  //   - silly-thin road / fence masks (> 14:1)
   const filtered = scored.filter(
-    (m) => m.fillFraction >= 0.003 && m.fillFraction <= 0.65 && m.ratio <= 12,
+    (m) => m.fillFraction >= 0.001 && m.fillFraction <= 0.85 && m.ratio <= 14,
   );
 
   filtered.sort((a, b) => b.score - a.score);
+
+  // Last-resort fallback: if everything got filtered out (rare on real
+  // properties — SAM produced no roof-shaped mask in the 0.1–85% size
+  // range), still return the single biggest mask under 90% of the image.
+  // A rough polygon is better than "Couldn't extract."
+  if (filtered.length === 0 && scored.length > 0) {
+    const fallback = scored
+      .filter((m) => m.fillFraction <= 0.90)
+      .sort((a, b) => b.area - a.area)[0];
+    if (fallback) {
+      console.log(
+        `[replicate] no clean roof mask; falling back to largest candidate (fillFraction=${fallback.fillFraction.toFixed(3)}, ratio=${fallback.ratio.toFixed(2)})`,
+      );
+      return [fallback];
+    }
+  }
+
   return filtered;
 }
 
