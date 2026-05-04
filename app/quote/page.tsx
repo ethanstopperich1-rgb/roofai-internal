@@ -77,13 +77,21 @@ export default function QuotePage() {
 
   const stepIdx = STEPS.indexOf(step);
 
-  // Pricing — wide consumer range to set expectation, not lock-in.
+  // Pricing — uses RoofingCalculator's published industry low/high installed
+  // ranges per sqft (already includes labor). Add-ons and tear-off are layered
+  // on top so the public quote tracks national averages without surprise.
   const range = useMemo(() => {
     if (!sqft) return { low: 0, high: 0 };
-    const rate = MATERIAL_RATES[material].rate;
+    const m = MATERIAL_RATES[material];
+    const baseLow = sqft * m.low;
+    const baseHigh = sqft * m.high;
+    const tearoffLow = sqft * m.removeLow;
+    const tearoffHigh = sqft * m.removeHigh;
     const adds = addOns.filter((a) => a.enabled).reduce((s, a) => s + a.price, 0);
-    const base = sqft * (rate + 3.25);
-    return { low: Math.round(base * 0.85 + adds), high: Math.round(base * 1.2 + adds) };
+    return {
+      low: Math.round(baseLow + tearoffLow + adds),
+      high: Math.round(baseHigh + tearoffHigh + adds),
+    };
   }, [sqft, material, addOns]);
 
   const fetchRoof = async (a: AddressInfo) => {
