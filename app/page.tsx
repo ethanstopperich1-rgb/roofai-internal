@@ -14,6 +14,7 @@ import VisionPanel from "@/components/VisionPanel";
 import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
+import RoofBlueprint from "@/components/RoofBlueprint";
 import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
@@ -84,6 +85,12 @@ export default function HomePage() {
   const [osmBuildingPolygon, setOsmBuildingPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // Live polygons after the rep edits a vertex. When set, overrides the
+  // auto-detected source polygons everywhere (lengths, sqft, blueprint, PDF).
+  // Reset to null on every new estimate so we always start from auto-detect.
+  const [livePolygons, setLivePolygons] = useState<
+    Array<Array<{ lat: number; lng: number }>> | null
+  >(null);
 
   // ATTOM yearBuilt → ageYears (rep can still override manually)
   useEffect(() => {
@@ -137,21 +144,29 @@ export default function HomePage() {
   //   1. Solar API per-facet polygons (metros only, ~30% of US)
   //   2. OpenStreetMap building footprint (human-traced, ~50-60% US)
   //   3. Claude vision polygon (fallback for everywhere else)
-  const polygonSource = useMemo<"solar" | "osm" | "ai" | "none">(() => {
+  const polygonSource = useMemo<"edited" | "solar" | "osm" | "ai" | "none">(() => {
+    if (livePolygons && livePolygons.length) return "edited";
     if (solar?.segmentPolygonsLatLng?.length) return "solar";
     if (osmBuildingPolygon) return "osm";
     if (claudePolygonLatLng) return "ai";
     return "none";
-  }, [solar?.segmentPolygonsLatLng, osmBuildingPolygon, claudePolygonLatLng]);
+  }, [livePolygons, solar?.segmentPolygonsLatLng, osmBuildingPolygon, claudePolygonLatLng]);
 
-  const activePolygons:
+  // Source polygons — what MapView draws initially. Edited polygons don't
+  // come back through this prop (would cause a redraw loop / cancel the
+  // user's drag). They flow back via onPolygonsChanged → livePolygons.
+  const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    if (polygonSource === "solar") return solar!.segmentPolygonsLatLng;
-    if (polygonSource === "osm") return [osmBuildingPolygon!];
-    if (polygonSource === "ai") return [claudePolygonLatLng!];
+    if (solar?.segmentPolygonsLatLng?.length) return solar.segmentPolygonsLatLng;
+    if (osmBuildingPolygon) return [osmBuildingPolygon];
+    if (claudePolygonLatLng) return [claudePolygonLatLng];
     return undefined;
-  }, [polygonSource, solar, osmBuildingPolygon, claudePolygonLatLng]);
+  }, [solar?.segmentPolygonsLatLng, osmBuildingPolygon, claudePolygonLatLng]);
+
+  // Active polygons — what we use for sqft, lengths, blueprint, PDF.
+  // Live edits override source.
+  const activePolygons = livePolygons ?? sourcePolygons;
 
   const detailed = useMemo(
     () =>
@@ -204,6 +219,7 @@ export default function HomePage() {
     setVision(null);
     setVisionError("");
     setOsmBuildingPolygon(null);
+    setLivePolygons(null);
 
     if (addr.lat == null || addr.lng == null) {
       setAssumptions((a) => ({
@@ -334,7 +350,8 @@ export default function HomePage() {
     const badges: string[] = [];
     if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
-    if (polygonSource === "osm") badges.push("OSM traced");
+    if (polygonSource === "edited") badges.push("Edited");
+    else if (polygonSource === "osm") badges.push("OSM traced");
     else if (polygonSource === "ai") badges.push("AI traced");
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
     if (solar?.pitch) badges.push(`Pitch ${solar.pitch}`);
@@ -424,11 +441,33 @@ export default function HomePage() {
               lat={address?.lat}
               lng={address?.lng}
               address={address?.formatted}
-              segments={activePolygons}
+              segments={sourcePolygons}
               penetrations={vision?.penetrations}
               metaBadges={mapBadges}
+              editable={polygonSource !== "none"}
+              onPolygonsChanged={setLivePolygons}
             />
           </section>
+
+          {/* ─── Architectural blueprint of the traced roof ─────────────── */}
+          {activePolygons && activePolygons.length > 0 && (
+            <RoofBlueprint
+              polygons={activePolygons}
+              totalRoofSqft={assumptions.sqft}
+              editing={polygonSource === "edited"}
+              sourceLabel={
+                polygonSource === "solar"
+                  ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
+                  : polygonSource === "osm"
+                    ? "OSM traced"
+                    : polygonSource === "ai"
+                      ? "AI traced"
+                      : polygonSource === "edited"
+                        ? "Edited by hand"
+                        : undefined
+              }
+            />
+          )}
 
           {/* ─── Headline price card — full width ──────────────────────── */}
           <ErrorBoundary>

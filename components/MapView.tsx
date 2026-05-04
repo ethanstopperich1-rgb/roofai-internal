@@ -16,12 +16,23 @@ interface Props {
   lat?: number;
   lng?: number;
   address?: string;
-  /** Roof segment polygons from Solar API — drawn as overlays */
+  /** Source roof polygons (Solar API / OSM / Claude). MapView draws these
+   *  initially. User edits don't come back through this prop — they bubble
+   *  up via onPolygonsChanged so we don't enter a redraw loop. */
   segments?: Array<Array<{ lat: number; lng: number }>>;
   /** Penetrations from Claude vision (rendered as numbered circles) */
   penetrations?: PenetrationMarker[];
   /** Optional badges shown over the satellite map */
   metaBadges?: string[];
+  /** When true, polygons are editable — rep can drag vertices, add/remove
+   *  points by right-clicking. Each edit fires onPolygonsChanged with the
+   *  new state of all polygons. */
+  editable?: boolean;
+  /** Fired when the rep edits any polygon vertex. Receives the full
+   *  current state of all polygons (after the edit). */
+  onPolygonsChanged?: (
+    polygons: Array<Array<{ lat: number; lng: number }>>,
+  ) => void;
 }
 
 /**
@@ -53,7 +64,13 @@ export default function MapView({
   segments,
   penetrations,
   metaBadges,
+  editable = false,
+  onPolygonsChanged,
 }: Props) {
+  // Stable ref to the latest callback so we don't have to re-bind polygon
+  // event listeners every render.
+  const onPolygonsChangedRef = useRef(onPolygonsChanged);
+  onPolygonsChangedRef.current = onPolygonsChanged;
   const mapEl = useRef<HTMLDivElement>(null);
   const svEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
@@ -78,10 +95,10 @@ export default function MapView({
           mapTypeId: "satellite",
           tilt: 0,
           disableDefaultUI: true,
-          // Lock the map so reps can't accidentally drag/zoom off the
-          // property. Polygons + pin always stay aligned with what the
-          // estimate is computed on.
-          gestureHandling: "none",
+          // Lock map pan/zoom so reps can't accidentally drag off the
+          // property — but DON'T set gestureHandling: "none" because that
+          // blocks polygon vertex drag events too. draggable/scrollwheel
+          // false achieves the lock without breaking polygon edits.
           keyboardShortcuts: false,
           clickableIcons: false,
           draggable: false,
@@ -148,6 +165,16 @@ export default function MapView({
         const ANIM_MS = 520;
         const STAGGER_MS = 70;
 
+        const broadcast = () => {
+          if (!onPolygonsChangedRef.current) return;
+          const next = polysRef.current.map((p) => {
+            const arr: Array<{ lat: number; lng: number }> = [];
+            p.getPath().forEach((v) => arr.push({ lat: v.lat(), lng: v.lng() }));
+            return arr;
+          });
+          onPolygonsChangedRef.current(next);
+        };
+
         segments.forEach((path, idx) => {
           if (!path || path.length < 3) return;
           const palette = PALETTE[idx % PALETTE.length];
@@ -158,10 +185,24 @@ export default function MapView({
             strokeWeight: 2,
             fillColor: palette.fill,
             fillOpacity: 0,
-            clickable: false,
+            clickable: editable,
+            editable: editable,
+            // editable polygons get a slightly heavier stroke so the drag
+            // handles read against the imagery
+            ...(editable && { strokeWeight: 2.5 }),
             map: mapRef.current!,
           });
           polysRef.current.push(poly);
+
+          // Wire vertex-edit events when in editable mode. Google fires
+          // set_at on drag-end, insert_at on right-click insert, remove_at
+          // on right-click delete.
+          if (editable) {
+            const path = poly.getPath();
+            path.addListener("set_at", broadcast);
+            path.addListener("insert_at", broadcast);
+            path.addListener("remove_at", broadcast);
+          }
 
           // Animate stroke + fill from 0 → target with staggered start so
           // multi-facet roofs trace in sequence (looks like AI scanning).
