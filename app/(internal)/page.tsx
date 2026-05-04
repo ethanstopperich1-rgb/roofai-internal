@@ -135,6 +135,14 @@ export default function HomePage() {
   const [roboflowPolygon, setRoboflowPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // Microsoft Building Footprints — open-data ML-extracted building polygons
+  // covering rural areas where OSM has no coverage. ODbL license. Currently
+  // scoped to the Nashville metro bbox (see lib/microsoft-buildings.ts).
+  // Slotted below OSM (OSM is hand-traced, more accurate where present) and
+  // above the Claude-vision last-resort.
+  const [msBuildingPolygon, setMsBuildingPolygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
   // Live polygons after the rep edits a vertex. When set, overrides the
   // auto-detected source polygons everywhere (lengths, sqft, blueprint, PDF).
   // Reset to null on every new estimate so we always start from auto-detect.
@@ -217,27 +225,28 @@ export default function HomePage() {
   const validRoboflow = useMemo(() => validateAtAddress(roboflowPolygon), [roboflowPolygon, address?.lat, address?.lng]);
   const validSam = useMemo(() => validateAtAddress(samRefinedPolygon), [samRefinedPolygon, address?.lat, address?.lng]);
   const validOsm = useMemo(() => validateAtAddress(osmBuildingPolygon), [osmBuildingPolygon, address?.lat, address?.lng]);
+  const validMsBuilding = useMemo(() => validateAtAddress(msBuildingPolygon), [msBuildingPolygon, address?.lat, address?.lng]);
   const validClaude = useMemo(() => validateAtAddress(claudePolygonLatLng), [claudePolygonLatLng, address?.lat, address?.lng]);
 
   // Polygon source priority — best-quality first:
-  //   1. 3D Tiles mesh   — height-thresholded from Google's photogrammetry
-  //                        (real geometric truth, no AI guessing)
-  //   2. Solar mask      — Project Sunroof's roof segmentation
-  //   3. Roboflow        — roof-trained instance segmenter on the satellite
-  //                        tile (Satellite Rooftop Map v3)
-  //   4. Solar facets    — multi-facet bboxes from findClosest (axis-aligned
-  //                        but useful for ridge/valley counting)
-  //   5. SAM 2 + OSM     — point-prompted SAM with OSM building clip
-  //   6. OSM             — human-traced building outline (~50-60% US)
-  //   7. Claude vision   — Claude on the 2D satellite tile. Less precise
-  //                        than the segmenters above; rep should usually
-  //                        review and edit before pricing.
+  //   1. 3D Tiles mesh    — height-thresholded from Google's photogrammetry
+  //                         (real geometric truth, no AI guessing)
+  //   2. Solar mask       — Project Sunroof's roof segmentation
+  //   3. Roboflow         — roof-trained instance segmenter on the satellite
+  //                         tile (Satellite Rooftop Map v3)
+  //   4. Solar facets     — multi-facet bboxes from findClosest (axis-aligned
+  //                         but useful for ridge/valley counting)
+  //   5. SAM 2 + OSM clip — point-prompted SAM with OSM building intersect
+  //   6. OSM              — hand-traced building outline (~50-60% US, urban)
+  //   7. MS Buildings     — open-data ML-extracted building footprints; fills
+  //                         OSM coverage gap on rural addresses (currently
+  //                         pre-extracted for Nashville metro only)
+  //   8. Claude vision    — Claude on the 2D satellite tile. Less precise
+  //                         than the segmenters above; rep should review.
   //
   // tiles3d-vision (Claude on multi-angle 3D mesh renders) was REMOVED —
-  // it consistently produced over-traced rectangles even after camera
-  // pull-back + verification pass. Claude's general vision can't reliably
-  // pixel-trace eaves; roof-specific segmenters are needed for that
-  // accuracy class.
+  // it consistently produced over-traced rectangles. Claude's general vision
+  // can't reliably pixel-trace eaves; roof-specific segmenters are needed.
   //
   // Each source goes through the wrong-house guard above before being
   // considered — a polygon that doesn't contain (or live very near to) the
@@ -250,6 +259,7 @@ export default function HomePage() {
     | "solar"
     | "sam"
     | "osm"
+    | "microsoft-buildings"
     | "ai"
     | "none"
   >(() => {
@@ -260,6 +270,7 @@ export default function HomePage() {
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) return "solar";
     if (validSam) return "sam";
     if (validOsm) return "osm";
+    if (validMsBuilding) return "microsoft-buildings";
     if (validClaude) return "ai";
     return "none";
   }, [
@@ -271,6 +282,7 @@ export default function HomePage() {
     solar?.segmentCount,
     validSam,
     validOsm,
+    validMsBuilding,
     validClaude,
   ]);
 
@@ -287,6 +299,7 @@ export default function HomePage() {
       return solar.segmentPolygonsLatLng;
     if (validSam) return [validSam];
     if (validOsm) return [validOsm];
+    if (validMsBuilding) return [validMsBuilding];
     if (validClaude) return [validClaude];
     return undefined;
   }, [
@@ -297,6 +310,7 @@ export default function HomePage() {
     solar?.segmentCount,
     validSam,
     validOsm,
+    validMsBuilding,
     validClaude,
   ]);
 
@@ -531,6 +545,20 @@ export default function HomePage() {
       })
       .catch(() => null);
 
+    // Microsoft Building Footprints — open-data ML-extracted building outlines,
+    // pre-extracted for the Nashville metro bbox (see lib/microsoft-buildings.ts).
+    // Fills the OSM coverage gap on rural addresses. Returns null outside the
+    // pre-extracted bbox (so this is a noop for non-TN addresses for now).
+    const msBuildingPromise = fetch(`/api/microsoft-building?lat=${addr.lat}&lng=${addr.lng}`)
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const data = (await r.json()) as {
+          polygon?: Array<{ lat: number; lng: number }>;
+        };
+        return data.polygon && data.polygon.length >= 3 ? data.polygon : null;
+      })
+      .catch(() => null);
+
     // Compound-pipeline SAM refinement — fires in parallel with everything
     // else. ~5-10s latency on Replicate so the cheaper sources show first
     // and SAM "snaps" the polygon tighter when it returns.
@@ -581,6 +609,11 @@ export default function HomePage() {
     // Solar mask is unavailable / 3D Tiles haven't loaded yet).
     roboflowPromise.then((rfPoly) => {
       if (rfPoly && !hasUserEditedRef.current) setRoboflowPolygon(rfPoly);
+    });
+
+    // MS Building Footprints — same edit-stomp guard.
+    msBuildingPromise.then((msPoly) => {
+      if (msPoly && !hasUserEditedRef.current) setMsBuildingPolygon(msPoly);
     });
 
     setAssumptions((a) => {
@@ -665,6 +698,7 @@ export default function HomePage() {
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
     setRoboflowPolygon(null);
+    setMsBuildingPolygon(null);
     setTiles3dPolygon(null);
     hasUserEditedRef.current = false;
   };
@@ -679,6 +713,7 @@ export default function HomePage() {
     else if (polygonSource === "roboflow") badges.push("Roof AI");
     else if (polygonSource === "sam") badges.push("SAM 2 refined");
     else if (polygonSource === "osm") badges.push("OSM traced");
+    else if (polygonSource === "microsoft-buildings") badges.push("MS Footprints");
     else if (polygonSource === "ai") badges.push("AI traced");
     else if (samRefining) badges.push("Refining…");
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
@@ -839,11 +874,13 @@ export default function HomePage() {
                           ? "SAM 2 refined"
                           : polygonSource === "osm"
                             ? "OSM traced"
-                            : polygonSource === "ai"
-                              ? "AI traced"
-                              : polygonSource === "edited"
-                                ? "Edited by hand"
-                                : undefined
+                            : polygonSource === "microsoft-buildings"
+                              ? "MS Footprints"
+                              : polygonSource === "ai"
+                                ? "AI traced"
+                                : polygonSource === "edited"
+                                  ? "Edited by hand"
+                                  : undefined
               }
             />
           )}
