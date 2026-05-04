@@ -43,6 +43,15 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
 
   return (
     <div className="space-y-6 max-w-3xl mx-auto">
+      <div className="flex items-center justify-center pt-2 pb-1">
+        <img
+          src="/brand/logo-wordmark-alpha.png"
+          alt="Voxaris Pitch"
+          width={1672}
+          height={941}
+          className="h-9 w-auto opacity-90"
+        />
+      </div>
       <div className="glass-strong rounded-3xl p-7 md:p-9 relative overflow-hidden">
         <div
           className="absolute -top-20 -right-20 w-[420px] h-[420px] rounded-full blur-3xl pointer-events-none opacity-50"
