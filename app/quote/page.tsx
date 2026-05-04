@@ -1,24 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
   Check,
   Loader2,
   MapPin,
-  Search,
-  Shield,
-  ShieldCheck,
-  Sparkles,
 } from "lucide-react";
+import Link from "next/link";
 import { AuroraButton } from "@/components/ui/aurora-button";
+import { BoltStyleHero, type QuoteHeroFormValues } from "@/components/ui/bolt-style-chat";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
 import type { AddressInfo, Material } from "@/types/estimate";
 import { BRAND_CONFIG } from "@/lib/branding";
-import Link from "next/link";
 
-const STEPS = ["Address", "Roof", "Material", "Quote"] as const;
+const STEPS = ["Lead", "Roof", "Material", "Quote"] as const;
 type StepKey = (typeof STEPS)[number];
 
 interface SimpleAddon {
@@ -35,7 +32,10 @@ const QUOTE_ADDONS: SimpleAddon[] = [
   { id: "skylight", label: "Skylight replacement", price: 950, enabled: false },
 ];
 
-const MATERIAL_COPY: Record<Material, { title: string; tagline: string; warranty: string }> = {
+const MATERIAL_COPY: Record<
+  Material,
+  { title: string; tagline: string; warranty: string }
+> = {
   "asphalt-3tab": {
     title: "Asphalt 3-Tab",
     tagline: "Reliable, budget-friendly",
@@ -59,8 +59,8 @@ const MATERIAL_COPY: Record<Material, { title: string; tagline: string; warranty
 };
 
 export default function QuotePage() {
-  const [step, setStep] = useState<StepKey>("Address");
-  const [addressText, setAddressText] = useState("");
+  const [step, setStep] = useState<StepKey>("Lead");
+  const [lead, setLead] = useState<QuoteHeroFormValues | null>(null);
   const [address, setAddress] = useState<AddressInfo | null>(null);
   const [sqft, setSqft] = useState<number | null>(null);
   const [pitch, setPitch] = useState<string | null>(null);
@@ -68,18 +68,14 @@ export default function QuotePage() {
   const [loadingRoof, setLoadingRoof] = useState(false);
   const [material, setMaterial] = useState<Material>("asphalt-architectural");
   const [addOns, setAddOns] = useState<SimpleAddon[]>(QUOTE_ADDONS);
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<{ leadId: string } | null>(null);
   const [submitError, setSubmitError] = useState("");
 
   const stepIdx = STEPS.indexOf(step);
 
-  // Pricing — uses RoofingCalculator's published industry low/high installed
-  // ranges per sqft (already includes labor). Add-ons and tear-off are layered
-  // on top so the public quote tracks national averages without surprise.
+  // Pricing — uses RoofingCalculator's published low/high installed ranges per
+  // sqft (already includes labor). Add-ons + tear-off layered on top.
   const range = useMemo(() => {
     if (!sqft) return { low: 0, high: 0 };
     const m = MATERIAL_RATES[material];
@@ -94,43 +90,84 @@ export default function QuotePage() {
     };
   }, [sqft, material, addOns]);
 
-  const fetchRoof = async (a: AddressInfo) => {
-    if (a.lat == null || a.lng == null) return;
-    setLoadingRoof(true);
-    try {
-      const res = await fetch(`/api/solar?lat=${a.lat}&lng=${a.lng}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.sqft) setSqft(data.sqft);
-        if (data.pitch) setPitch(data.pitch);
+  /** When the lead form is submitted at the hero step:
+   *   - Save contact info
+   *   - Persist address + lat/lng
+   *   - Fire Solar API for roof size + pitch
+   *   - Advance to Roof confirmation
+   *   - Submit a lead immediately so the contractor sees them even if they
+   *     never finish the wizard
+   */
+  const onLeadSubmit = async (values: QuoteHeroFormValues) => {
+    setSubmitting(true);
+    setSubmitError("");
+    setLead(values);
+    const addr: AddressInfo = {
+      formatted: values.address,
+      zip: values.zip,
+      lat: values.lat,
+      lng: values.lng,
+    };
+    setAddress(addr);
+
+    // Fire-and-forget early lead post (so the contractor gets the lead even
+    // if the homeowner abandons the wizard before the final step)
+    fetch("/api/leads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: values.name,
+        email: values.email,
+        phone: values.phone,
+        address: values.address,
+        zip: values.zip,
+        lat: values.lat,
+        lng: values.lng,
+        source: "quote-wizard-step-1",
+      }),
+    }).catch(() => {
+      /* silent */
+    });
+
+    // Solar API for roof size + pitch
+    if (addr.lat != null && addr.lng != null) {
+      setLoadingRoof(true);
+      try {
+        const res = await fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.sqft) setSqft(data.sqft);
+          if (data.pitch) setPitch(data.pitch);
+        }
+        const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
+        if (key) {
+          setSatelliteUrl(
+            `https://maps.googleapis.com/maps/api/staticmap?center=${addr.lat},${addr.lng}&zoom=20&size=720x420&maptype=satellite&markers=color:0x67dcff%7C${addr.lat},${addr.lng}&key=${key}`,
+          );
+        }
+      } finally {
+        setLoadingRoof(false);
       }
-      const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
-      if (key) {
-        setSatelliteUrl(
-          `https://maps.googleapis.com/maps/api/staticmap?center=${a.lat},${a.lng}&zoom=20&size=720x420&maptype=satellite&markers=color:0x67dcff%7C${a.lat},${a.lng}&key=${key}`,
-        );
-      }
-    } finally {
-      setLoadingRoof(false);
     }
+
+    setSubmitting(false);
+    setStep("Roof");
   };
 
   const goNext = () => {
-    if (step === "Address" && address?.lat) {
-      setStep("Roof");
-      fetchRoof(address);
-    } else if (step === "Roof") {
-      setStep("Material");
-    } else if (step === "Material") {
-      setStep("Quote");
-    }
+    const i = STEPS.indexOf(step);
+    if (i < STEPS.length - 1) setStep(STEPS[i + 1]);
   };
   const goBack = () => {
     const i = STEPS.indexOf(step);
     if (i > 0) setStep(STEPS[i - 1]);
   };
 
-  const submit = async () => {
+  /** Final submit on the Quote step — re-posts lead with the chosen
+   *  material + add-ons + estimate range. This is the "confirmed" lead
+   *  the contractor's outreach team prioritizes. */
+  const submitFinal = async () => {
+    if (!lead) return;
     setSubmitError("");
     setSubmitting(true);
     try {
@@ -138,10 +175,10 @@ export default function QuotePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name,
-          email,
-          phone,
-          address: address?.formatted ?? addressText,
+          name: lead.name,
+          email: lead.email,
+          phone: lead.phone,
+          address: address?.formatted ?? lead.address,
           zip: address?.zip,
           lat: address?.lat,
           lng: address?.lng,
@@ -150,7 +187,7 @@ export default function QuotePage() {
           selectedAddOns: addOns.filter((a) => a.enabled).map((a) => a.id),
           estimateLow: range.low,
           estimateHigh: range.high,
-          source: "quote-wizard",
+          source: "quote-wizard-confirmed",
         }),
       });
       const data = await res.json();
@@ -163,28 +200,27 @@ export default function QuotePage() {
     }
   };
 
+  // Step 1 — bolt hero (no separate header / stepper / footer overlap)
+  if (step === "Lead" && !submitted) {
+    return (
+      <div className="min-h-screen relative">
+        <PublicHeader />
+        <BoltStyleHero
+          title="What will it cost to"
+          subtitle="Free, instant, no calls until you ask."
+          onSubmit={onLeadSubmit}
+          submitting={submitting}
+        />
+      </div>
+    );
+  }
+
+  // Steps 2–4 — wizard with stepper
   return (
     <div className="min-h-screen flex flex-col relative z-[1]">
       <PublicHeader />
       <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-10 sm:py-16 space-y-8">
-        {!submitted && (
-          <Stepper current={stepIdx} />
-        )}
-
-        {step === "Address" && !submitted && (
-          <AddressStep
-            value={addressText}
-            onChange={setAddressText}
-            onSelect={(a) => {
-              setAddress(a);
-              setStep("Roof");
-              fetchRoof(a);
-            }}
-            onSubmitTyped={() => {
-              if (address?.lat) goNext();
-            }}
-          />
-        )}
+        {!submitted && <Stepper current={stepIdx} />}
 
         {step === "Roof" && !submitted && (
           <RoofStep
@@ -213,22 +249,15 @@ export default function QuotePage() {
         {step === "Quote" && !submitted && (
           <QuoteStep
             range={range}
-            name={name}
-            setName={setName}
-            email={email}
-            setEmail={setEmail}
-            phone={phone}
-            setPhone={setPhone}
+            lead={lead}
             onBack={goBack}
-            onSubmit={submit}
+            onSubmit={submitFinal}
             submitting={submitting}
             error={submitError}
           />
         )}
 
-        {submitted && (
-          <ThankYou leadId={submitted.leadId} range={range} />
-        )}
+        {submitted && <ThankYou leadId={submitted.leadId} range={range} />}
       </main>
       <PublicFooter />
     </div>
@@ -239,19 +268,20 @@ export default function QuotePage() {
 
 function PublicHeader() {
   return (
-    <header className="border-b border-white/[0.06] bg-[#07090d]/70 backdrop-blur-xl">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-        <Link href="/quote" className="flex items-center gap-2">
+    <header className="relative z-30 border-b border-white/[0.06] bg-[#07090d]/70 backdrop-blur-xl">
+      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-16 sm:h-20 flex items-center justify-between gap-3">
+        <Link href="/quote" className="flex items-center gap-2 min-w-0">
           <img
             src="/brand/logo-wordmark-alpha.png"
             alt="Voxaris Pitch"
             width={1672}
             height={941}
-            className="h-9 sm:h-11 w-auto max-w-[200px] object-contain"
+            className="h-9 sm:h-14 w-auto max-w-[180px] sm:max-w-none object-contain"
           />
+          <span className="hidden md:inline-block ml-1 chip text-[10px]">Quick Quote</span>
         </Link>
         <div className="hidden sm:flex items-center gap-3 text-[12px] text-slate-300">
-          <ShieldCheck size={13} className="text-mint" />
+          <Check size={13} className="text-mint" />
           <span>Free · No-obligation estimate</span>
         </div>
       </div>
@@ -306,213 +336,12 @@ function Stepper({ current }: { current: number }) {
             </div>
             {i < STEPS.length - 1 && (
               <div
-                className={`flex-1 h-px ${
-                  i < current ? "bg-mint/40" : "bg-white/[0.06]"
-                }`}
+                className={`flex-1 h-px ${i < current ? "bg-mint/40" : "bg-white/[0.06]"}`}
               />
             )}
           </div>
         );
       })}
-    </div>
-  );
-}
-
-/* ─── Step 1 — Address ────────────────────────────────────────────────── */
-
-function AddressStep({
-  value,
-  onChange,
-  onSelect,
-  onSubmitTyped,
-}: {
-  value: string;
-  onChange: (s: string) => void;
-  onSelect: (a: AddressInfo) => void;
-  onSubmitTyped: () => void;
-}) {
-  const [suggestions, setSuggestions] = useState<Array<{ placeId: string; text: string }>>([]);
-  const [open, setOpen] = useState(false);
-  const [hi, setHi] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const skipRef = useRef(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (skipRef.current) {
-      skipRef.current = false;
-      return;
-    }
-    if (!value || value.trim().length < 3) {
-      setSuggestions([]);
-      return;
-    }
-    const ctrl = new AbortController();
-    const t = setTimeout(async () => {
-      setLoading(true);
-      try {
-        const res = await fetch(
-          `/api/places/autocomplete?q=${encodeURIComponent(value)}`,
-          { signal: ctrl.signal },
-        );
-        const data = await res.json();
-        setSuggestions(data.suggestions ?? []);
-        setHi(0);
-        setOpen(true);
-      } catch {
-        /* aborted */
-      } finally {
-        setLoading(false);
-      }
-    }, 180);
-    return () => {
-      ctrl.abort();
-      clearTimeout(t);
-    };
-  }, [value]);
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
-
-  const pick = async (s: { placeId: string; text: string }) => {
-    skipRef.current = true;
-    onChange(s.text);
-    setOpen(false);
-    setSuggestions([]);
-    try {
-      const res = await fetch(`/api/places/details?placeId=${s.placeId}`);
-      const data = await res.json();
-      onSelect({
-        formatted: data.formatted ?? s.text,
-        zip: data.zip,
-        lat: data.lat,
-        lng: data.lng,
-      });
-    } catch {
-      onSelect({ formatted: s.text });
-    }
-  };
-
-  return (
-    <div className="space-y-5 float-in">
-      <div>
-        <h1 className="font-display text-[28px] sm:text-[36px] md:text-[44px] leading-[1.05] tracking-tight font-medium">
-          What does a new roof cost{" "}
-          <span className="bg-gradient-to-r from-cy-300 via-cy-400 to-mint bg-clip-text text-transparent">
-            at your home
-          </span>
-          ?
-        </h1>
-        <p className="text-slate-400 text-[14px] mt-3 max-w-xl">
-          Enter your address. We'll measure your roof from satellite and give you a price range
-          in under a minute. Free, no calls until you ask.
-        </p>
-      </div>
-
-      <div ref={wrapRef} className="relative">
-        <div className="flex items-center gap-2 rounded-2xl border border-white/[0.075] bg-black/30 hover:border-white/[0.13] focus-within:border-cy-300/55 focus-within:shadow-[0_0_0_4px_rgba(56,197,238,0.10)] transition-all pl-4 pr-2 py-2">
-          <Search size={18} strokeWidth={2} className="text-slate-500 flex-shrink-0" />
-          <input
-            className="flex-1 min-w-0 bg-transparent border-0 outline-none py-3 text-[16px] sm:text-[18px] font-medium tracking-tight text-slate-50 placeholder:text-slate-600"
-            placeholder="123 Main Street, Austin, TX…"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            onFocus={() => suggestions.length > 0 && setOpen(true)}
-            onKeyDown={(e) => {
-              if (open && suggestions.length) {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setHi((h) => (h + 1) % suggestions.length);
-                  return;
-                }
-                if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setHi((h) => (h - 1 + suggestions.length) % suggestions.length);
-                  return;
-                }
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  pick(suggestions[hi]);
-                  return;
-                }
-              }
-              if (e.key === "Enter") {
-                e.preventDefault();
-                onSubmitTyped();
-              }
-            }}
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {loading && <Loader2 size={15} className="animate-spin text-slate-400 mx-2" />}
-          <AuroraButton
-            onClick={onSubmitTyped}
-            className="flex-shrink-0 px-4 sm:px-5 py-2.5 font-medium text-[14px] tracking-tight inline-flex items-center gap-2"
-          >
-            See my quote <ArrowRight size={14} />
-          </AuroraButton>
-        </div>
-
-        {open && suggestions.length > 0 && (
-          <div
-            className="absolute left-0 right-0 top-full mt-2 z-[100] rounded-2xl overflow-hidden shadow-2xl border border-white/10 float-in"
-            style={{
-              background: "rgba(11,14,20,0.96)",
-              backdropFilter: "blur(28px) saturate(160%)",
-              WebkitBackdropFilter: "blur(28px) saturate(160%)",
-              boxShadow:
-                "0 32px 64px -16px rgba(0,0,0,0.85), inset 0 1px 0 rgba(255,255,255,0.06)",
-            }}
-          >
-            {suggestions.slice(0, 5).map((s, i) => (
-              <button
-                key={s.placeId}
-                onClick={() => pick(s)}
-                onMouseEnter={() => setHi(i)}
-                className={`relative w-full text-left px-4 py-3 flex items-center gap-3 border-b border-white/[0.04] last:border-b-0 transition group ${
-                  i === hi ? "bg-cy-300/[0.08]" : "hover:bg-white/[0.025]"
-                }`}
-              >
-                {i === hi && (
-                  <span className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r-full bg-cy-300" />
-                )}
-                <MapPin size={14} className={i === hi ? "text-cy-300" : "text-slate-500"} />
-                <span className={`truncate text-[14px] ${i === hi ? "text-cy-100" : "text-slate-200"}`}>
-                  {s.text}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="grid sm:grid-cols-3 gap-3 pt-3">
-        <Trust icon={<Sparkles size={13} />} title="Satellite-measured" body="No tape measure visit needed" />
-        <Trust icon={<Shield size={13} />} title="Private" body="Your address is never sold" />
-        <Trust icon={<ShieldCheck size={13} />} title="No obligation" body="See the price before sharing contact" />
-      </div>
-    </div>
-  );
-}
-
-function Trust({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/[0.05] bg-white/[0.015] px-4 py-3">
-      <div className="flex items-center gap-1.5 text-cy-300">{icon}<span className="text-[11px] font-mono uppercase tracking-[0.14em]">{title}</span></div>
-      <div className="text-[13px] text-slate-300 mt-0.5">{body}</div>
     </div>
   );
 }
@@ -710,34 +539,23 @@ function MaterialStep({
   );
 }
 
-/* ─── Step 4 — Quote + lead capture ───────────────────────────────────── */
+/* ─── Step 4 — Quote display + final confirm ─────────────────────────── */
 
 function QuoteStep({
   range,
-  name,
-  setName,
-  email,
-  setEmail,
-  phone,
-  setPhone,
+  lead,
   onBack,
   onSubmit,
   submitting,
   error,
 }: {
   range: { low: number; high: number };
-  name: string;
-  setName: (s: string) => void;
-  email: string;
-  setEmail: (s: string) => void;
-  phone: string;
-  setPhone: (s: string) => void;
+  lead: QuoteHeroFormValues | null;
   onBack: () => void;
   onSubmit: () => void;
   submitting: boolean;
   error: string;
 }) {
-  const valid = name.trim().length > 1 && /\S+@\S+\.\S+/.test(email);
   return (
     <div className="space-y-6 float-in">
       <div>
@@ -752,7 +570,10 @@ function QuoteStep({
       <div className="glass-strong rounded-3xl p-6 sm:p-8 relative overflow-hidden">
         <div
           className="absolute -top-20 right-0 w-[420px] h-[280px] blur-3xl pointer-events-none opacity-50"
-          style={{ background: "radial-gradient(closest-side, rgba(95,227,176,0.12), transparent)" }}
+          style={{
+            background:
+              "radial-gradient(closest-side, rgba(95,227,176,0.12), transparent)",
+          }}
         />
         <div className="relative">
           <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
@@ -767,87 +588,47 @@ function QuoteStep({
         </div>
       </div>
 
-      <div className="glass rounded-3xl p-6 space-y-4">
-        <div>
+      {lead && (
+        <div className="glass rounded-3xl p-6 space-y-3">
           <div className="font-display font-semibold tracking-tight text-[15px]">
-            Where should we send your detailed quote?
+            We have your details
           </div>
-          <div className="text-[12px] text-slate-400 mt-1">
-            One of our partner roofers will reach out within 1 business hour. We never sell your info.
+          <div className="text-[12px] text-slate-400">
+            We&apos;ll reach out to <span className="text-slate-200">{lead.name}</span> at{" "}
+            <span className="text-slate-200">{lead.email}</span> within 1 business hour. No
+            unsolicited follow-up beyond that.
           </div>
         </div>
-        <div className="grid sm:grid-cols-2 gap-3">
-          <Field label="Full name">
-            <input
-              className="input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Jane Doe"
-              autoComplete="name"
-            />
-          </Field>
-          <Field label="Email">
-            <input
-              type="email"
-              className="input"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="jane@example.com"
-              autoComplete="email"
-            />
-          </Field>
-        </div>
-        <Field label="Phone (optional)">
-          <input
-            type="tel"
-            className="input"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="(555) 123-4567"
-            autoComplete="tel"
-          />
-        </Field>
+      )}
 
-        {error && (
-          <div className="text-[12px] text-rose px-3 py-2 rounded-lg bg-rose/[0.08] border border-rose/20">
-            {error}
-          </div>
-        )}
-
-        <div className="flex items-center justify-between gap-3 pt-2">
-          <button onClick={onBack} className="btn btn-ghost">
-            <ArrowLeft size={14} /> Back
-          </button>
-          <AuroraButton
-            onClick={onSubmit}
-            disabled={!valid || submitting}
-            className={`px-5 py-2.5 font-medium text-[14px] tracking-tight inline-flex items-center gap-2 ${
-              !valid || submitting ? "opacity-60 cursor-not-allowed" : ""
-            }`}
-          >
-            {submitting ? (
-              <>
-                <Loader2 size={14} className="animate-spin" /> Sending…
-              </>
-            ) : (
-              <>
-                Get my detailed quote <ArrowRight size={14} />
-              </>
-            )}
-          </AuroraButton>
+      {error && (
+        <div className="text-[12px] text-rose px-3 py-2 rounded-lg bg-rose/[0.08] border border-rose/20">
+          {error}
         </div>
+      )}
+
+      <div className="flex items-center justify-between gap-3 pt-2">
+        <button onClick={onBack} className="btn btn-ghost">
+          <ArrowLeft size={14} /> Back
+        </button>
+        <AuroraButton
+          onClick={onSubmit}
+          disabled={submitting}
+          className={`px-5 py-2.5 font-medium text-[14px] tracking-tight inline-flex items-center gap-2 ${
+            submitting ? "opacity-60 cursor-not-allowed" : ""
+          }`}
+        >
+          {submitting ? (
+            <>
+              <Loader2 size={14} className="animate-spin" /> Sending…
+            </>
+          ) : (
+            <>
+              Confirm & request detailed quote <ArrowRight size={14} />
+            </>
+          )}
+        </AuroraButton>
       </div>
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400 mb-1.5">
-        {label}
-      </div>
-      {children}
     </div>
   );
 }
@@ -868,7 +649,7 @@ function ThankYou({
       </div>
       <div>
         <h2 className="font-display text-[28px] sm:text-[36px] leading-tight tracking-tight font-medium">
-          You're all set.
+          You&apos;re all set.
         </h2>
         <p className="text-slate-300 text-[14px] mt-3 max-w-xl mx-auto">
           A Voxaris partner roofer will reach out within 1 business hour with a precise on-site
@@ -888,7 +669,7 @@ function ThankYou({
   );
 }
 
-/* ─── Shared NavButtons ───────────────────────────────────────────────── */
+/* ─── NavButtons ──────────────────────────────────────────────────────── */
 
 function NavButtons({
   onBack,
@@ -916,3 +697,6 @@ function NavButtons({
     </div>
   );
 }
+
+// Suppress unused-import warning for useEffect (kept for future use)
+void useEffect;
