@@ -75,6 +75,12 @@ const ADDRESSES: TestAddress[] = [
     lng: -86.4763514,
     notes: "2319 Canterbury Chase, Murfreesboro TN — accurate at first, then a higher-priority slower source overrode with worse polygon",
   },
+  {
+    label: "tn-henley-rd",
+    lat: 36.0685499,
+    lng: -86.4750351,
+    notes: "5385 Henley Rd, Mt. Juliet TN — Roboflow returned NOTHING in production; system fell through to ai then tiles3d-vision (both useless). Diagnose why.",
+  },
 ];
 
 // Trim to the winning model from the bake-off — Roof Seg 2 returned nothing

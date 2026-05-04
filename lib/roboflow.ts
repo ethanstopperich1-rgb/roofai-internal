@@ -307,10 +307,43 @@ export async function refineRoofWithRoboflow(opts: {
     return null;
   }
 
-  accepted.sort((a, b) => b.pixelArea - a.pixelArea);
+  // Primary-polygon ranking. Earlier versions of this code sorted purely by
+  // pixelArea descending — that backfires on rural addresses where the model
+  // also detects the driveway+overhangs (large but wrong) and the actual
+  // roof gets ranked second. The geocoded address lives at the image
+  // centre, so a polygon CONTAINING the centre point is almost always the
+  // target house. Diagnostic on 5385 Henley Rd, Mt. Juliet TN proved this:
+  // four predictions, only one contained the centre (0.81 conf, 2m from
+  // address); the other three were 20-42m off and the over-trace hex won
+  // the area sort.
+  //
+  // Ranking now: (a) polygon contains image centre → strong signal,
+  //              (b) higher confidence wins,
+  //              (c) larger area as final tiebreaker.
+  const cxImg = IMAGE_PIXELS / 2;
+  const cyImg = IMAGE_PIXELS / 2;
+  const containsCenter = (poly: Array<[number, number]>): boolean => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i][0], yi = poly[i][1];
+      const xj = poly[j][0], yj = poly[j][1];
+      if ((yi > cyImg) !== (yj > cyImg) && cxImg < ((xj - xi) * (cyImg - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  };
+  accepted.sort((a, b) => {
+    const aContains = containsCenter(a.pixels);
+    const bContains = containsCenter(b.pixels);
+    if (aContains !== bContains) return aContains ? -1 : 1;
+    if (Math.abs(a.confidence - b.confidence) > 0.05) return b.confidence - a.confidence;
+    return b.pixelArea - a.pixelArea;
+  });
 
+  const primary = accepted[0];
   console.log(
-    `[roboflow] ${opts.model.slug}/${opts.model.version} → ${accepted.length} polygon(s); primary: ${accepted[0].class} @ ${accepted[0].confidence.toFixed(2)}, ${accepted[0].pixels.length} verts`,
+    `[roboflow] ${opts.model.slug}/${opts.model.version} → ${accepted.length} polygon(s); primary: ${primary.class} @ ${primary.confidence.toFixed(2)}, ${primary.pixels.length} verts, containsAddr=${containsCenter(primary.pixels)}`,
   );
 
   return {
