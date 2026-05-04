@@ -291,10 +291,33 @@ async function refineAtZoom(opts: {
 
   const maskUrls: string[] = [];
   const collect = (v: unknown) => {
-    if (typeof v === "string" && v.startsWith("http")) maskUrls.push(v);
-    else if (Array.isArray(v)) v.forEach(collect);
-    else if (v && typeof v === "object") {
+    if (typeof v === "string" && v.startsWith("http")) {
+      maskUrls.push(v);
+      return;
+    }
+    if (Array.isArray(v)) {
+      v.forEach(collect);
+      return;
+    }
+    if (v && typeof v === "object") {
       const obj = v as Record<string, unknown>;
+      // Handle FileOutput from Replicate SDK v1.x even though
+      // useFileOutput: false should prevent these — defense in depth.
+      if (typeof obj.url === "function") {
+        try {
+          const u = (obj.url as () => unknown)();
+          if (typeof u === "string") {
+            maskUrls.push(u);
+            return;
+          }
+          if (u && typeof u === "object" && "href" in (u as object)) {
+            maskUrls.push(String((u as { href: unknown }).href));
+            return;
+          }
+        } catch {
+          // fall through
+        }
+      }
       for (const key of [
         "individual_masks",
         "masks",
@@ -309,9 +332,13 @@ async function refineAtZoom(opts: {
   collect(output);
 
   if (maskUrls.length === 0) {
-    console.warn(`[replicate] zoom=${opts.zoom}: no mask URLs in output`);
+    console.warn(
+      `[replicate] zoom=${opts.zoom}: no mask URLs found. Output keys:`,
+      output && typeof output === "object" ? Object.keys(output) : typeof output,
+    );
     return null;
   }
+  console.log(`[replicate] zoom=${opts.zoom}: found ${maskUrls.length} mask URLs`);
 
   const candidates: Array<{ polygon: Array<[number, number]>; area: number }> = [];
   for (const url of maskUrls.slice(0, 30)) {
@@ -383,7 +410,9 @@ export async function refineRoofPolygons(opts: {
     return null;
   }
 
-  const replicate = new Replicate({ auth: replicateKey });
+  // useFileOutput:false → return raw URL strings instead of FileOutput
+  // objects (SDK v1.x default changed). Our collect() expects strings.
+  const replicate = new Replicate({ auth: replicateKey, useFileOutput: false });
 
   // Don't bother retrying at zoom 19 if the SAM call itself failed
   // for a known reason (no credit, bad token) — the second attempt
