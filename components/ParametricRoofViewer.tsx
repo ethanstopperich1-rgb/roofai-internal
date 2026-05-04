@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { Suspense, useMemo, useRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Environment, ContactShadows } from "@react-three/drei";
+import { OrbitControls, ContactShadows } from "@react-three/drei";
 import * as THREE from "three";
 import { Layers, Ruler, RotateCw } from "lucide-react";
 import {
@@ -49,10 +49,12 @@ export default function ParametricRoofViewer({
     );
   }
 
-  // Camera framing — fit the model's footprint diagonal
+  // Camera framing — fit the model's footprint diagonal. Big buildings
+  // (>20m radius like the 8,500sf Pocket Lane home) need a tighter angle
+  // factor so the roof actually fills the viewport.
   const bbox = computeBoundingRadius(mesh);
-  const camDist = Math.max(8, bbox.r * 2.4);
-  const camY = Math.max(5, bbox.r * 1.3);
+  const camDist = Math.max(8, Math.min(80, bbox.r * 2.0));
+  const camY = Math.max(5, Math.min(45, bbox.r * 0.95));
 
   return (
     <div className="glass rounded-3xl overflow-hidden border border-white/[0.07]">
@@ -90,32 +92,33 @@ export default function ParametricRoofViewer({
           gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
         >
           <SceneLights />
-          {/* drei Environment provides cheap PBR reflections for the metal-ish material */}
-          <Environment preset="city" environmentIntensity={0.45} />
+          {/* Suspense fallback prevents the canvas from rendering blank if any
+              child loads asynchronously (drei sub-components, textures). */}
+          <Suspense fallback={null}>
+            {/* Ground plane — receives shadows + has a subtle gradient */}
+            <GroundPlane />
 
-          {/* Ground plane — receives shadows + has a subtle radial gradient */}
-          <GroundPlane />
+            {/* Soft contact shadow under the building footprint */}
+            <ContactShadows
+              position={[0, 0.005, 0]}
+              opacity={0.5}
+              scale={Math.max(20, bbox.r * 4)}
+              blur={2.2}
+              far={Math.max(8, bbox.r * 2)}
+              color="#000a14"
+            />
 
-          {/* Soft contact shadow under the building footprint */}
-          <ContactShadows
-            position={[0, 0.005, 0]}
-            opacity={0.55}
-            scale={Math.max(20, bbox.r * 4)}
-            blur={2.4}
-            far={Math.max(8, bbox.r * 2)}
-            color="#000a14"
-          />
-
-          <RoofMeshObject mesh={mesh} />
-          <RoofEdgesOverlay edges={mesh.edges} />
+            <RoofMeshObject mesh={mesh} />
+            <RoofEdgesOverlay edges={mesh.edges} />
+          </Suspense>
 
           <OrbitControls
             enablePan={false}
             minDistance={Math.max(4, bbox.r * 1.4)}
-            maxDistance={Math.max(40, bbox.r * 5)}
+            maxDistance={Math.max(60, bbox.r * 6)}
             maxPolarAngle={Math.PI / 2 - 0.07}
             minPolarAngle={Math.PI / 8}
-            target={[0, mesh.stats.ridgeHeightFt > 0 ? Math.min(2.5, bbox.r * 0.25) : 0, 0]}
+            target={[0, mesh.stats.ridgeHeightFt > 0 ? Math.min(3, bbox.r * 0.25) : 0, 0]}
             enableDamping
             dampingFactor={0.08}
             autoRotate
@@ -211,12 +214,11 @@ function RoofMeshObject({ mesh }: { mesh: RoofMesh }) {
         Slight emissive on top so eaves stay readable in shadow.
       */}
       <meshStandardMaterial
-        color={"#3a4356"}
-        roughness={0.62}
-        metalness={0.32}
-        emissive={"#0c1320"}
-        emissiveIntensity={0.55}
-        envMapIntensity={0.7}
+        color={"#4a5468"}
+        roughness={0.55}
+        metalness={0.22}
+        emissive={"#1a2436"}
+        emissiveIntensity={0.85}
         side={THREE.DoubleSide}
       />
     </mesh>
