@@ -434,6 +434,31 @@ export default function HomePage() {
   // Live edits override source.
   const activePolygons = livePolygons ?? sourcePolygons;
 
+  // Generation gate: don't show the polygon to the rep until Claude has
+  // verified it (or until we're at a no-verify source like edited/ai).
+  // Avoids the "three different outlines flickering" UX where Roboflow
+  // showed first, then OSM swapped in, then Solar mask, etc. Now: blank
+  // map + "Generating…" pill until verification completes.
+  const polygonReady = useMemo(() => {
+    if (polygonSource === "none") return true; // nothing to show; map is just satellite
+    if (polygonSource === "edited") return true; // rep already approved by hand
+    if (polygonSource === "tiles3d") return true; // legacy, no longer active
+    if (polygonSource === "ai") return true; // last-resort, skip verify (Claude on Claude)
+    // For all real AI / footprint sources: wait for the multi-view Claude verdict.
+    return claudeVerifications[polygonSource] !== undefined;
+  }, [polygonSource, claudeVerifications]);
+
+  // Polygons we actually pass to the viewers. Undefined while !polygonReady
+  // so MapView / Roof3DViewer don't draw an unverified outline.
+  const renderedPolygons = polygonReady ? activePolygons : undefined;
+  const renderedSourcePolygons = polygonReady ? sourcePolygons : undefined;
+  // Verifying state for the spinner: we have an address + we're not yet
+  // showing a polygon AND there's at least one source candidate fetching.
+  const verifying =
+    !!address?.lat &&
+    !polygonReady &&
+    polygonSource !== "none";
+
   // Single-image Claude verification was previously triggered here from
   // /api/verify-polygon. That endpoint still exists as a fallback but the
   // 3D viewer now drives multi-view verification via Roof3DViewer's
@@ -932,15 +957,30 @@ export default function HomePage() {
       {shown && (
         <>
           {/* ─── Map hero — satellite + 3D side-by-side, full width ─────── */}
-          <section className="grid lg:grid-cols-2 gap-4 h-[420px] sm:h-[520px] lg:h-[640px] float-in">
+          <section className="grid lg:grid-cols-2 gap-4 h-[420px] sm:h-[520px] lg:h-[640px] float-in relative">
+            {/* Generating overlay — covers BOTH viewers when verifying so
+                the rep doesn't see polygon flicker as sources race. Hidden
+                once Claude multi-view verifies the active polygon. */}
+            {verifying && (
+              <div
+                className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none"
+                aria-live="polite"
+              >
+                <div className="flex items-center gap-2.5 rounded-full border border-cy-300/40 bg-[#07090d]/90 backdrop-blur-md px-5 py-2 shadow-2xl shadow-cy-300/20">
+                  <span className="font-mono text-[12px] uppercase tracking-[0.16em] text-cy-100">
+                    Generating roof outline<span className="generating-dots" />
+                  </span>
+                </div>
+              </div>
+            )}
             <MapView
               lat={address?.lat}
               lng={address?.lng}
               address={address?.formatted}
-              segments={sourcePolygons}
+              segments={renderedSourcePolygons}
               penetrations={filteredPenetrations}
               metaBadges={mapBadges}
-              editable={polygonSource !== "none"}
+              editable={polygonReady && polygonSource !== "none"}
               onPolygonsChanged={handlePolygonsChanged}
               pitchDegrees={solar?.pitchDegrees ?? null}
             />
@@ -958,8 +998,12 @@ export default function HomePage() {
                 lat={address.lat}
                 lng={address.lng}
                 address={address.formatted}
+                // Always pass polygons so the multi-view verify effect can
+                // fire. The polygon outline stays HIDDEN until polygonReady
+                // (verified) — see `polygonsHidden` prop.
                 polygons={activePolygons}
                 polygonSource={polygonSource === "none" ? undefined : polygonSource}
+                polygonsHidden={!polygonReady}
                 onMultiViewVerified={(result) => {
                   if (!polygonSource || polygonSource === "none") return;
                   setClaudeVerifications((cur) => ({
@@ -971,8 +1015,10 @@ export default function HomePage() {
             )}
           </section>
 
-          {/* ─── Parametric 3D roof framing (gables, ridges, eaves, rakes) ─ */}
-          {activePolygons && activePolygons.length > 0 && (
+          {/* ─── Parametric 3D roof framing (gables, ridges, eaves, rakes) ─
+                Hidden until polygonReady so the framing doesn't keep
+                redrawing as the polygon flickers between sources. */}
+          {polygonReady && activePolygons && activePolygons.length > 0 && (
             <ErrorBoundary>
               <ParametricRoofViewer
                 polygon={activePolygons[0]}
@@ -982,7 +1028,7 @@ export default function HomePage() {
           )}
 
           {/* ─── Architectural blueprint of the traced roof ─────────────── */}
-          {activePolygons && activePolygons.length > 0 && (
+          {polygonReady && activePolygons && activePolygons.length > 0 && (
             <RoofBlueprint
               polygons={activePolygons}
               editing={polygonSource === "edited"}

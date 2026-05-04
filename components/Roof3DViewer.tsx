@@ -30,6 +30,12 @@ interface Props {
    *  callback. Skipped when the rep edited (livePolygons in parent) since
    *  manual edits override AI verification. */
   onMultiViewVerified?: (result: { ok: boolean; confidence: number; reason: string }) => void;
+  /** When true, the polygon outline is NOT drawn on the 3D mesh (used by
+   *  the parent to hide the polygon while Claude verifies it — prevents
+   *  the rep from seeing flicker as sources race). The polygon data is
+   *  still passed via `polygons` so verification fires; only the visible
+   *  Cesium entities are skipped. */
+  polygonsHidden?: boolean;
 }
 
 // Multi-view capture geometry. These constants control the camera poses used
@@ -229,6 +235,7 @@ export default function Roof3DViewer({
   polygons,
   polygonSource,
   onMultiViewVerified,
+  polygonsHidden,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
@@ -484,6 +491,10 @@ export default function Roof3DViewer({
     }
     polygonEntitiesRef.current = [];
     if (!polygons || polygons.length === 0) return;
+    // polygonsHidden = true → hide the visible outline while parent waits
+    // for Claude verification. Polygon data still flows through for the
+    // multi-view verify effect; we just don't render the Cesium entities.
+    if (polygonsHidden) return;
 
     // Outline ONLY — no fill polygon. With a filled `Polygon` +
     // CESIUM_3D_TILE classification, Cesium creates a vertical prism above
@@ -547,7 +558,7 @@ export default function Roof3DViewer({
       });
       polygonEntitiesRef.current.push(outlineEntity);
     });
-  }, [polygons, polygonSource, status]);
+  }, [polygons, polygonSource, status, polygonsHidden]);
 
   // -------- Multi-view Claude verification --------
   // After the 3D mesh is loaded AND a polygon is rendered, capture top-down
