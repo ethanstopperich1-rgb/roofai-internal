@@ -226,6 +226,8 @@ export interface Estimate {
   /** Field-inspection photos uploaded by the rep, AI-tagged for damage,
    *  EXIF-preserved for insurance claims. Persisted with the estimate. */
   photos?: PhotoMeta[];
+  /** Carrier-specific claim metadata. Only meaningful when isInsuranceClaim. */
+  claim?: import("../lib/carriers").ClaimContext;
   /** Optional — the polygon(s) actually used for measurement, after any
    *  rep edits. Persisted so reopening an estimate restores the exact roof
    *  geometry it was priced against. Lat/lng order. */

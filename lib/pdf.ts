@@ -4,6 +4,7 @@ import jsPDF from "jspdf";
 import type { Estimate, LineItem } from "@/types/estimate";
 import { MATERIAL_RATES, fmt, buildDetailedEstimate } from "./pricing";
 import { BRAND_CONFIG } from "./branding";
+import { CARRIERS } from "./carriers";
 
 const SERVICE_LABEL: Record<NonNullable<Estimate["assumptions"]["serviceType"]>, string> = {
   new: "New install",
@@ -44,14 +45,21 @@ export function generatePdf(e: Estimate) {
     doc.text(contact, W - MARGIN, 70, { align: "right" });
   }
 
-  // Insurance-claim badge
+  // Insurance-claim badge — colored to match the carrier's brand when known
   if (e.isInsuranceClaim) {
-    doc.setFillColor(251, 191, 36);
-    doc.roundedRect(W - MARGIN - 110, 28, 110, 22, 4, 4, "F");
-    doc.setTextColor(0, 0, 0);
+    const carrier = e.claim?.carrier ? CARRIERS[e.claim.carrier] : undefined;
+    const [br, bg, bb] = carrier
+      ? hexToRgb(carrier.accent)
+      : [251, 191, 36];
+    doc.setFillColor(br, bg, bb);
+    doc.roundedRect(W - MARGIN - 150, 28, 150, 22, 4, 4, "F");
+    // Choose readable text color based on luminance
+    const lum = 0.299 * br + 0.587 * bg + 0.114 * bb;
+    doc.setTextColor(lum < 140 ? 255 : 0, lum < 140 ? 255 : 0, lum < 140 ? 255 : 0);
     doc.setFontSize(10);
     doc.setFont("helvetica", "bold");
-    doc.text("INSURANCE CLAIM", W - MARGIN - 55, 43, { align: "center" });
+    const label = carrier ? `${carrier.name.toUpperCase()} CLAIM` : "INSURANCE CLAIM";
+    doc.text(label, W - MARGIN - 75, 43, { align: "center", maxWidth: 145 });
   }
 
   y = 130;
@@ -66,6 +74,41 @@ export function generatePdf(e: Estimate) {
   doc.text(`Prepared by: ${e.staff || "—"}`, MARGIN, y);
   if (e.customerName) doc.text(`Customer: ${e.customerName}`, 400, y);
   y += 28;
+
+  // ---------- Carrier claim metadata (insurance mode only) ------------
+  if (e.isInsuranceClaim && e.claim) {
+    const carrier = CARRIERS[e.claim.carrier] ?? CARRIERS.other;
+    const [cr, cg, cb] = hexToRgb(carrier.accent);
+    doc.setFillColor(cr, cg, cb);
+    doc.rect(MARGIN - 4, y - 12, 4, 70, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(20, 20, 20);
+    doc.text(`Claim — ${carrier.name}`, MARGIN, y);
+    y += 14;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(70, 70, 70);
+    const claimRows: Array<[string, string | undefined]> = [
+      ["Claim #", e.claim.claimNumber],
+      ["Policy #", e.claim.policyNumber],
+      ["Adjuster", e.claim.adjusterName],
+      ["Adjuster Phone", e.claim.adjusterPhone],
+      ["Date of Loss", e.claim.dateOfLoss ? new Date(e.claim.dateOfLoss).toLocaleDateString() : undefined],
+      ["Peril", e.claim.peril],
+    ].filter(([, v]) => v) as Array<[string, string]>;
+    const colW = (W - MARGIN * 2) / 2;
+    claimRows.forEach(([k, v], i) => {
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      doc.setTextColor(120, 120, 120);
+      doc.text(k, MARGIN + col * colW, y + row * 14);
+      doc.setTextColor(20, 20, 20);
+      doc.text(v ?? "—", MARGIN + col * colW + 90, y + row * 14);
+    });
+    y += Math.ceil(claimRows.length / 2) * 14 + 14;
+    doc.setTextColor(20, 20, 20);
+  }
 
   // ---------- Property ----------
   doc.setFont("helvetica", "bold");

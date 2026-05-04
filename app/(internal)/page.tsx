@@ -18,7 +18,9 @@ import RoofBlueprint from "@/components/RoofBlueprint";
 import PolygonSizeWarning from "@/components/PolygonSizeWarning";
 import PhotoUploadPanel from "@/components/PhotoUploadPanel";
 import ImageryStormBanner from "@/components/ImageryStormBanner";
+import CarrierClaimPanel from "@/components/CarrierClaimPanel";
 import type { PhotoMeta } from "@/types/photo";
+import type { ClaimContext } from "@/lib/carriers";
 import dynamic from "next/dynamic";
 import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
 
@@ -101,6 +103,7 @@ export default function HomePage() {
   const [visionError, setVisionError] = useState<string>("");
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [photos, setPhotos] = useState<PhotoMeta[]>([]);
+  const [claim, setClaim] = useState<ClaimContext>({ carrier: "state-farm" });
   const [osmBuildingPolygon, setOsmBuildingPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
@@ -618,6 +621,7 @@ export default function HomePage() {
     polygons: activePolygons ?? undefined,
     polygonSource: polygonSource === "none" ? undefined : polygonSource,
     photos: photos.length ? photos : undefined,
+    claim: isInsuranceClaim ? claim : undefined,
   };
 
   const applyTier = (tier: ProposalTier) => {
@@ -655,6 +659,7 @@ export default function HomePage() {
     setVisionError("");
     setIsInsuranceClaim(false);
     setPhotos([]);
+    setClaim({ carrier: "state-farm" });
     setLivePolygons(null);
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
@@ -841,6 +846,11 @@ export default function HomePage() {
                                 : undefined
               }
             />
+          )}
+
+          {/* ─── Carrier-specific claim metadata (insurance mode only) ─── */}
+          {isInsuranceClaim && (
+            <CarrierClaimPanel context={claim} onChange={setClaim} />
           )}
 
           {/* ─── Imagery × storm correlation (multi-temporal) ──────────── */}
