@@ -77,6 +77,17 @@ export default function HomePage() {
   const [visionLoading, setVisionLoading] = useState(false);
   const [visionError, setVisionError] = useState<string>("");
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
+  const [propertyAttomYearBuilt, setPropertyAttomYearBuilt] = useState<number | null>(null);
+
+  // ATTOM yearBuilt → ageYears (rep can still override manually)
+  useEffect(() => {
+    if (propertyAttomYearBuilt) {
+      const age = new Date().getFullYear() - propertyAttomYearBuilt;
+      if (age > 0 && age < 150) {
+        setAssumptions((a) => ({ ...a, ageYears: age }));
+      }
+    }
+  }, [propertyAttomYearBuilt]);
 
   useEffect(() => {
     const s = localStorage.getItem("roofai.staff");
@@ -353,7 +364,10 @@ export default function HomePage() {
                 metaBadges={mapBadges}
               />
             </div>
-            <PropertyContextPanel address={address} />
+            <PropertyContextPanel
+              address={address}
+              onProperty={(p) => setPropertyAttomYearBuilt(p?.yearBuilt ?? null)}
+            />
             <div className="glass rounded-2xl p-5 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="font-display font-semibold tracking-tight">Customer & Notes</div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Cloud, Wind, Droplets, Film, Loader2, Play } from "lucide-react";
+import { Cloud, Wind, Droplets, Film, Loader2, Play, Building2, Calendar, Home } from "lucide-react";
 import type { AddressInfo } from "@/types/estimate";
 
 interface Weather {
@@ -19,11 +19,29 @@ interface Aerial {
   image?: string;
 }
 
-export default function PropertyContextPanel({ address }: { address: AddressInfo | null }) {
+interface AttomProperty {
+  storyCount: number | null;
+  yearBuilt: number | null;
+  buildingSqft: number | null;
+  lotSqft: number | null;
+  beds: number | null;
+  baths: number | null;
+  propertyType: string | null;
+}
+
+type Props = {
+  address: AddressInfo | null;
+  /** Bubble ATTOM property data up so the rest of the page can use it */
+  onProperty?: (p: AttomProperty | null) => void;
+};
+
+export default function PropertyContextPanel({ address, onProperty }: Props) {
   const [weather, setWeather] = useState<Weather | null>(null);
   const [aerial, setAerial] = useState<Aerial | null>(null);
   const [aerialLoading, setAerialLoading] = useState(false);
   const [showVideo, setShowVideo] = useState(false);
+  const [property, setProperty] = useState<AttomProperty | null>(null);
+  const [propertyError, setPropertyError] = useState<string>("");
 
   useEffect(() => {
     if (!address?.lat || !address?.lng) return;
@@ -32,6 +50,27 @@ export default function PropertyContextPanel({ address }: { address: AddressInfo
       .then((d) => d && setWeather(d))
       .catch(() => {});
   }, [address?.lat, address?.lng]);
+
+  useEffect(() => {
+    if (!address?.formatted || !address?.lat) return;
+    setProperty(null);
+    setPropertyError("");
+    const url = `/api/property?address=${encodeURIComponent(address.formatted)}&lat=${address.lat}&lng=${address.lng}`;
+    fetch(url)
+      .then(async (r) => {
+        if (r.ok) return r.json();
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data.error ?? `property_${r.status}`);
+      })
+      .then((d: AttomProperty) => {
+        setProperty(d);
+        onProperty?.(d);
+      })
+      .catch((err) => {
+        setPropertyError(err instanceof Error ? err.message : "failed");
+        onProperty?.(null);
+      });
+  }, [address?.formatted, address?.lat, address?.lng, onProperty]);
 
   const requestAerial = async () => {
     if (!address?.formatted) return;
@@ -72,6 +111,56 @@ export default function PropertyContextPanel({ address }: { address: AddressInfo
         </button>
       </div>
 
+      {/* ATTOM property facts */}
+      {property && (
+        <div className="grid grid-cols-3 gap-1.5">
+          <Stat
+            icon={<Building2 size={12} />}
+            value={property.storyCount != null ? `${property.storyCount}` : "—"}
+            label={(property.storyCount ?? 0) === 1 ? "story" : "stories"}
+          />
+          <Stat
+            icon={<Calendar size={12} />}
+            value={property.yearBuilt ? String(property.yearBuilt) : "—"}
+            label="built"
+          />
+          <Stat
+            icon={<Home size={12} />}
+            value={property.buildingSqft ? property.buildingSqft.toLocaleString() : "—"}
+            unit="sf"
+            label="house"
+          />
+        </div>
+      )}
+
+      {(property?.beds != null || property?.baths != null || property?.lotSqft) && (
+        <div className="rounded-xl border border-white/[0.05] bg-white/[0.015] px-3 py-2 flex items-center justify-between text-[11.5px]">
+          <span className="text-slate-400 font-mono">
+            {property?.propertyType ?? "Residential"}
+          </span>
+          <div className="flex items-center gap-3 font-mono tabular text-slate-300">
+            {property?.beds != null && <span>{property.beds} bd</span>}
+            {property?.baths != null && <span>{property.baths} ba</span>}
+            {property?.lotSqft && (
+              <span>
+                {property.lotSqft >= 43_560
+                  ? `${(property.lotSqft / 43_560).toFixed(2)} ac`
+                  : `${property.lotSqft.toLocaleString()} sf lot`}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!property && propertyError && (
+        <div className="text-[10.5px] text-slate-500 italic">
+          {propertyError === "not_found"
+            ? "ATTOM has no record for this address."
+            : "Property data unavailable."}
+        </div>
+      )}
+
+      {/* Weather */}
       {weather && (
         <div className="grid grid-cols-3 gap-1.5">
           <Stat
