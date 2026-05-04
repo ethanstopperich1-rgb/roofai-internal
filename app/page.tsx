@@ -364,110 +364,126 @@ export default function HomePage() {
       {!shown && <EmptyState />}
 
       {shown && (
-        <div className="grid lg:grid-cols-3 gap-6 float-in">
-          <div className="lg:col-span-2 space-y-6">
-            <ResultsPanel
-              address={estimate.address}
-              assumptions={assumptions}
-              total={total}
-              baseLow={estimate.baseLow}
-              baseHigh={estimate.baseHigh}
-              isInsuranceClaim={isInsuranceClaim}
-              onInsuranceChange={setIsInsuranceClaim}
+        <>
+          {/* ─── Map hero — satellite + Street View, full width ─────────── */}
+          <section className="relative h-[640px] float-in">
+            <MapView
+              lat={address?.lat}
+              lng={address?.lng}
+              address={address?.formatted}
+              segments={activePolygons}
+              penetrations={vision?.penetrations}
+              metaBadges={mapBadges}
             />
-            <VisionPanel vision={vision} loading={visionLoading} error={visionError} />
-            <TiersPanel assumptions={assumptions} addOns={addOns} onApplyTier={applyTier} />
-            <MeasurementsPanel
-              lengths={lengths}
-              waste={waste}
-              defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
-            />
-            <LineItemsPanel
-              detailed={detailed}
-              defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
-              alwaysShowXactimate={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
-            />
-            <div className="grid md:grid-cols-2 gap-6">
-              <AssumptionsEditor value={assumptions} onChange={setAssumptions} />
-              <AddOnsPanel addOns={addOns} onChange={setAddOns} />
-            </div>
-          </div>
-          <div className="space-y-6">
-            <div className="h-[440px] relative">
-              <MapView
-                lat={address?.lat}
-                lng={address?.lng}
-                address={address?.formatted}
-                segments={activePolygons}
-                penetrations={vision?.penetrations}
-                metaBadges={mapBadges}
-              />
-              {address?.lat && (
-                <div className="absolute right-3 top-3 z-10">
-                  <button
-                    onClick={refineOutline}
-                    disabled={refining}
-                    className="btn btn-ghost py-1.5 px-3 text-[11px] backdrop-blur"
+            {address?.lat && (
+              <div className="absolute right-3 top-3 z-10 flex flex-col items-end gap-2">
+                <button
+                  onClick={refineOutline}
+                  disabled={refining}
+                  className="btn btn-ghost py-2 px-3.5 text-[12px] backdrop-blur"
+                  style={{
+                    background: "rgba(15, 19, 26, 0.78)",
+                    borderColor: refinedPolygons
+                      ? "rgba(95, 227, 176, 0.55)"
+                      : "rgba(95, 227, 176, 0.35)",
+                  }}
+                >
+                  {refining ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Sparkle size={12} className="text-mint" />
+                  )}
+                  {refining
+                    ? "Tracing roof…"
+                    : refinedPolygons
+                      ? `SAM · ${refinedPolygons.length} facets`
+                      : "Refine outline (SAM)"}
+                </button>
+                {refineError && (
+                  <div
+                    className="max-w-[260px] rounded-lg border px-3 py-2 text-[11px] backdrop-blur"
                     style={{
-                      background: "rgba(15, 19, 26, 0.75)",
-                      borderColor: "rgba(95, 227, 176, 0.35)",
+                      background: "rgba(60, 16, 24, 0.78)",
+                      borderColor: "rgba(244, 63, 94, 0.35)",
+                      color: "#fda4af",
                     }}
                   >
-                    {refining ? (
-                      <Loader2 size={11} className="animate-spin" />
-                    ) : (
-                      <Sparkle size={11} className="text-mint" />
-                    )}
-                    {refining
-                      ? "Tracing roof..."
-                      : refinedPolygons
-                        ? "Re-trace"
-                        : "Refine outline (SAM)"}
-                  </button>
-                </div>
-              )}
-            </div>
-            {refineError && (
-              <div className="rounded-xl border border-rose/20 bg-rose/[0.06] px-4 py-2.5 text-[12px] text-rose">
-                {refineError === "no_polygons"
-                  ? "Couldn't extract a clean roof outline from this property."
-                  : refineError === "Missing REPLICATE_API_TOKEN"
-                    ? "Set REPLICATE_API_TOKEN in .env.local to enable SAM refinement."
-                    : `Refinement failed: ${refineError}`}
+                    {refineError === "no_polygons"
+                      ? "Couldn't extract a clean roof outline."
+                      : refineError === "Missing REPLICATE_API_TOKEN"
+                        ? "Set REPLICATE_API_TOKEN in .env.local."
+                        : `Refinement failed: ${refineError}`}
+                  </div>
+                )}
               </div>
             )}
-            <PropertyContextPanel
-              address={address}
-              onProperty={(p) => setPropertyAttomYearBuilt(p?.yearBuilt ?? null)}
-            />
-            <div className="glass rounded-2xl p-5 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="font-display font-semibold tracking-tight">Customer & Notes</div>
-                <span className="label">internal only</span>
-              </div>
-              <input
-                className="input"
-                placeholder="Customer name"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
+          </section>
+
+          {/* ─── Headline price card — full width ──────────────────────── */}
+          <ResultsPanel
+            address={estimate.address}
+            assumptions={assumptions}
+            total={total}
+            baseLow={estimate.baseLow}
+            baseHigh={estimate.baseHigh}
+            isInsuranceClaim={isInsuranceClaim}
+            onInsuranceChange={setIsInsuranceClaim}
+          />
+
+          {/* ─── Two-col grid for everything else ─────────────────────── */}
+          <div className="grid lg:grid-cols-3 gap-6 float-in">
+            <div className="lg:col-span-2 space-y-6">
+              <VisionPanel vision={vision} loading={visionLoading} error={visionError} />
+              <TiersPanel assumptions={assumptions} addOns={addOns} onApplyTier={applyTier} />
+              <MeasurementsPanel
+                lengths={lengths}
+                waste={waste}
+                defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
               />
-              <textarea
-                className="input"
-                placeholder="Notes…"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
+              <LineItemsPanel
+                detailed={detailed}
+                defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
+                alwaysShowXactimate={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
               />
-            </div>
-            <div className="glass rounded-2xl p-5 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="font-display font-semibold tracking-tight">Output</div>
-                <span className="label">deliver</span>
+              <div className="grid md:grid-cols-2 gap-6">
+                <AssumptionsEditor value={assumptions} onChange={setAssumptions} />
+                <AddOnsPanel addOns={addOns} onChange={setAddOns} />
               </div>
-              <OutputButtons estimate={estimate} />
             </div>
-            <InsightsPanel estimate={estimate} />
+            <div className="space-y-6">
+              <PropertyContextPanel
+                address={address}
+                onProperty={(p) => setPropertyAttomYearBuilt(p?.yearBuilt ?? null)}
+              />
+              <div className="glass rounded-2xl p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="font-display font-semibold tracking-tight">Customer & Notes</div>
+                  <span className="label">internal only</span>
+                </div>
+                <input
+                  className="input"
+                  placeholder="Customer name"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                />
+                <textarea
+                  className="input"
+                  placeholder="Notes…"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                />
+              </div>
+              <div className="glass rounded-2xl p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="font-display font-semibold tracking-tight">Output</div>
+                  <span className="label">deliver</span>
+                </div>
+                <OutputButtons estimate={estimate} />
+              </div>
+              <InsightsPanel estimate={estimate} />
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );

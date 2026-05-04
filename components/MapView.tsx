@@ -164,7 +164,7 @@ export default function MapView({
 
   const ready = lat != null && lng != null;
   return (
-    <div className="grid grid-rows-2 gap-3 h-full">
+    <div className="grid grid-rows-[2.4fr_1fr] gap-3 h-full">
       <Tile
         ready={ready}
         elRef={mapEl}
