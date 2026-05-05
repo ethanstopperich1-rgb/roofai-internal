@@ -63,6 +63,7 @@ import {
   polygonCoversFootprint,
   polygonsCoverFootprint,
   polygonAreaSqft,
+  polygonIoU,
 } from "@/lib/polygon";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
@@ -488,6 +489,102 @@ export default function HomePage() {
     !polygonReady &&
     polygonSource !== "none";
 
+  // Cross-source consensus. Compute IoU between the active polygon and
+  // every OTHER valid source's polygon — when multiple independent
+  // detectors converge on the same shape, that's the strongest signal
+  // we have that the polygon is correct. Also cheap insurance against
+  // a single source being misled by fence lines / yard perimeters,
+  // since unrelated detectors are unlikely to make the same mistake.
+  const consensusInfo = useMemo<{
+    agreeingSources: number;
+    bestIoU: number;
+    sources: Array<{ name: string; iou: number }>;
+  }>(() => {
+    const empty = { agreeingSources: 0, bestIoU: 0, sources: [] };
+    if (!activePolygons || activePolygons.length === 0) return empty;
+    const primary = activePolygons[0];
+    if (!primary || primary.length < 3) return empty;
+    const candidates: Array<{ name: string; poly: Array<{ lat: number; lng: number }> | null }> = [
+      { name: "solar-mask", poly: validSolarMask },
+      { name: "roboflow", poly: validRoboflow },
+      { name: "sam", poly: validSam },
+      { name: "osm", poly: validOsm },
+      { name: "microsoft-buildings", poly: validMsBuilding },
+      { name: "ai", poly: validClaude },
+    ];
+    const sources: Array<{ name: string; iou: number }> = [];
+    let bestIoU = 0;
+    for (const c of candidates) {
+      if (!c.poly) continue;
+      // Skip self — comparing the active polygon against itself is 1.0
+      // and adds no information.
+      if (c.poly === primary) continue;
+      const iou = polygonIoU(primary, c.poly);
+      sources.push({ name: c.name, iou });
+      if (iou > bestIoU) bestIoU = iou;
+    }
+    const AGREE_THRESHOLD = 0.7;
+    const agreeingSources = sources.filter((s) => s.iou >= AGREE_THRESHOLD).length;
+    return { agreeingSources, bestIoU, sources };
+  }, [
+    activePolygons,
+    validSolarMask,
+    validRoboflow,
+    validSam,
+    validOsm,
+    validMsBuilding,
+    validClaude,
+  ]);
+
+  // Composite confidence for the rep. "high" / "moderate" / "low".
+  // Inputs:
+  //   • Cross-source consensus (3+ agreeing sources is strong; 2 is OK)
+  //   • Multi-view Claude verdict (ok=true conf>0.85 is strong; ok=false
+  //     high-conf collapses to low — that polygon is bad)
+  //   • Source identity (rep edits = high; "ai" last-resort = low)
+  //   • Reference footprint signal (Solar provided = better calibration)
+  const estimateConfidence = useMemo<{
+    level: "high" | "moderate" | "low";
+    rationale: string;
+  }>(() => {
+    if (polygonSource === "edited") {
+      return { level: "high", rationale: "Rep verified by hand" };
+    }
+    if (polygonSource === "none") {
+      return { level: "low", rationale: "No polygon detected" };
+    }
+    const claudeV =
+      polygonSource && claudeVerifications[polygonSource];
+    // Hard fail on a high-confidence rejection from Claude.
+    if (claudeV && !claudeV.ok && claudeV.confidence >= 0.7) {
+      return { level: "low", rationale: `Verifier rejected: ${claudeV.reason || "polygon does not match roof"}` };
+    }
+    const claudeStrong = !!(claudeV && claudeV.ok && claudeV.confidence >= 0.85);
+    const claudeMod = !!(claudeV && claudeV.ok && claudeV.confidence >= 0.6);
+    if (consensusInfo.agreeingSources >= 3 || (claudeStrong && consensusInfo.agreeingSources >= 1)) {
+      return {
+        level: "high",
+        rationale: `${consensusInfo.agreeingSources + 1} sources agree${claudeStrong ? " · verifier passed" : ""}`,
+      };
+    }
+    if (consensusInfo.agreeingSources >= 2 || claudeStrong || (claudeMod && consensusInfo.agreeingSources >= 1)) {
+      return {
+        level: "moderate",
+        rationale: `${consensusInfo.agreeingSources + 1} sources agree${claudeMod ? " · verifier passed" : ""}`,
+      };
+    }
+    if (polygonSource === "ai") {
+      return { level: "low", rationale: "AI fallback (other sources unavailable)" };
+    }
+    if (consensusInfo.agreeingSources === 0 && consensusInfo.sources.length > 0) {
+      return {
+        level: "low",
+        rationale: `Sources disagree (best IoU ${consensusInfo.bestIoU.toFixed(2)})`,
+      };
+    }
+    return { level: "moderate", rationale: "Single-source polygon" };
+  }, [polygonSource, claudeVerifications, consensusInfo]);
+
   // Single-image Claude verification was previously triggered here from
   // /api/verify-polygon. That endpoint still exists as a fallback but the
   // 3D viewer now drives multi-view verification via Roof3DViewer's
@@ -901,6 +998,15 @@ export default function HomePage() {
     else if (samRefining) badges.push("Refining…");
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
     if (solar?.pitch) badges.push(`Pitch ${solar.pitch}`);
+    // Confidence indicator — lets the rep tell at a glance whether the
+    // outline is well-supported (multiple sources agreed + Claude
+    // verified) or whether they should manually double-check it.
+    if (polygonReady && polygonSource !== "none") {
+      const lvl = estimateConfidence.level;
+      const marker = lvl === "high" ? "✓" : lvl === "moderate" ? "△" : "⚠";
+      const label = lvl === "high" ? "High conf" : lvl === "moderate" ? "Moderate conf" : "Low conf — review";
+      badges.push(`${marker} ${label}`);
+    }
     return badges;
   })();
 

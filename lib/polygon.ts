@@ -2,7 +2,11 @@
  * Pure-client polygon utilities — orthogonalization, simplification, etc.
  * Lives in its own module (separate from grounded-sam.ts) so the client
  * bundle doesn't pull in `sharp` / `replicate` Node-only deps.
+ *
+ * `polygon-clipping` (used for IoU below) IS pure JS / browser-safe, so
+ * it's fine to import here.
  */
+import polygonClipping from "polygon-clipping";
 
 /**
  * Geodesic polygon area in m² via shoelace (lat/lng → meters via cosLat
@@ -34,6 +38,93 @@ export function polygonAreaSqft(
   poly: Array<{ lat: number; lng: number }>,
 ): number {
   return polygonAreaM2(poly) * 10.7639;
+}
+
+/**
+ * Intersection-over-union (Jaccard) of two lat/lng polygons. Returns 0..1.
+ *
+ * Both polygons are projected to local meters around the first polygon's
+ * centroid before the clipping math, so cosLat distortion isn't a factor.
+ * Used to detect when multiple sources (Roboflow, Solar mask, OSM, MS
+ * Buildings, etc.) produce nearly-identical polygons — high pairwise
+ * IoU is the strongest single signal that the polygon is correct.
+ */
+export function polygonIoU(
+  a: Array<{ lat: number; lng: number }> | null | undefined,
+  b: Array<{ lat: number; lng: number }> | null | undefined,
+): number {
+  if (!a || a.length < 3 || !b || b.length < 3) return 0;
+  // Project both polygons into a shared local meters frame centred on
+  // a's centroid. (Centroid choice doesn't affect IoU — IoU is
+  // translation-invariant — but it keeps the coordinates small and
+  // numerically stable for polygon-clipping.)
+  let cLat = 0;
+  let cLng = 0;
+  for (const v of a) {
+    cLat += v.lat;
+    cLng += v.lng;
+  }
+  cLat /= a.length;
+  cLng /= a.length;
+  const cosLat = Math.cos((cLat * Math.PI) / 180);
+  const M_PER_DEG_LAT = 111_320;
+
+  const project = (
+    poly: Array<{ lat: number; lng: number }>,
+  ): Array<[number, number]> => {
+    const ring: Array<[number, number]> = poly.map((v) => [
+      (v.lng - cLng) * M_PER_DEG_LAT * cosLat,
+      (v.lat - cLat) * M_PER_DEG_LAT,
+    ]);
+    // close ring (polygon-clipping requires)
+    ring.push(ring[0]);
+    return ring;
+  };
+
+  const aRing = project(a);
+  const bRing = project(b);
+
+  const ringAbsArea = (ring: Array<[number, number]>): number => {
+    let sum = 0;
+    for (let i = 0; i < ring.length - 1; i++) {
+      sum +=
+        ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+    }
+    return Math.abs(sum) / 2;
+  };
+
+  // polygon-clipping returns MultiPolygon: Polygon[][] = Ring[][][]
+  type MP = ReturnType<typeof polygonClipping.intersection>;
+  const totalArea = (mp: MP): number => {
+    let total = 0;
+    for (const polygon of mp) {
+      // First ring is outer, subsequent are holes (subtract).
+      let outer = 0;
+      let holes = 0;
+      polygon.forEach((ring, idx) => {
+        const aArea = ringAbsArea(ring as Array<[number, number]>);
+        if (idx === 0) outer += aArea;
+        else holes += aArea;
+      });
+      total += outer - holes;
+    }
+    return total;
+  };
+
+  let intersectionArea = 0;
+  let unionArea = 0;
+  try {
+    const inter = polygonClipping.intersection([aRing], [bRing]);
+    const uni = polygonClipping.union([aRing], [bRing]);
+    intersectionArea = totalArea(inter);
+    unionArea = totalArea(uni);
+  } catch {
+    // Degenerate polygon (self-intersecting, etc.) — return 0 rather
+    // than throwing.
+    return 0;
+  }
+  if (unionArea <= 0) return 0;
+  return Math.max(0, Math.min(1, intersectionArea / unionArea));
 }
 
 /**
