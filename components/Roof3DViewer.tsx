@@ -430,17 +430,13 @@ export default function Roof3DViewer({
           const sampled = await viewer.scene.sampleHeightMostDetailed([
             Cesium.Cartographic.fromDegrees(lng, lat, 0),
           ]);
-          if (
-            !cancelled &&
-            sampled.length > 0 &&
-            typeof sampled[0].height === "number" &&
-            isFinite(sampled[0].height)
-          ) {
-            // sampled.height is mesh surface (roof if address sits on the
+          const h = sampled[0]?.height;
+          if (!cancelled && typeof h === "number" && isFinite(h)) {
+            // sampled height is mesh surface (roof if address sits on the
             // building) — nudge a couple meters down so the pivot is
             // closer to the building's vertical center, which feels more
             // natural when tilting around it.
-            pivotAltitudeRef.current = sampled[0].height - 2;
+            pivotAltitudeRef.current = h - 2;
           }
         } catch {
           /* fall through with default 200m — visible misalignment, but
