@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Layers, Receipt } from "lucide-react";
 import type { DetailedEstimate } from "@/types/estimate";
 import { fmt } from "@/lib/pricing";
@@ -20,6 +20,20 @@ export default function LineItemsPanel({
 }: Props) {
   const [open, setOpen] = useState(defaultOpen);
   const [view, setView] = useState<View>(alwaysShowXactimate ? "detailed" : "summary");
+  // Auto-open / auto-switch-to-detailed when the relevant prop flips
+  // from false → true (e.g. rep enables insurance claim mode). Without
+  // these the panel stayed collapsed / summary-view because state was
+  // initialised once at mount.
+  const prevDefaultOpenRef = useRef(defaultOpen);
+  useEffect(() => {
+    if (!prevDefaultOpenRef.current && defaultOpen) setOpen(true);
+    prevDefaultOpenRef.current = defaultOpen;
+  }, [defaultOpen]);
+  const prevAlwaysShowRef = useRef(alwaysShowXactimate);
+  useEffect(() => {
+    if (!prevAlwaysShowRef.current && alwaysShowXactimate) setView("detailed");
+    prevAlwaysShowRef.current = alwaysShowXactimate;
+  }, [alwaysShowXactimate]);
 
   return (
     <div className="glass rounded-3xl p-6">

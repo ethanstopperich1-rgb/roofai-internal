@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Ruler, Layers } from "lucide-react";
 import type { RoofLengths, WasteTable } from "@/types/estimate";
 
@@ -34,6 +34,15 @@ const SOURCE_BADGE: Record<RoofLengths["source"], { label: string; cls: string }
 
 export default function MeasurementsPanel({ lengths, waste, defaultOpen = false }: Props) {
   const [open, setOpen] = useState(defaultOpen);
+  // When defaultOpen flips false → true (e.g. rep toggles insurance
+  // mode), auto-open the panel so the rep doesn't have to expand it
+  // manually. Don't auto-close on the reverse — they may still want to
+  // see it.
+  const prevDefaultRef = useRef(defaultOpen);
+  useEffect(() => {
+    if (!prevDefaultRef.current && defaultOpen) setOpen(true);
+    prevDefaultRef.current = defaultOpen;
+  }, [defaultOpen]);
   const badge = SOURCE_BADGE[lengths.source];
 
   return (
