@@ -16,6 +16,7 @@ import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
 import RoofBlueprint from "@/components/RoofBlueprint";
 import PolygonSizeWarning from "@/components/PolygonSizeWarning";
+import OutlineQualityWarning from "@/components/OutlineQualityWarning";
 import PhotoUploadPanel from "@/components/PhotoUploadPanel";
 import ImageryStormBanner from "@/components/ImageryStormBanner";
 import CarrierClaimPanel from "@/components/CarrierClaimPanel";
@@ -1211,6 +1212,44 @@ export default function HomePage() {
             lat={address?.lat}
             lng={address?.lng}
           />
+
+          {/* ─── Outline accuracy warning — surfaces low / moderate
+                confidence + Claude's specific issues to the rep so they
+                know what to check. Hidden when high-confidence. */}
+          {polygonReady && polygonSource !== "none" && (
+            <OutlineQualityWarning
+              level={estimateConfidence.level}
+              rationale={estimateConfidence.rationale}
+              issues={
+                polygonSource && claudeVerifications[polygonSource]?.issues
+                  ? (claudeVerifications[polygonSource]!.issues ?? [])
+                  : []
+              }
+              sourceLabel={
+                polygonSource === "solar-mask"
+                  ? "Solar mask"
+                  : polygonSource === "roboflow"
+                    ? "Roof AI"
+                    : polygonSource === "sam"
+                      ? "SAM 2"
+                      : polygonSource === "osm"
+                        ? "OSM"
+                        : polygonSource === "microsoft-buildings"
+                          ? "MS Footprints"
+                          : polygonSource === "ai"
+                            ? "Claude vision"
+                            : polygonSource === "solar"
+                              ? "Solar facets"
+                              : polygonSource === "edited"
+                                ? "Edited"
+                                : undefined
+              }
+              onManualEdit={() => {
+                const map = document.querySelector(".gm-style");
+                map?.scrollIntoView({ behavior: "smooth", block: "center" });
+              }}
+            />
+          )}
 
           {/* ─── Polygon size sanity check ──────────────────────────────── */}
           <PolygonSizeWarning
