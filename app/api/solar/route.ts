@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Pitch, SolarSegment, SolarSummary } from "@/types/estimate";
 import { getCached, setCached } from "@/lib/cache";
+import { rotateAllFacets } from "@/lib/solar-facets";
 
 export const runtime = "nodejs";
 
@@ -112,13 +113,15 @@ export async function GET(req: Request) {
       totalArea
     : null;
 
-  // Solar `findClosest` only returns axis-aligned bounding boxes per
-  // facet — drawing those as roof polygons looks visibly wrong on any
-  // home that isn't north-aligned. We keep `segmentCount` / `pitch` /
-  // `sqft` from this endpoint (those are accurate metadata) and let the
-  // SAM × OSM pipeline produce the actual polygon. To get true per-facet
-  // polygons from Solar we'd need `dataLayers:get` (DSM raster) — TODO.
-  const segmentPolygonsLatLng: Array<Array<{ lat: number; lng: number }>> = [];
+  // Solar `findClosest` returns axis-aligned bounding boxes per facet —
+  // visibly wrong on non-north-aligned homes if rendered as-is. Rotate
+  // each bbox by the building's dominant axis (computed below) so each
+  // rectangle aligns with its actual roof face. Still rectangles (won't
+  // match L-shapes or triangular hip facets), but structurally correct
+  // enough that the priority chain can fall back to Solar facets when
+  // Roboflow / SAM are demoted.
+  // Populated after we know `dominantAzimuthDeg` — see below.
+  let segmentPolygonsLatLng: Array<Array<{ lat: number; lng: number }>> = [];
 
   const buildingFootprintM2 = stats?.wholeRoofStats?.groundAreaMeters2 ?? null;
   const buildingFootprintSqft =
@@ -140,6 +143,9 @@ export async function GET(req: Request) {
     },
   }));
 
+  const dominantAzimuthDeg = dominantAzimuth(enrichedSegments);
+  segmentPolygonsLatLng = rotateAllFacets(enrichedSegments, dominantAzimuthDeg);
+
   const summary: SolarSummary = {
     sqft: totalRoofSqft,
     pitch: degreesToPitch(avgPitchDeg),
@@ -150,7 +156,7 @@ export async function GET(req: Request) {
     imageryDate: imageryDateString(data?.imageryDate),
     segmentPolygonsLatLng,
     segments: enrichedSegments,
-    dominantAzimuthDeg: dominantAzimuth(enrichedSegments),
+    dominantAzimuthDeg,
     maxArrayPanels: stats?.maxArrayPanelsCount ?? null,
     yearlyKwhPotential: stats?.maxSunshineHoursPerYear ?? null,
   };

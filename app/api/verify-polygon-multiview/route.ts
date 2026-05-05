@@ -52,6 +52,12 @@ VERIFY whether the red polygon correctly outlines the SINGLE target house at the
   • Polygon covers the FULL roof of the target building (no missed wings/sections)
   • Polygon doesn't include detached structures (separate sheds, pool houses, neighbour buildings)
 
+CRITICAL FAILURE MODES — return ok:false with high confidence (>0.85) if you see any of these:
+  • Polygon outlines the YARD or LOT PERIMETER, not the house roof. Common when the segmenter latches onto fence lines or lawn edges. Tell-tale signs: red outline runs along fences, hedges, driveway edges; encloses grass / pool / patio / driveway as well as the house; the polygon is much larger than the actual roof in the obliques.
+  • Polygon traces a backyard FENCE — straight parallel runs along the property boundary that don't correspond to any roof eave. Look at the obliques: if the red line sits at ground level rather than at the eave height, it's on a fence.
+  • Polygon outlines a DRIVEWAY, deck, or pool. Hard surfaces are NOT roofs.
+  • Polygon spans MULTIPLE buildings (roof + detached garage + shed) when the rep needs just the main house.
+
 Return ONLY this strict JSON, no preamble, no markdown fences:
 {
   "ok": <boolean>,

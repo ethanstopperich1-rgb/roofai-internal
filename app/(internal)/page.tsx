@@ -62,6 +62,7 @@ import {
   polygonIsNearAddress,
   polygonCoversFootprint,
   polygonsCoverFootprint,
+  polygonAreaSqft,
 } from "@/lib/polygon";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
@@ -304,21 +305,44 @@ export default function HomePage() {
     return true;
   };
 
-  // Pattern D: footprint-coverage check. A roof segmenter (Roboflow / SAM)
-  // or Claude can latch onto the high-contrast center section and miss
-  // adjoining wings — the polygon passes both the wrong-house guard
-  // (contains the address) and Pattern A (points at roof height) but only
-  // covers ~20% of the building. Demote when polygon footprint is < 55%
-  // of Solar's `buildingFootprintSqft` (which Solar derives from its DSM
-  // and is ~ground truth for the main building). Skipped when Solar has
-  // no footprint signal — we don't penalize sources for Solar gaps.
+  // Footprint-coverage gate. Two failure modes:
+  //   • UNDER-trace: segmenter caught one center section, missed wings.
+  //     Polygon is < 55% of expected building footprint.
+  //   • OVER-trace: segmenter followed fence / yard / driveway. Polygon
+  //     is > 1.6× expected footprint (real eave overhang adds ~10–15%).
+  //
+  // Reference: prefer Solar's `buildingFootprintSqft` (DSM-derived,
+  // closest to ground truth). When Solar has no footprint signal, fall
+  // back to MS Buildings polygon area, then OSM polygon area — both are
+  // pre-curated building footprints. Only when ALL three are missing
+  // do we ship without coverage gating (rural last-resort).
+  //
+  // The reference source is excluded from being gated against itself
+  // (otherwise it's circular). Other sources still get gated against it.
   const solarFootprintSqft = solar?.buildingFootprintSqft ?? null;
+  const msFootprintSqft =
+    validMsBuilding ? polygonAreaSqft(validMsBuilding) : null;
+  const osmFootprintSqft = validOsm ? polygonAreaSqft(validOsm) : null;
+  const referenceFootprintSqft =
+    (solarFootprintSqft && solarFootprintSqft >= 100 ? solarFootprintSqft : null) ??
+    (msFootprintSqft && msFootprintSqft >= 100 ? msFootprintSqft : null) ??
+    (osmFootprintSqft && osmFootprintSqft >= 100 ? osmFootprintSqft : null);
+  // Which source (if any) IS the reference — that source skips the gate
+  // because comparing it to itself always passes (and is meaningless).
+  const referenceSource: "solar" | "ms" | "osm" | null =
+    solarFootprintSqft && solarFootprintSqft >= 100
+      ? "solar"
+      : msFootprintSqft && msFootprintSqft >= 100
+        ? "ms"
+        : osmFootprintSqft && osmFootprintSqft >= 100
+          ? "osm"
+          : null;
   const passesCoverage = (
     poly: Array<{ lat: number; lng: number }> | null | undefined,
-  ) => polygonCoversFootprint(poly, solarFootprintSqft, 0.55);
+  ) => polygonCoversFootprint(poly, referenceFootprintSqft, 0.55);
   const passesCoverageMulti = (
     polys: Array<Array<{ lat: number; lng: number }>> | null | undefined,
-  ) => polygonsCoverFootprint(polys, solarFootprintSqft, 0.55);
+  ) => polygonsCoverFootprint(polys, referenceFootprintSqft, 0.55);
 
   // Polygon source priority — best-quality first.
   //
@@ -377,8 +401,13 @@ export default function HomePage() {
     if (validRoboflow && passesClaude("roboflow") && passesCoverage(validRoboflow) && passesMsHallucinationCheck(validRoboflow)) return "roboflow";
     if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1 && passesCoverageMulti(solar.segmentPolygonsLatLng)) return "solar";
     if (validSam && passesClaude("sam") && passesCoverage(validSam)) return "sam";
-    if (validOsm && passesClaude("osm")) return "osm";
-    if (validMsBuilding && passesClaude("microsoft-buildings")) return "microsoft-buildings";
+    // Apply coverage gate to OSM & MS Buildings too — community traces and
+    // ML-extracted footprints are sometimes wrong (yard perimeter, included
+    // outbuildings, etc). When OSM/MS is the reference itself the gate is
+    // self-comparing → trivially passes. Otherwise it catches wrong outlines
+    // by ratio against Solar's footprint or whichever source IS the reference.
+    if (validOsm && passesClaude("osm") && passesCoverage(validOsm)) return "osm";
+    if (validMsBuilding && passesClaude("microsoft-buildings") && passesCoverage(validMsBuilding)) return "microsoft-buildings";
     if (validClaude && passesClaude("ai") && passesCoverage(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
     return "none";
   }, [
@@ -387,7 +416,7 @@ export default function HomePage() {
     validRoboflow,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
-    solarFootprintSqft,
+    referenceFootprintSqft,
     validSam,
     validOsm,
     validMsBuilding,
@@ -414,8 +443,8 @@ export default function HomePage() {
     )
       return solar.segmentPolygonsLatLng;
     if (validSam && passesCoverage(validSam)) return [validSam];
-    if (validOsm) return [validOsm];
-    if (validMsBuilding) return [validMsBuilding];
+    if (validOsm && passesCoverage(validOsm)) return [validOsm];
+    if (validMsBuilding && passesCoverage(validMsBuilding)) return [validMsBuilding];
     if (validClaude && passesCoverage(validClaude)) return [validClaude];
     return undefined;
   }, [
@@ -423,7 +452,7 @@ export default function HomePage() {
     validRoboflow,
     solar?.segmentPolygonsLatLng,
     solar?.segmentCount,
-    solarFootprintSqft,
+    referenceFootprintSqft,
     validSam,
     validOsm,
     validMsBuilding,

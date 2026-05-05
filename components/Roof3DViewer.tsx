@@ -420,23 +420,41 @@ export default function Roof3DViewer({
         });
         if (cancelled) return;
 
-        // Sample the actual mesh height at the address so the orbit pivot
-        // sits on the building, not on the WGS84 ellipsoid 30m above local
-        // ground. Without this, tilting the camera up to the horizon puts
-        // the camera ABOVE the roof, dropping the house to the bottom of
-        // the screen. With pivot at roof level, the camera orbits around
-        // the actual building at every pitch.
+        // Sample the actual mesh height around the address so the orbit
+        // pivot sits on the building, not on the WGS84 ellipsoid 30m+
+        // above local ground. Without this, zoom-in moves the camera up
+        // toward the pivot (above the house) instead of toward the roof,
+        // and tilting up to the horizon drops the house to the bottom of
+        // the screen.
+        //
+        // Sample a 5-point cross around the address (center + 4 offsets
+        // ~6m out) and take the MAX. Buildings are tall, so the highest
+        // sample is almost certainly the roof; if the address geocoded
+        // to the lawn rather than onto the building, one of the offset
+        // points likely sits on a wall/roof and lifts the max.
         try {
+          // ~6m offset in lat/lng terms
+          const dLat = 6 / 111_320;
+          const dLng = 6 / (111_320 * Math.cos((lat * Math.PI) / 180));
           const sampled = await viewer.scene.sampleHeightMostDetailed([
             Cesium.Cartographic.fromDegrees(lng, lat, 0),
+            Cesium.Cartographic.fromDegrees(lng + dLng, lat, 0),
+            Cesium.Cartographic.fromDegrees(lng - dLng, lat, 0),
+            Cesium.Cartographic.fromDegrees(lng, lat + dLat, 0),
+            Cesium.Cartographic.fromDegrees(lng, lat - dLat, 0),
           ]);
-          const h = sampled[0]?.height;
-          if (!cancelled && typeof h === "number" && isFinite(h)) {
-            // sampled height is mesh surface (roof if address sits on the
-            // building) — nudge a couple meters down so the pivot is
-            // closer to the building's vertical center, which feels more
-            // natural when tilting around it.
-            pivotAltitudeRef.current = h - 2;
+          let maxH: number | null = null;
+          for (const pt of sampled) {
+            const h = pt?.height;
+            if (typeof h === "number" && isFinite(h)) {
+              if (maxH == null || h > maxH) maxH = h;
+            }
+          }
+          if (!cancelled && maxH != null) {
+            // Pivot at the highest sampled surface − 2m biases toward the
+            // middle of the building's vertical extent (between eave and
+            // ridge for typical residential roofs).
+            pivotAltitudeRef.current = maxH - 2;
           }
         } catch {
           /* fall through with default 200m — visible misalignment, but
@@ -814,6 +832,16 @@ export default function Roof3DViewer({
         lat,
         lng,
       });
+
+      // captureMultiViewForVerify always exits with lookAtTransform =
+      // IDENTITY (its finally restores camera position + orientation but
+      // not the orbit transform). Without re-establishing lookAt mode on
+      // EVERY exit path, the screen-space camera controller falls back
+      // to free-fly: scroll-zoom moves toward the cursor (often empty
+      // sky above the house) instead of toward the orbit pivot. Always
+      // recenter, then handle the success/failure branches.
+      recenterRef.current?.();
+
       if (cancelled) {
         setIsCapturing(false);
         return;
@@ -828,9 +856,6 @@ export default function Roof3DViewer({
       // so a quick cancel doesn't poison the cache and prevent retry.
       verifiedPolygonRef.current = key;
 
-      // Restore camera framing — captureMultiView restores prior pose,
-      // but recenterRef pulls back to our drone-hover orbit.
-      recenterRef.current?.();
       // Drop the overlay once the camera is back to the orbit pose; the
       // fetch can run in the background while the rep sees the live view.
       setIsCapturing(false);
