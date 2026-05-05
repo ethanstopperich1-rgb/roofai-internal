@@ -38,41 +38,55 @@ export function polygonAreaSqft(
 
 /**
  * Coverage validator: does this polygon cover enough of the building
- * footprint to plausibly be "the whole roof"? Catches the failure mode
- * where a roof segmenter (Roboflow / SAM / Solar bbox) latches onto one
- * dark center section and misses the lighter wings — the polygon would
- * pass Pattern A (points are at roof height) and the wrong-house guard
- * (it contains the address pin), but only covers 20–30% of the actual
- * roof. Compares against Solar API's `buildingFootprintSqft` (top-down
- * ground area of all roof segments Solar measured, ~ground truth).
+ * footprint to plausibly be "the whole roof" — and not WAY MORE than
+ * the building (i.e., traced into the yard / fence perimeter)?
+ *
+ * Two failure modes to catch:
+ *
+ *   1. UNDER-trace: segmenter latches onto one dark center section and
+ *      misses lighter wings. Polygon area < `minRatio` × footprint.
+ *
+ *   2. OVER-trace: segmenter follows fence lines / yard edges instead
+ *      of the actual eave. Polygon area > `maxRatio` × footprint. A
+ *      legitimate roof can be ~10–15% bigger than Solar's footprint
+ *      (eave overhang is 1–3 ft), but 60%+ over indicates yard creep.
+ *
+ * Compares against Solar API's `buildingFootprintSqft` (top-down ground
+ * area, ~ground truth where Solar has DSM coverage).
  *
  * Pitch-corrected: `polygonAreaSqft` is top-down (footprint), so we
  * compare directly against `solarFootprintSqft` without applying
- * 1/cos(pitch). Returns true when the polygon's footprint is at least
- * `minRatio` of Solar's footprint.
+ * 1/cos(pitch). When Solar has no footprint signal, both gates are
+ * skipped — we don't penalize sources for Solar's gaps.
  */
 export function polygonCoversFootprint(
   poly: Array<{ lat: number; lng: number }> | null | undefined,
   solarFootprintSqft: number | null | undefined,
   minRatio: number = 0.55,
+  maxRatio: number = 1.6,
 ): boolean {
   if (!poly || poly.length < 3) return false;
   if (!solarFootprintSqft || solarFootprintSqft < 100) return true; // no signal → don't demote
   const polyFootprintSqft = polygonAreaSqft(poly);
-  return polyFootprintSqft / solarFootprintSqft >= minRatio;
+  const ratio = polyFootprintSqft / solarFootprintSqft;
+  return ratio >= minRatio && ratio <= maxRatio;
 }
 
 /** Sum-of-polygons coverage variant. Solar's facet polygons come back as
- *  multiple disjoint shapes — sum them before comparing. */
+ *  multiple disjoint shapes — sum them before comparing. Same upper
+ *  bound applies: the union of facets shouldn't exceed `maxRatio` of
+ *  the building footprint. */
 export function polygonsCoverFootprint(
   polys: Array<Array<{ lat: number; lng: number }>> | null | undefined,
   solarFootprintSqft: number | null | undefined,
   minRatio: number = 0.55,
+  maxRatio: number = 1.6,
 ): boolean {
   if (!polys || polys.length === 0) return false;
   if (!solarFootprintSqft || solarFootprintSqft < 100) return true;
   const total = polys.reduce((s, p) => s + polygonAreaSqft(p), 0);
-  return total / solarFootprintSqft >= minRatio;
+  const ratio = total / solarFootprintSqft;
+  return ratio >= minRatio && ratio <= maxRatio;
 }
 
 /**
