@@ -1358,10 +1358,48 @@ function polygonVertexComplexity(
 ): number {
   if (!polys || polys.length === 0) return 4;
   if (polys.length > 1) return polys.length;
-  const v = polys[0].length;
-  if (v <= 4) return 2;
-  if (v <= 6) return 3;
-  if (v <= 8) return 4;
-  if (v <= 10) return 5;
-  return 6;
+  const poly = polys[0];
+  if (poly.length < 4) return 2;
+
+  // Count REFLEX vertices (interior angle > 180°). Each reflex vertex
+  // marks a junction between two distinct roof sections — an L-shape has
+  // one reflex vertex (where the L bends), a T-shape has two, etc.
+  // Reflex count is a much better "number of wings" signal than raw
+  // vertex count, which gets confused by jagged segmentation noise.
+  // Project to local meters around centroid for stable cross-products.
+  let cLat = 0;
+  for (const p of poly) cLat += p.lat;
+  cLat /= poly.length;
+  const cosLat = Math.cos((cLat * Math.PI) / 180);
+  const pts = poly.map((p) => ({
+    x: p.lng * 111_320 * cosLat,
+    y: p.lat * 111_320,
+  }));
+  // Polygon orientation via signed shoelace (positive = CCW in this
+  // x-east / y-north frame).
+  let signedArea2 = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    signedArea2 += a.x * b.y - b.x * a.y;
+  }
+  const ccw = signedArea2 > 0;
+  let reflex = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[(i - 1 + pts.length) % pts.length];
+    const cur = pts[i];
+    const next = pts[(i + 1) % pts.length];
+    const cross =
+      (cur.x - prev.x) * (next.y - cur.y) -
+      (cur.y - prev.y) * (next.x - cur.x);
+    // For a CCW polygon, convex turns are positive cross. Reflex = sign
+    // opposite to orientation. (And reverse for CW.)
+    const isReflex = ccw ? cross < 0 : cross > 0;
+    if (isReflex) reflex++;
+  }
+  // Approximate segment count: each "wing" (one reflex separation)
+  // typically contributes ~2 roof facets (front + back). So segments
+  // ≈ 2 × (reflex + 1). Bounded between 2 (simple gable) and 8.
+  const segments = 2 * (reflex + 1);
+  return Math.max(2, Math.min(8, segments));
 }
