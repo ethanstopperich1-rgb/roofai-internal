@@ -245,7 +245,7 @@ export default function MapView({
       // Clear previous polygons, sqft labels, and any in-flight animation timers
       for (const p of polysRef.current) p.setMap(null);
       polysRef.current = [];
-      for (const lm of labelMarkersRef.current) lm.setMap(null);
+      for (const lm of labelMarkersRef.current) lm?.setMap(null);
       labelMarkersRef.current = [];
       for (const t of animTimersRef.current) window.clearTimeout(t);
       animTimersRef.current = [];
@@ -266,6 +266,32 @@ export default function MapView({
         const ANIM_MS = 520;
         const STAGGER_MS = 70;
 
+        const slopeMult =
+          pitchDegrees != null && pitchDegrees > 0 && pitchDegrees < 60
+            ? 1 / Math.cos((pitchDegrees * Math.PI) / 180)
+            : 1.118;
+
+        const buildLabelIcon = (
+          palette: { stroke: string },
+          sqft: number,
+        ): google.maps.Icon => {
+          const label = `${sqft.toLocaleString()} sf`;
+          const textW = label.length * 7.2 + 18;
+          const svg = `
+            <svg xmlns='http://www.w3.org/2000/svg' width='${textW}' height='22'>
+              <rect x='0' y='0' width='${textW}' height='22' rx='11' ry='11'
+                    fill='rgba(7,9,13,0.78)' stroke='${palette.stroke}' stroke-opacity='0.55' stroke-width='1' />
+              <text x='${textW / 2}' y='15' text-anchor='middle'
+                    font-family='ui-monospace,SFMono-Regular,monospace' font-size='11' font-weight='600'
+                    fill='${palette.stroke}'>${label}</text>
+            </svg>
+          `;
+          return {
+            url: `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`,
+            anchor: new g.maps.Point(textW / 2, 11),
+          };
+        };
+
         const broadcast = () => {
           if (!onPolygonsChangedRef.current) return;
           const next = polysRef.current.map((p) => {
@@ -274,6 +300,33 @@ export default function MapView({
             return arr;
           });
           onPolygonsChangedRef.current(next);
+          // Live-update each polygon's floating sqft label so the rep sees
+          // the area recompute as they drag vertices. Without this, the
+          // label kept showing the original (pre-edit) area while the
+          // polygon shape changed underneath.
+          if (g.maps.geometry?.spherical) {
+            polysRef.current.forEach((p, i) => {
+              const lm = labelMarkersRef.current[i];
+              if (!lm) return; // label not yet created (animation delay)
+              const path = p.getPath();
+              const areaM2 = g.maps.geometry.spherical.computeArea(path);
+              const sqft = Math.round(areaM2 * 10.7639 * slopeMult);
+              if (sqft < 200) return;
+              const palette = PALETTE[i % PALETTE.length];
+              lm.setIcon(buildLabelIcon(palette, sqft));
+              let cLat = 0;
+              let cLng = 0;
+              const len = path.getLength();
+              for (let v = 0; v < len; v++) {
+                const pt = path.getAt(v);
+                cLat += pt.lat();
+                cLng += pt.lng();
+              }
+              if (len > 0) {
+                lm.setPosition({ lat: cLat / len, lng: cLng / len });
+              }
+            });
+          }
         };
 
         segments.forEach((path, idx) => {
@@ -326,47 +379,29 @@ export default function MapView({
           const startId = window.setTimeout(tick, startDelay);
           animTimersRef.current.push(startId);
 
-          // Floating sqft label at polygon centroid (after animation finishes)
+          // Floating sqft label at polygon centroid (after animation finishes).
+          // Uses the shared `buildLabelIcon` + `slopeMult` defined above so
+          // initial render and live edits stay visually identical.
           if (g.maps.geometry?.spherical) {
             const areaM2 = g.maps.geometry.spherical.computeArea(path);
-            // Project polygon footprint → roof surface area using the real
-            // pitch when Solar gave us one; otherwise fall back to 6/12
-            // (1 / cos(26.57°) ≈ 1.118).
-            const slopeMult =
-              pitchDegrees != null && pitchDegrees > 0 && pitchDegrees < 60
-                ? 1 / Math.cos((pitchDegrees * Math.PI) / 180)
-                : 1.118;
             const sqft = Math.round(areaM2 * 10.7639 * slopeMult);
             if (sqft >= 200) {
               let cLat = 0, cLng = 0;
               for (const v of path) { cLat += v.lat; cLng += v.lng; }
               cLat /= path.length; cLng /= path.length;
 
-              // Custom inline-SVG label that matches the polygon palette.
-              const label = `${sqft.toLocaleString()} sf`;
-              const textW = label.length * 7.2 + 18;
-              const svg = `
-                <svg xmlns='http://www.w3.org/2000/svg' width='${textW}' height='22'>
-                  <rect x='0' y='0' width='${textW}' height='22' rx='11' ry='11'
-                        fill='rgba(7,9,13,0.78)' stroke='${palette.stroke}' stroke-opacity='0.55' stroke-width='1' />
-                  <text x='${textW / 2}' y='15' text-anchor='middle'
-                        font-family='ui-monospace,SFMono-Regular,monospace' font-size='11' font-weight='600'
-                        fill='${palette.stroke}'>${label}</text>
-                </svg>
-              `;
               const labelDelay = startDelay + ANIM_MS;
               const labelId = window.setTimeout(() => {
                 const lm = new g.maps.Marker({
                   position: { lat: cLat, lng: cLng },
                   map: mapRef.current!,
                   clickable: false,
-                  icon: {
-                    url: `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`,
-                    anchor: new g.maps.Point(textW / 2, 11),
-                  },
+                  icon: buildLabelIcon(palette, sqft),
                   zIndex: 9999,
                 });
-                labelMarkersRef.current.push(lm);
+                // Index-aligned with polysRef so broadcast() can update
+                // each polygon's label on vertex edits.
+                labelMarkersRef.current[idx] = lm;
               }, labelDelay);
               animTimersRef.current.push(labelId);
             }

@@ -540,10 +540,15 @@ export default function HomePage() {
 
   // Whenever the active polygon changes, sync the derived roof area into
   // assumptions.sqft so map label, blueprint label, and line-item engine
-  // all read the same number. Solar API takes precedence — if Solar gave
-  // us a sqft, we trust that and don't override.
+  // all read the same number. Solar API takes precedence on initial load
+  // (Solar's per-facet area is more accurate for multi-pitch roofs than
+  // a single-pitch polygon projection) — but once the rep edits the
+  // polygon, the edit is the truth and we recompute from it. Without
+  // this carve-out, the displayed sqft / line items stayed at Solar's
+  // original number even after the rep redraw the polygon to a smaller
+  // shape.
   useEffect(() => {
-    if (solar?.sqft) return; // Solar already populated assumptions.sqft elsewhere
+    if (solar?.sqft && !livePolygons) return;
     if (!activePolygons || activePolygons.length === 0) return;
     // Shoelace area in m² (lat/lng → meters via cosLat scale)
     const M = 111_320;
