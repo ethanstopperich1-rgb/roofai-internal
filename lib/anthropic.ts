@@ -8,6 +8,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { RoofVision } from "@/types/estimate";
+import { fetchSatelliteImage as fetchTile } from "./satellite-tile";
 
 const MODEL = "claude-sonnet-4-6";
 
@@ -309,7 +310,9 @@ Scoring:
 }
 
 /**
- * Fetch the satellite tile from Google Static Maps and return base64.
+ * Fetch the satellite tile for the property. Routes through
+ * `lib/satellite-tile` which decides Google vs Mapbox per the imagery
+ * freshness reported by Solar API. See that module for the policy.
  */
 export async function fetchSatelliteImage(opts: {
   lat: number;
@@ -317,16 +320,15 @@ export async function fetchSatelliteImage(opts: {
   apiKey: string;
   size?: number;
   zoom?: number;
-}): Promise<{ base64: string; mimeType: "image/png" } | null> {
+}): Promise<{ base64: string; mimeType: "image/png" | "image/jpeg" } | null> {
   const { lat, lng, apiKey, size = 640, zoom = 20 } = opts;
-  const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${zoom}&size=${size}x${size}&maptype=satellite&key=${apiKey}`;
-  try {
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) return null;
-    const buf = await res.arrayBuffer();
-    return { base64: Buffer.from(buf).toString("base64"), mimeType: "image/png" };
-  } catch (err) {
-    console.error("[anthropic] static map fetch error:", err);
-    return null;
-  }
+  const img = await fetchTile({
+    lat,
+    lng,
+    googleApiKey: apiKey,
+    sizePx: size,
+    zoom,
+  });
+  if (!img) return null;
+  return { base64: img.base64, mimeType: img.mimeType };
 }

@@ -15,6 +15,7 @@
 import Replicate from "replicate";
 import sharp from "sharp";
 import { bestOrthogonalize, mergeNearbyVertices } from "./polygon";
+import { fetchSatelliteImage as fetchTile } from "./satellite-tile";
 
 // SAM 2 with point prompts. Replaces Grounding DINO + SAM 1. SAM 2 is
 // significantly more accurate at instance segmentation, and a positive
@@ -101,19 +102,20 @@ async function fetchSatelliteImage(opts: {
   lat: number;
   lng: number;
   apiKey: string;
-}): Promise<{ base64: string; mimeType: "image/png" } | null> {
-  // size= is capped at 640 by Google. scale=2 returns the same area at 1280×1280
-  // — 4× pixel count, no extra cost. Critical for tight contour tracing.
-  const url = `https://maps.googleapis.com/maps/api/staticmap?center=${opts.lat},${opts.lng}&zoom=${IMAGE_ZOOM}&size=${IMAGE_TILE_PX}x${IMAGE_TILE_PX}&scale=${IMAGE_SCALE}&maptype=satellite&key=${opts.apiKey}`;
-  try {
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) return null;
-    const buf = await res.arrayBuffer();
-    return { base64: Buffer.from(buf).toString("base64"), mimeType: "image/png" };
-  } catch (err) {
-    console.error("[grounded-sam] static map fetch error:", err);
-    return null;
-  }
+}): Promise<{ base64: string; mimeType: "image/png" | "image/jpeg" } | null> {
+  // Routes through lib/satellite-tile so this picks up Mapbox-fallback
+  // policy when Google's imagery is stale. Size: 640 base × scale=2 →
+  // 1280×1280 effective resolution for tight contour tracing.
+  const img = await fetchTile({
+    lat: opts.lat,
+    lng: opts.lng,
+    googleApiKey: opts.apiKey,
+    sizePx: IMAGE_TILE_PX,
+    zoom: IMAGE_ZOOM,
+    scale: IMAGE_SCALE as 1 | 2,
+  });
+  if (!img) return null;
+  return { base64: img.base64, mimeType: img.mimeType };
 }
 
 // ---------- Mask cleanup: hole-fill + morphological close ----------

@@ -21,6 +21,7 @@
 import polygonClipping from "polygon-clipping";
 import sharp from "sharp";
 import { bestOrthogonalize, mergeNearbyVertices } from "./polygon";
+import { fetchSatelliteImage as fetchTile } from "./satellite-tile";
 
 // We send the same image the rest of the pipeline uses: zoom-20 scale-2
 // from Google Static Maps, which gives 1280×1280 pixels of ground at
@@ -137,16 +138,18 @@ async function fetchSatelliteImage(opts: {
   lng: number;
   apiKey: string;
 }): Promise<{ base64: string } | null> {
-  const url = `https://maps.googleapis.com/maps/api/staticmap?center=${opts.lat},${opts.lng}&zoom=${IMAGE_ZOOM}&size=${IMAGE_TILE_PX}x${IMAGE_TILE_PX}&scale=${IMAGE_SCALE}&maptype=satellite&key=${opts.apiKey}`;
-  try {
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) return null;
-    const buf = await res.arrayBuffer();
-    return { base64: Buffer.from(buf).toString("base64") };
-  } catch (err) {
-    console.error("[roboflow] static map fetch error:", err);
-    return null;
-  }
+  // Routes through lib/satellite-tile so this picks up Mapbox-fallback
+  // when Google's imagery is stale.
+  const img = await fetchTile({
+    lat: opts.lat,
+    lng: opts.lng,
+    googleApiKey: opts.apiKey,
+    sizePx: IMAGE_TILE_PX,
+    zoom: IMAGE_ZOOM,
+    scale: IMAGE_SCALE as 1 | 2,
+  });
+  if (!img) return null;
+  return { base64: img.base64 };
 }
 
 /**
