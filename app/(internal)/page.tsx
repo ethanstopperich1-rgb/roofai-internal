@@ -401,7 +401,6 @@ export default function HomePage() {
     // footprint comes from.
     if (validSolarMask && passesClaude("solar-mask") && passesCoverage(validSolarMask)) return "solar-mask";
     if (validRoboflow && passesClaude("roboflow") && passesCoverage(validRoboflow) && passesMsHallucinationCheck(validRoboflow)) return "roboflow";
-    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1 && passesCoverageMulti(solar.segmentPolygonsLatLng)) return "solar";
     if (validSam && passesClaude("sam") && passesCoverage(validSam)) return "sam";
     // Apply coverage gate to OSM & MS Buildings too — community traces and
     // ML-extracted footprints are sometimes wrong (yard perimeter, included
@@ -410,6 +409,12 @@ export default function HomePage() {
     // by ratio against Solar's footprint or whichever source IS the reference.
     if (validOsm && passesClaude("osm") && passesCoverage(validOsm)) return "osm";
     if (validMsBuilding && passesClaude("microsoft-buildings") && passesCoverage(validMsBuilding)) return "microsoft-buildings";
+    // Solar facets — rotated bboxes from findClosest. Demoted from former
+    // position #3 (above SAM) to #6 (after MS Buildings) because the
+    // rotated rectangles are visually crude vs. SAM/OSM/MS curated
+    // outlines, even though their sqft sum is reasonable. Used as a
+    // last-resort polygon source before AI fallback.
+    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1 && passesCoverageMulti(solar.segmentPolygonsLatLng)) return "solar";
     if (validClaude && passesClaude("ai") && passesCoverage(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
     return "none";
   }, [
@@ -438,15 +443,15 @@ export default function HomePage() {
     // NB: must mirror polygonSource priority above. tiles3d removed.
     if (validSolarMask && passesCoverage(validSolarMask)) return [validSolarMask];
     if (validRoboflow && passesCoverage(validRoboflow)) return [validRoboflow];
+    if (validSam && passesCoverage(validSam)) return [validSam];
+    if (validOsm && passesCoverage(validOsm)) return [validOsm];
+    if (validMsBuilding && passesCoverage(validMsBuilding)) return [validMsBuilding];
     if (
       solar?.segmentPolygonsLatLng?.length &&
       solar.segmentCount > 1 &&
       passesCoverageMulti(solar.segmentPolygonsLatLng)
     )
       return solar.segmentPolygonsLatLng;
-    if (validSam && passesCoverage(validSam)) return [validSam];
-    if (validOsm && passesCoverage(validOsm)) return [validOsm];
-    if (validMsBuilding && passesCoverage(validMsBuilding)) return [validMsBuilding];
     if (validClaude && passesCoverage(validClaude)) return [validClaude];
     return undefined;
   }, [
