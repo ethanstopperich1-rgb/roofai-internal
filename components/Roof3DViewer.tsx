@@ -419,6 +419,34 @@ export default function Roof3DViewer({
           timer = window.setTimeout(finish, 12_000);
         });
         if (cancelled) return;
+
+        // Sample the actual mesh height at the address so the orbit pivot
+        // sits on the building, not on the WGS84 ellipsoid 30m above local
+        // ground. Without this, tilting the camera up to the horizon puts
+        // the camera ABOVE the roof, dropping the house to the bottom of
+        // the screen. With pivot at roof level, the camera orbits around
+        // the actual building at every pitch.
+        try {
+          const sampled = await viewer.scene.sampleHeightMostDetailed([
+            Cesium.Cartographic.fromDegrees(lng, lat, 0),
+          ]);
+          if (
+            !cancelled &&
+            sampled.length > 0 &&
+            typeof sampled[0].height === "number" &&
+            isFinite(sampled[0].height)
+          ) {
+            // sampled.height is mesh surface (roof if address sits on the
+            // building) — nudge a couple meters down so the pivot is
+            // closer to the building's vertical center, which feels more
+            // natural when tilting around it.
+            pivotAltitudeRef.current = sampled[0].height - 2;
+          }
+        } catch {
+          /* fall through with default 200m — visible misalignment, but
+             every other downstream pipeline still works */
+        }
+        if (cancelled) return;
         setStatus("ready");
 
         // Add a red ground-pin marker at the target address so every captured
@@ -881,9 +909,6 @@ export default function Roof3DViewer({
           <Loader2 size={18} className="animate-spin mb-2 text-slate-300" />
           <div className="text-[12px] font-mono uppercase tracking-[0.14em] text-slate-300">
             Verifying outline…
-          </div>
-          <div className="text-[10.5px] text-slate-500 mt-1">
-            Capturing 5 views for AI verification
           </div>
         </div>
       )}
