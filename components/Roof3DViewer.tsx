@@ -314,6 +314,13 @@ export default function Roof3DViewer({
   topDownRef.current = topDown;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const topDownActionsRef = useRef<{ enter: () => void; exit: () => void } | null>(null);
+  // While the multi-view IIFE is running, the camera is jumping between
+  // top-down ortho + 4 obliques and 3D Tiles haven't streamed for those
+  // poses yet — the rep sees a flickering empty scene. Hide the viewer
+  // behind a "Verifying outline…" overlay during capture.
+  const [isCapturing, setIsCapturing] = useState(false);
+  const isCapturingRef = useRef(false);
+  isCapturingRef.current = isCapturing;
 
   // -------- viewer init (runs once per mount) --------
   useEffect(() => {
@@ -536,7 +543,11 @@ export default function Roof3DViewer({
       armTimerRef.current = window.setTimeout(() => {
         if (cancelled) return;
         const tickHandler = () => {
-          if (orbitingRef.current && !topDownRef.current) {
+          if (
+            orbitingRef.current &&
+            !topDownRef.current &&
+            !isCapturingRef.current
+          ) {
             viewer.camera.rotateRight(0.0018);
           }
         };
@@ -767,6 +778,11 @@ export default function Roof3DViewer({
       await delay(SETTLE_MS);
       if (cancelled) return;
 
+      // Show "Verifying outline…" overlay while the camera jumps between
+      // the 5 capture poses (tiles haven't streamed for those poses yet,
+      // so the rep would otherwise see a flickering empty mesh).
+      setIsCapturing(true);
+
       // Step 2: capture
       const captured = await captureMultiViewForVerify({
         Cesium,
@@ -774,9 +790,13 @@ export default function Roof3DViewer({
         lat,
         lng,
       });
-      if (cancelled) return;
+      if (cancelled) {
+        setIsCapturing(false);
+        return;
+      }
       if (!captured) {
         console.warn("[Roof3DViewer] multi-view capture failed");
+        setIsCapturing(false);
         return;
       }
 
@@ -787,6 +807,9 @@ export default function Roof3DViewer({
       // Restore camera framing — captureMultiView restores prior pose,
       // but recenterRef pulls back to our drone-hover orbit.
       recenterRef.current?.();
+      // Drop the overlay once the camera is back to the orbit pose; the
+      // fetch can run in the background while the rep sees the live view.
+      setIsCapturing(false);
 
       try {
         const res = await fetch("/api/verify-polygon-multiview", {
@@ -850,6 +873,17 @@ export default function Roof3DViewer({
           <Loader2 size={18} className="animate-spin mb-2" />
           <div className="text-[12px] font-mono uppercase tracking-[0.14em]">
             Loading 3D mesh…
+          </div>
+        </div>
+      )}
+      {status === "ready" && isCapturing && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#07090d]/80 backdrop-blur-sm pointer-events-none">
+          <Loader2 size={18} className="animate-spin mb-2 text-slate-300" />
+          <div className="text-[12px] font-mono uppercase tracking-[0.14em] text-slate-300">
+            Verifying outline…
+          </div>
+          <div className="text-[10.5px] text-slate-500 mt-1">
+            Capturing 5 views for AI verification
           </div>
         </div>
       )}
