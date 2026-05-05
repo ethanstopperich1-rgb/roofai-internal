@@ -489,47 +489,60 @@ export default function Roof3DViewer({
         };
         addMarker();
 
-        // Kick off the polygon extraction. Runs in the background so the
-        // viewer is interactive while we sample 3,600 height points and
-        // trace the roof boundary. ~2-4s end-to-end on first load.
+        // Pivot-altitude correction. The default 200m pivot is a coarse
+        // fallback — for any low-elevation property (Orlando ~30m, most of
+        // FL/TX coast) it sits 150-170m above the actual roof, which
+        // pushes the camera so high the orbit frames the whole
+        // neighbourhood instead of the house.
         //
-        // Side-benefit: `result.groundHeightM` is the mesh-sampled ground
-        // elevation at the property — exactly what we need to fix the
-        // camera orbit pivot. Default pivot was 30m above the WGS84
-        // ellipsoid, which lands underground for any property above sea
-        // level (Mt. Juliet TN at 170m → pivot 140m underground →
-        // orbit sweeps through the ground). Once we know the real
-        // ground height, we update pivotAltitudeRef and re-recenter.
-        // tiles3d mesh-data extraction was REMOVED — produced inconsistent
-        // results across rural properties (locked onto tree blobs, sheds, or
-        // partial roofs depending on mesh quality). The 3D viewer is now
-        // purely visual: rendering the photogrammetric mesh + projecting
-        // the 2D-source polygon onto it for the rep to see. Roboflow is the
-        // primary polygon source; Claude multi-view verification (separate
-        // route) gates whether to ship Roboflow's polygon.
+        // Pre-pivot the camera straight down at the address, then sample
+        // the photorealistic mesh at that point to get the real ground
+        // height. Update `pivotAltitudeRef` to ground+5m and re-pivot so
+        // the orbit is centred on the actual roof.
+        //
+        // tiles3d mesh-data POLYGON extraction was removed in 6b00ecf
+        // (inconsistent across rural properties). But sampling a single
+        // height point is reliable and ~200ms — keeping it for camera
+        // framing only.
+        const sampleGroundAndRepivot = async () => {
+          try {
+            // Wait for tiles to actually render around the address —
+            // sampleHeightMostDetailed needs streamed tiles to hit.
+            await new Promise((r) => window.setTimeout(r, 600));
+            const cart = Cesium.Cartographic.fromDegrees(lng, lat);
+            const sampled = await viewer.scene.sampleHeightMostDetailed(
+              [cart],
+              [],
+              4,
+            );
+            if (cancelled || !sampled?.[0]) return;
+            const groundM = sampled[0].height;
+            if (!Number.isFinite(groundM)) return;
+            pivotAltitudeRef.current = groundM + 5;
+            recenterRef.current?.();
+          } catch (err) {
+            console.warn("[Roof3DViewer] ground sample failed:", err);
+          }
+        };
+        sampleGroundAndRepivot();
       } catch (err) {
         console.warn("[Roof3DViewer] no 3D Tiles coverage:", err);
         if (!cancelled) setStatus("no-coverage");
         return;
       }
 
-      // Camera framing: 110 m range at -42° pitch on the corrected pivot.
-      // The previous 180m / -35° was the "Goldilocks" tuning ON TOP of the
-      // broken underground pivot — when the pivot was 140m below ground,
-      // the broken-but-balanced view actually framed the building OK
-      // (camera ended up just-above-ground). Now that the pivot is at the
-      // actual roof level (groundHeightM + 5m), the old 180m range pulls
-      // the camera 100m+ above ground; manual tilt-up sends it to space
-      // and the building disappears from frame. 110m / -42° puts the
-      // camera ~74m above ground, ~82m horizontal — closer drone-hover
-      // feel where the building fills the frame and a manual tilt still
-      // keeps the property in view.
+      // Camera framing: 85 m range at -45° pitch on the corrected pivot.
+      // Tightened from 110m / -42° (which framed too wide on lower
+      // elevations after the post-pivot correction) — at 85m / -45° the
+      // camera sits ~60m above ground, ~60m horizontal, which puts a
+      // typical 40-50m residential lot squarely in frame with some yard
+      // visible for context.
       //
       // Pivot ALTITUDE comes from `pivotAltitudeRef` — meters above the
-      // WGS84 ellipsoid. Initial default 200m is a coarse fallback; once
-      // extractRoofPolygonFromTiles samples the real mesh ground height
-      // (a few seconds in), we update the ref to (groundHeightM + 5m) and
-      // re-pivot so the orbit centres on the actual roof.
+      // WGS84 ellipsoid. Initial default 200m is a coarse fallback; the
+      // post-tileset ground sample (sampleGroundAndRepivot above) updates
+      // the ref to (groundHeightM + 5m) and calls recenter() to re-pivot
+      // on the actual roof level.
       const recenter = () => {
         const center = Cesium.Cartesian3.fromDegrees(
           lng,
@@ -539,7 +552,7 @@ export default function Roof3DViewer({
         const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
         viewer.camera.lookAtTransform(
           transform,
-          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-42), 110),
+          new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-45), 85),
         );
       };
       recenterRef.current = recenter;
