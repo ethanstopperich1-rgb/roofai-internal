@@ -16,6 +16,7 @@ import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
 import RoofBlueprint from "@/components/RoofBlueprint";
 import PolygonSizeWarning from "@/components/PolygonSizeWarning";
+import SectionHeader from "@/components/SectionHeader";
 import OutlineQualityWarning from "@/components/OutlineQualityWarning";
 import PhotoUploadPanel from "@/components/PhotoUploadPanel";
 import ImageryStormBanner from "@/components/ImageryStormBanner";
@@ -1017,7 +1018,7 @@ export default function HomePage() {
   })();
 
   return (
-    <div className="space-y-7">
+    <div className="space-y-8 sm:space-y-10">
       {/* ─── Hero / address bar ─────────────────────────────────────── */}
       {/* No overflow-hidden here so the autocomplete dropdown can extend
           past the section's bottom edge. The gradient blob below uses
@@ -1102,6 +1103,19 @@ export default function HomePage() {
 
       {shown && (
         <>
+          {/* ═══ 01 PROPERTY — satellite + photogrammetric 3D ═══════════ */}
+          <SectionHeader
+            index={1}
+            title="Property"
+            caption={address?.formatted}
+            trailing={
+              solar?.imageryDate && (
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-slate-500">
+                  Imagery {solar.imageryDate}
+                </span>
+              )
+            }
+          />
           {/* ─── Map hero — satellite + 3D side-by-side, full width ─────── */}
           <section className="grid lg:grid-cols-2 gap-4 h-[420px] sm:h-[520px] lg:h-[640px] float-in relative">
             {/* Generating overlay — covers BOTH viewers when verifying so
@@ -1162,6 +1176,15 @@ export default function HomePage() {
             )}
           </section>
 
+          {/* ═══ 02 ROOF GEOMETRY — parametric framing + blueprint ═════ */}
+          {polygonReady && activePolygons && activePolygons.length > 0 && (
+            <SectionHeader
+              index={2}
+              title="Roof geometry"
+              caption={`${assumptions.sqft.toLocaleString()} sf · ${assumptions.pitch}`}
+            />
+          )}
+
           {/* ─── Parametric 3D roof framing (gables, ridges, eaves, rakes) ─
                 Hidden until polygonReady so the framing doesn't keep
                 redrawing as the polygon flickers between sources. */}
@@ -1203,6 +1226,20 @@ export default function HomePage() {
                                   ? "Edited by hand"
                                   : undefined
               }
+            />
+          )}
+
+          {/* ═══ 03 QUALITY & COMPLIANCE ═══════════════════════════════ */}
+          {/* Section header only when there's actually something to show
+              (carrier claim, storm correlation, outline warning, or size
+              mismatch). Otherwise we'd render a "03 Quality" header above
+              an empty region. */}
+          {(isInsuranceClaim ||
+            (polygonReady && polygonSource !== "none")) && (
+            <SectionHeader
+              index={3}
+              title="Quality & compliance"
+              caption="Auto-checks before delivery"
             />
           )}
 
@@ -1273,6 +1310,13 @@ export default function HomePage() {
             }}
           />
 
+          {/* ═══ 04 ESTIMATE — headline price + breakdown ═══════════════ */}
+          <SectionHeader
+            index={4}
+            title="Estimate"
+            caption={`${assumptions.material.replace(/-/g, " ")}${assumptions.serviceType ? ` · ${assumptions.serviceType.replace(/-/g, " ")}` : ""}`}
+          />
+
           {/* ─── Headline price card — full width ──────────────────────── */}
           <ErrorBoundary>
             <ResultsPanel
@@ -1285,6 +1329,13 @@ export default function HomePage() {
               onInsuranceChange={setIsInsuranceClaim}
             />
           </ErrorBoundary>
+
+          {/* ═══ 05 BREAKDOWN — line items, measurements, customer detail ═ */}
+          <SectionHeader
+            index={5}
+            title="Breakdown & detail"
+            caption="Internal worksheet · not shown to customer"
+          />
 
           {/* ─── Two-col grid for everything else ─────────────────────── */}
           <div className="grid lg:grid-cols-3 gap-6 float-in">
