@@ -151,7 +151,7 @@ export default function HomePage() {
   // When Claude flags an issue with high confidence (ok=false, conf>0.7),
   // we treat the source as failed and fall through. Otherwise informational.
   const [claudeVerifications, setClaudeVerifications] = useState<
-    Partial<Record<string, { ok: boolean; confidence: number; reason: string }>>
+    Partial<Record<string, { ok: boolean; confidence: number; reason: string; issues?: string[] }>>
   >({});
   // Live polygons after the rep edits a vertex. When set, overrides the
   // auto-detected source polygons everywhere (lengths, sqft, blueprint, PDF).
@@ -1038,6 +1038,7 @@ export default function HomePage() {
                 polygons={activePolygons}
                 polygonSource={polygonSource === "none" ? undefined : polygonSource}
                 polygonsHidden={!polygonReady}
+                expectedFootprintSqft={referenceFootprintSqft}
                 onMultiViewVerified={(result) => {
                   if (!polygonSource || polygonSource === "none") return;
                   setClaudeVerifications((cur) => ({

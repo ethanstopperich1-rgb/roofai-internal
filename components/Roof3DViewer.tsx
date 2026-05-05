@@ -29,13 +29,18 @@ interface Props {
    *  along with the active polygon, and reports Claude's verdict via this
    *  callback. Skipped when the rep edited (livePolygons in parent) since
    *  manual edits override AI verification. */
-  onMultiViewVerified?: (result: { ok: boolean; confidence: number; reason: string }) => void;
+  onMultiViewVerified?: (result: { ok: boolean; confidence: number; reason: string; issues?: string[] }) => void;
   /** When true, the polygon outline is NOT drawn on the 3D mesh (used by
    *  the parent to hide the polygon while Claude verifies it — prevents
    *  the rep from seeing flicker as sources race). The polygon data is
    *  still passed via `polygons` so verification fires; only the visible
    *  Cesium entities are skipped. */
   polygonsHidden?: boolean;
+  /** Optional sanity context for the multi-view verifier — Solar's
+   *  reported building footprint area in sqft. When passed, Claude can
+   *  size-check the candidate polygon against the known footprint and
+   *  flag obvious over- or under-traces. */
+  expectedFootprintSqft?: number | null;
 }
 
 // Multi-view capture geometry. These constants control the camera poses used
@@ -279,6 +284,7 @@ export default function Roof3DViewer({
   polygonSource,
   onMultiViewVerified,
   polygonsHidden,
+  expectedFootprintSqft,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
@@ -870,6 +876,11 @@ export default function Roof3DViewer({
             address,
             source: polygonSource,
             polygon: primary,
+            expectedFootprintSqft:
+              typeof expectedFootprintSqft === "number" &&
+              isFinite(expectedFootprintSqft)
+                ? expectedFootprintSqft
+                : undefined,
             topDown: {
               base64: captured.topDown.base64,
               halfWidthM: captured.topDown.halfWidthM,
@@ -888,15 +899,24 @@ export default function Roof3DViewer({
           ok?: boolean;
           confidence?: number;
           reason?: string;
+          issues?: unknown;
         };
         if (cancelled) return;
+        const issues: string[] = [];
+        if (Array.isArray(data.issues)) {
+          for (const it of data.issues) {
+            if (typeof it === "string" && it.trim()) issues.push(it.trim());
+          }
+        }
         const result = {
           ok: !!data.ok,
           confidence: typeof data.confidence === "number" ? data.confidence : 0.5,
           reason: typeof data.reason === "string" ? data.reason : "",
+          issues,
         };
         console.log(
-          `[Roof3DViewer] multi-view Claude [${polygonSource}]: ok=${result.ok} conf=${result.confidence.toFixed(2)} — ${result.reason}`,
+          `[Roof3DViewer] multi-view Claude [${polygonSource}]: ok=${result.ok} conf=${result.confidence.toFixed(2)} — ${result.reason}` +
+            (issues.length ? ` | issues: ${issues.join("; ")}` : ""),
         );
         onVerifiedRef.current?.(result);
       } catch (err) {

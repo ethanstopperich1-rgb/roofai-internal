@@ -37,37 +37,62 @@ export const maxDuration = 60;
 
 const MODEL = "claude-sonnet-4-6";
 
-const SYSTEM_PROMPT = `You are an expert roof estimator verifying a candidate polygon outline against five views of a residential property.
+// Chain-of-thought system prompt. The previous version asked Claude to
+// return a verdict directly; reps reported polygons that were clearly on
+// fence lines slipping through with ok:true. Forcing CoT inspection +
+// listing specific issues makes the model's reasoning explicit and gives
+// downstream code a structured signal (`issues[]`) to surface to the rep.
+const SYSTEM_PROMPT = `You are an expert roof estimator with decades of experience reading aerial imagery for residential properties. Your job is to verify whether a candidate red polygon overlay correctly outlines the eaves of a single target house.
 
-You will be shown FIVE images of the same single house, all overlaid with a translucent red polygon outline + red vertex dots:
+You will be shown FIVE images of the same property, each overlaid with a translucent red polygon + red vertex dots:
 
-  IMAGE 1 — TOP-DOWN ORTHOGRAPHIC (no perspective distortion). The image centre is the geocoded address.
-  IMAGES 2-5 — 4 OBLIQUE VIEWS at 45° tilt from north / east / south / west.
+  IMAGE 1 — TOP-DOWN ORTHOGRAPHIC (no perspective). Centre = geocoded address.
+  IMAGES 2-5 — 4 OBLIQUE VIEWS at 45° pitch from N / E / S / W.
 
-The 4 obliques exist so you can disambiguate the target house from neighbours, see wings/sections that might be hidden in top-down, and verify the polygon's edges actually trace the building's eaves (not the lawn / driveway / deck / pool / pergola / detached structures).
+The 4 obliques exist so you can:
+  (a) disambiguate the target from neighbours,
+  (b) see wings / sections hidden in top-down,
+  (c) verify polygon edges sit at EAVE HEIGHT (not at ground level on a fence / lawn).
 
-VERIFY whether the red polygon correctly outlines the SINGLE target house at the centre of the property:
-  • Polygon traces the EAVES of the actual roof (not yard, driveway, deck, pool, etc)
-  • Polygon is on the building under the geocoded address pin (centre of top-down image)
-  • Polygon covers the FULL roof of the target building (no missed wings/sections)
-  • Polygon doesn't include detached structures (separate sheds, pool houses, neighbour buildings)
+────────────────────────────────────────────────────────────
+THINK STEP BY STEP, then return strict JSON.
+────────────────────────────────────────────────────────────
 
-CRITICAL FAILURE MODES — return ok:false with high confidence (>0.85) if you see any of these:
-  • Polygon outlines the YARD or LOT PERIMETER, not the house roof. Common when the segmenter latches onto fence lines or lawn edges. Tell-tale signs: red outline runs along fences, hedges, driveway edges; encloses grass / pool / patio / driveway as well as the house; the polygon is much larger than the actual roof in the obliques.
-  • Polygon traces a backyard FENCE — straight parallel runs along the property boundary that don't correspond to any roof eave. Look at the obliques: if the red line sits at ground level rather than at the eave height, it's on a fence.
-  • Polygon outlines a DRIVEWAY, deck, or pool. Hard surfaces are NOT roofs.
-  • Polygon spans MULTIPLE buildings (roof + detached garage + shed) when the rep needs just the main house.
+Step 1 — LOCATE THE TARGET HOUSE.
+   The geocoded address is at the centre of the top-down image. The 4 obliques are framed on the same ground point. Using the obliques, identify which physical building is the target. Note nearby neighbours, detached garages, and outbuildings — the polygon must NOT include those.
 
-Return ONLY this strict JSON, no preamble, no markdown fences:
+Step 2 — IDENTIFY THE ACTUAL ROOF EAVES.
+   Eaves are the lower edges of the roof where it meets the walls. In obliques they appear as a sharp shadow line at the top of the wall surface. In top-down they're the discrete edges of the roof shape (different colour/texture from surrounding terrain).
+
+Step 3 — WALK EACH RED EDGE.
+   For each segment of the polygon, ask: is this edge sitting on the actual eave, or somewhere else? Common mis-placements:
+   - On a FENCE or hedge perimeter (look for picket/wood texture in obliques; red line is at GROUND level, not roof level)
+   - On a DRIVEWAY (paved hard surface, flat, no shadow line)
+   - On a DECK or patio (wood texture but flat, not raised)
+   - On a POOL (water surface)
+   - On the LAWN (grass texture, no eave shadow)
+   - On a NEIGHBOUR'S roof or detached structure
+   - MISSING a wing — polygon ends short of an obvious roof edge visible in obliques
+
+Step 4 — COVERAGE CHECK.
+   Does the polygon cover ALL of the target roof (including all wings / sections / dormers / garage if attached)? Or is part of the actual roof outside the polygon?
+
+Step 5 — FORM A VERDICT.
+   • ok=true ONLY when the polygon is on the eaves on every edge AND covers the full roof. Sub-1m edge wiggle is acceptable; multi-meter mis-placement is not.
+   • ok=false when ANY edge is clearly off the roof, or the polygon misses a roof section.
+   • Confidence reflects cross-view agreement: 0.9+ = same verdict from all 5 views; 0.5–0.8 = ambiguous (e.g. obliques disagree); <0.5 = you can't tell.
+   • For the CRITICAL FAILURE MODES (yard perimeter, fence-traced, driveway-traced, wrong building): use confidence ≥ 0.85 when you can see them clearly in the obliques. Don't be hesitant — a fence-traced polygon at eave height is rare; ground-level fence lines are obvious in oblique views.
+
+Return STRICTLY this JSON object, no preamble, no markdown fences:
 {
   "ok": <boolean>,
   "confidence": <0..1>,
-  "reason": "<one short clause>"
+  "reason": "<one short clause summarising the verdict>",
+  "issues": ["<short specific issue, one per array item>"]
 }
 
-  • ok: true if the polygon is acceptable as a final roof outline (tiny edge inaccuracies of ~1m are fine; anything more is not)
-  • confidence: 0..1, how strongly the 4 obliques + top-down agree with each other. 0.9+ = clean cross-view agreement. 0.5-0.8 = some ambiguity. <0.5 = significant disagreement, you'd want a second opinion.
-  • reason: one short clause. Examples: "matches roof in all 5 views", "missing west wing visible in oblique-W", "polygon includes attached deck on south side", "wrong building — neighbour to the east", "polygon on driveway not roof"`;
+  • reason — single phrase like "matches roof in all 5 views", "south edge on driveway", "polygon is the lot perimeter not the roof"
+  • issues — ZERO or more strings, each pointing to one concrete problem you found. Empty array if ok=true. Examples: ["south edge on driveway, ~3m off eave", "missing west wing visible in oblique-W", "polygon traces backyard fence at ground level"]`;
 
 interface RequestBody {
   lat?: number;
@@ -77,12 +102,20 @@ interface RequestBody {
   polygon?: Array<{ lat: number; lng: number }>;
   topDown?: { base64?: string; halfWidthM?: number };
   obliques?: Array<{ base64?: string; headingDeg?: number }>;
+  /** Optional sanity context — Solar's reported building footprint area
+   *  in sqft. When passed, included in the prompt so Claude can compare
+   *  the polygon's footprint against the known building footprint and
+   *  flag obvious size mismatches. */
+  expectedFootprintSqft?: number;
 }
 
 interface VerifyResult {
   ok: boolean;
   confidence: number;
   reason: string;
+  /** Concrete issues Claude found — empty when ok:true. Surfaced to the
+   *  rep so they know what to fix if they want to manually edit. */
+  issues: string[];
   source?: string;
 }
 
@@ -235,6 +268,9 @@ async function callClaude(opts: {
   apiKey: string;
   topDown: string;
   obliques: Array<{ base64: string; headingDeg: number }>;
+  source?: string;
+  polygonAreaSqft: number | null;
+  expectedFootprintSqft: number | null;
 }): Promise<VerifyResult | null> {
   const client = new Anthropic({ apiKey: opts.apiKey });
   const oblOrder = [...opts.obliques].sort((a, b) => a.headingDeg - b.headingDeg);
@@ -243,15 +279,54 @@ async function callClaude(opts: {
     : h < 135 ? "east"
     : h < 225 ? "south"
     : "west";
+
+  // Dynamic context block sent before the images. Gives Claude size
+  // priors so it can flag "polygon is 3× larger than the known building
+  // footprint" without having to pixel-measure.
+  const contextLines: string[] = [];
+  if (opts.source) contextLines.push(`• Polygon source: ${opts.source}`);
+  if (opts.polygonAreaSqft != null) {
+    contextLines.push(`• Polygon footprint: ${Math.round(opts.polygonAreaSqft).toLocaleString()} sqft`);
+  }
+  if (opts.expectedFootprintSqft != null) {
+    contextLines.push(`• Expected building footprint (from Solar API): ${Math.round(opts.expectedFootprintSqft).toLocaleString()} sqft`);
+  }
+  if (
+    opts.polygonAreaSqft != null &&
+    opts.expectedFootprintSqft != null &&
+    opts.expectedFootprintSqft > 0
+  ) {
+    const ratio = opts.polygonAreaSqft / opts.expectedFootprintSqft;
+    contextLines.push(`• Size ratio: ${ratio.toFixed(2)}× expected (1.0–1.2× is normal eave overhang; >1.5× suggests over-trace)`);
+  }
+  const contextText =
+    contextLines.length > 0
+      ? `Context for this verification:\n${contextLines.join("\n")}\n\n`
+      : "";
+
   const message = await client.messages.create({
     model: MODEL,
-    max_tokens: 250,
-    system: SYSTEM_PROMPT,
+    // Up from 250 — chain-of-thought response with `issues` array can
+    // run longer than a single-line verdict.
+    max_tokens: 600,
+    system: [
+      {
+        type: "text",
+        text: SYSTEM_PROMPT,
+        // Cache the static system prompt across calls — every estimate
+        // sends the same instructions, so the prefix hits Anthropic's
+        // 5-minute cache for ~90% input-token discount.
+        cache_control: { type: "ephemeral" },
+      },
+    ],
     messages: [
       {
         role: "user",
         content: [
-          { type: "text", text: "IMAGE 1 — TOP-DOWN ORTHOGRAPHIC:" },
+          {
+            type: "text",
+            text: `${contextText}IMAGE 1 — TOP-DOWN ORTHOGRAPHIC:`,
+          },
           {
             type: "image",
             source: { type: "base64", media_type: "image/jpeg", data: opts.topDown },
@@ -268,7 +343,7 @@ async function callClaude(opts: {
           ]),
           {
             type: "text",
-            text: "Verify the red polygon. Return strict JSON only.",
+            text: "Verify the red polygon following the step-by-step approach in your instructions. Return strict JSON only.",
           },
         ],
       },
@@ -292,6 +367,11 @@ async function callClaude(opts: {
     }
   }
   const v = parsed as Record<string, unknown>;
+  const rawIssues = Array.isArray(v.issues) ? v.issues : [];
+  const issues: string[] = [];
+  for (const it of rawIssues) {
+    if (typeof it === "string" && it.trim()) issues.push(it.trim());
+  }
   return {
     ok: v.ok === true,
     confidence:
@@ -299,6 +379,7 @@ async function callClaude(opts: {
         ? Math.max(0, Math.min(1, v.confidence))
         : 0.5,
     reason: typeof v.reason === "string" ? v.reason : "",
+    issues,
   };
 }
 
@@ -376,12 +457,35 @@ export async function POST(req: Request) {
     if (compo) compositedObliques.push({ base64: compo.base64, headingDeg: o.headingDeg });
   }
 
+  // Compute polygon footprint area (top-down sqft) so Claude can size-check
+  // against Solar's reported building footprint.
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+  const M_PER_DEG_LAT = 111_320;
+  let signedArea2DegSq = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    signedArea2DegSq += a.lng * b.lat - b.lng * a.lat;
+  }
+  const polygonAreaSqM =
+    (Math.abs(signedArea2DegSq) / 2) *
+    (M_PER_DEG_LAT * M_PER_DEG_LAT) *
+    cosLat;
+  const polygonAreaSqft = polygonAreaSqM * 10.7639;
+
   let result: VerifyResult | null = null;
   try {
     result = await callClaude({
       apiKey,
       topDown: topDownComposite.base64,
       obliques: compositedObliques,
+      source: body.source,
+      polygonAreaSqft,
+      expectedFootprintSqft:
+        typeof body.expectedFootprintSqft === "number" &&
+        isFinite(body.expectedFootprintSqft)
+          ? body.expectedFootprintSqft
+          : null,
     });
   } catch (err) {
     console.error("[verify-multiview] claude error:", err);
@@ -397,7 +501,7 @@ export async function POST(req: Request) {
     );
   }
   console.log(
-    `[verify-multiview] [${body.source ?? "?"}] ok=${result.ok} conf=${result.confidence.toFixed(2)} reason="${result.reason}" obliques=${compositedObliques.length}`,
+    `[verify-multiview] [${body.source ?? "?"}] ok=${result.ok} conf=${result.confidence.toFixed(2)} reason="${result.reason}" issues=${result.issues.length} obliques=${compositedObliques.length}`,
   );
   await setCached(cacheKey, lat, lng, result);
   return NextResponse.json({ ...result, source: body.source });
