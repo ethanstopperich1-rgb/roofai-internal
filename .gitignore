@@ -19,3 +19,4 @@ scripts/eval-output/
 # Build-time data extraction cache (the 890MB raw TN building footprint
 # file from microsoft.com — output goes in public/data/ which IS committed)
 .cache/
+.env*.local

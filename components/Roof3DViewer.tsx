@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Box, RotateCw, Pause, Play, Crosshair } from "lucide-react";
+import { Loader2, Box, RotateCw, Pause, Play, Crosshair, Square } from "lucide-react";
 import { bestOrthogonalize, mergeNearbyVertices } from "@/lib/polygon";
 
 interface Props {
@@ -58,13 +58,30 @@ interface CapturedMultiView {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function captureCanvasPng(viewer: any): Promise<CapturedView | null> {
+  // Force the framebuffer to match the canvas's CSS size before rendering.
+  // Cesium's render loop calls resize() automatically, but in this codebase
+  // the WebGL dimensions sometimes lag behind layout (e.g. canvas.width
+  // observed at 0 even after the container is laid out). Without this,
+  // toDataURL returns an empty PNG.
+  viewer.resize();
   viewer.scene.render();
   await delay(60);
   viewer.scene.render();
   const canvas: HTMLCanvasElement = viewer.scene.canvas;
+  if (canvas.width === 0 || canvas.height === 0) {
+    console.warn(
+      `[Roof3DViewer] capture aborted — canvas ${canvas.width}x${canvas.height}`,
+    );
+    return null;
+  }
   const dataUrl = canvas.toDataURL("image/png");
   const m = dataUrl.match(/^data:image\/png;base64,(.+)$/);
-  if (!m) return null;
+  if (!m) {
+    console.warn(
+      `[Roof3DViewer] capture aborted — toDataURL returned ${dataUrl.slice(0, 40)}`,
+    );
+    return null;
+  }
   return { base64: m[1], width: canvas.width, height: canvas.height };
 }
 
@@ -86,6 +103,32 @@ async function captureMultiViewForVerify(opts: {
   lng: number;
 }): Promise<CapturedMultiView | null> {
   const { Cesium, viewer, lat, lng } = opts;
+
+  // Wait for the panel to finish its enter animation. The multi-view
+  // effect fires as soon as status flips to "ready" + polygons land, but
+  // the wrapping <section> may still be in its float-in animation, or
+  // (in headless previews) the viewport may not yet be sized. Poll for
+  // up to 15s — when Cesium's canvas reports non-zero CSS dimensions, the
+  // framebuffer follows on next resize().
+  const sizeStart = Date.now();
+  let lastObserved = `${viewer.scene.canvas.width}x${viewer.scene.canvas.height}`;
+  while (Date.now() - sizeStart < 15_000) {
+    viewer.resize();
+    const c = viewer.scene.canvas;
+    lastObserved = `${c.width}x${c.height}`;
+    if (c.width > 0 && c.height > 0) break;
+    await delay(200);
+  }
+  if (
+    viewer.scene.canvas.width === 0 ||
+    viewer.scene.canvas.height === 0
+  ) {
+    console.warn(
+      `[Roof3DViewer] capture aborted — canvas never sized (last ${lastObserved})`,
+    );
+    return null;
+  }
+
   const saved = viewer.camera.position.clone();
   const savedHeading = viewer.camera.heading;
   const savedPitch = viewer.camera.pitch;
@@ -262,6 +305,15 @@ export default function Roof3DViewer({
   const [orbiting, setOrbiting] = useState(true);
   const orbitingRef = useRef(true);
   orbitingRef.current = orbiting;
+  // Top-down ortho view: fixes the perspective-camera parallax that shifts
+  // the rendered roof off its lat/lng footprint at near-vertical pitch.
+  // With ortho on, polygon (draped onto the mesh by lat/lng ray-down) and
+  // the rendered roof line up. Tilted views still use perspective.
+  const [topDown, setTopDown] = useState(false);
+  const topDownRef = useRef(false);
+  topDownRef.current = topDown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const topDownActionsRef = useRef<{ enter: () => void; exit: () => void } | null>(null);
 
   // -------- viewer init (runs once per mount) --------
   useEffect(() => {
@@ -296,6 +348,13 @@ export default function Roof3DViewer({
         fullscreenButton: false,
         infoBox: false,
         selectionIndicator: false,
+        // Required so canvas.toDataURL() returns a non-empty PNG. WebGL
+        // discards the framebuffer after each frame by default; without
+        // this, multi-view verification capture silently produces empty
+        // images and the verify gate never fires.
+        contextOptions: {
+          webgl: { preserveDrawingBuffer: true },
+        },
       });
       viewerRef.current = viewer;
 
@@ -331,6 +390,28 @@ export default function Roof3DViewer({
         // earlier and the "smear" effect resolves much faster.
         tileset.maximumScreenSpaceError = 8;
         viewer.scene.primitives.add(tileset);
+
+        // Wait for the first batch of tiles to actually stream in before
+        // declaring "ready". Without this, the multi-view verify effect
+        // fires within milliseconds of the tileset being added, captures
+        // an empty mesh, and Claude's verdict is meaningless. 12s cap so
+        // spotty coverage doesn't hang the UI — beyond that we proceed
+        // and let downstream gates handle a degraded mesh.
+        await new Promise<void>((resolve) => {
+          let done = false;
+          let removeListener: (() => void) | null = null;
+          let timer: number | null = null;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            if (timer !== null) window.clearTimeout(timer);
+            if (removeListener) removeListener();
+            resolve();
+          };
+          removeListener = tileset.initialTilesLoaded.addEventListener(finish);
+          timer = window.setTimeout(finish, 12_000);
+        });
+        if (cancelled) return;
         setStatus("ready");
 
         // Add a red ground-pin marker at the target address so every captured
@@ -409,11 +490,55 @@ export default function Roof3DViewer({
       recenterRef.current = recenter;
       recenter();
 
+      // Top-down ortho mode. Snaps to vertical with an OrthographicFrustum so
+      // the polygon and roof line up (no perspective parallax). Save the
+      // perspective frustum on enter so we can restore on exit.
+      const TOP_DOWN_ALTITUDE_M = 250;
+      const TOP_DOWN_HALF_WIDTH_M = 35;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let savedPerspectiveFrustum: any = null;
+      const enterTopDown = () => {
+        const center = Cesium.Cartesian3.fromDegrees(
+          lng,
+          lat,
+          pivotAltitudeRef.current,
+        );
+        const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+        viewer.camera.lookAtTransform(
+          transform,
+          new Cesium.HeadingPitchRange(
+            0,
+            Cesium.Math.toRadians(-89.9),
+            TOP_DOWN_ALTITUDE_M,
+          ),
+        );
+        const canvas: HTMLCanvasElement = viewer.scene.canvas;
+        const aspect = canvas.width / canvas.height;
+        savedPerspectiveFrustum = viewer.camera.frustum.clone();
+        const ortho = new Cesium.OrthographicFrustum();
+        ortho.width = TOP_DOWN_HALF_WIDTH_M * 2;
+        ortho.aspectRatio = aspect;
+        ortho.near = 1;
+        ortho.far = 5000;
+        viewer.camera.frustum = ortho;
+      };
+      const exitTopDown = () => {
+        if (savedPerspectiveFrustum) {
+          viewer.camera.frustum = savedPerspectiveFrustum;
+          savedPerspectiveFrustum = null;
+        }
+        viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+        recenter();
+      };
+      topDownActionsRef.current = { enter: enterTopDown, exit: exitTopDown };
+
       // Auto-orbit: rotate around the property at constant rate. Click cancels.
       armTimerRef.current = window.setTimeout(() => {
         if (cancelled) return;
         const tickHandler = () => {
-          if (orbitingRef.current) viewer.camera.rotateRight(0.0018);
+          if (orbitingRef.current && !topDownRef.current) {
+            viewer.camera.rotateRight(0.0018);
+          }
         };
         viewer.scene.preRender.addEventListener(tickHandler);
         tickHandlerRef.current = tickHandler;
@@ -470,8 +595,17 @@ export default function Roof3DViewer({
   useEffect(() => {
     if (status !== "ready") return;
     pivotAltitudeRef.current = 200;
+    setTopDown(false);
     recenterRef.current?.();
   }, [lat, lng, status]);
+
+  // -------- top-down toggle drives camera + frustum swap --------
+  useEffect(() => {
+    if (status !== "ready") return;
+    const actions = topDownActionsRef.current;
+    if (!actions) return;
+    if (topDown) actions.enter(); else actions.exit();
+  }, [topDown, status]);
 
   // -------- redraw polygons when they change --------
   useEffect(() => {
@@ -572,39 +706,68 @@ export default function Roof3DViewer({
   //   - "tiles3d" (legacy source no longer in chain; safety check)
   // Caching: verifiedPolygonRef prevents re-verification of the same polygon
   // on React re-renders.
+  // Derive a stable identity key for the candidate polygon. The parent
+  // re-creates the `polygons` array on every render, which would thrash
+  // the effect below (cleanup → cancel capture → re-run → cancel again
+  // → never finishes). Using a string-valued key as the effect dep means
+  // the effect only re-runs when the actual polygon CONTENT changes, not
+  // on every parent re-render.
+  const primaryPolygon = polygons?.reduce<Array<{ lat: number; lng: number }> | null>(
+    (best, p) => {
+      if (!p || p.length < 3) return best;
+      return !best || p.length > best.length ? p : best;
+    },
+    null,
+  ) ?? null;
+  const verifyEligible =
+    !!primaryPolygon &&
+    !!polygonSource &&
+    polygonSource !== "edited" &&
+    polygonSource !== "ai" &&
+    polygonSource !== "tiles3d";
+  const polygonVerifyKey =
+    verifyEligible && primaryPolygon
+      ? `${polygonSource}:${primaryPolygon[0].lat.toFixed(5)},${primaryPolygon[0].lng.toFixed(5)}:${primaryPolygon.length}`
+      : null;
+
   useEffect(() => {
+    if (!polygonVerifyKey || !primaryPolygon) return;
     const viewer = viewerRef.current as
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       | any
       | null;
     if (!viewer || status !== "ready") return;
-    if (!polygons || polygons.length === 0) return;
     if (!onVerifiedRef.current) return;
-    if (
-      polygonSource === "edited" ||
-      polygonSource === "ai" ||
-      polygonSource === "tiles3d"
-    ) return;
     const Cesium = window.Cesium;
     if (!Cesium) return;
 
-    // Pick the largest polygon as primary (matches what page.tsx renders)
-    const primary = polygons.reduce<Array<{ lat: number; lng: number }> | null>(
-      (best, p) => {
-        if (!p || p.length < 3) return best;
-        return !best || p.length > best.length ? p : best;
-      },
-      null,
-    );
-    if (!primary) return;
-
-    const key = `${polygonSource}:${primary[0].lat.toFixed(5)},${primary[0].lng.toFixed(5)}:${primary.length}`;
+    const key = polygonVerifyKey;
+    const primary = primaryPolygon;
     if (verifiedPolygonRef.current === key) return;
-    verifiedPolygonRef.current = key;
+
+    // Sequenced flow:
+    //   1. Wait for the panel to finish float-in (420ms) + tiles to settle
+    //      visually (~1s extra on top of initialTilesLoaded). Without this
+    //      buffer the camera snap is racing CSS animation, the canvas may
+    //      still be 0-wide, and Cesium tile streaming hasn't drawn the
+    //      property's textures yet.
+    //   2. Capture top-down + 4 obliques.
+    //   3. Mark the polygon as "in-flight" so a re-render with the same
+    //      polygon doesn't kick off a parallel capture, but DON'T mark
+    //      until we've actually started capturing — this way, React 19
+    //      strict-mode dev double-mounts cleanup-cancel the first
+    //      attempt, then the second mount runs to completion. In prod
+    //      (single mount) this still fires once.
+    const SETTLE_MS = 1500;
 
     let cancelled = false;
     (async () => {
       console.log(`[Roof3DViewer] starting multi-view capture for [${polygonSource}]`);
+      // Step 1: settle delay
+      await delay(SETTLE_MS);
+      if (cancelled) return;
+
+      // Step 2: capture
       const captured = await captureMultiViewForVerify({
         Cesium,
         viewer,
@@ -616,6 +779,11 @@ export default function Roof3DViewer({
         console.warn("[Roof3DViewer] multi-view capture failed");
         return;
       }
+
+      // Step 3: mark as verified-in-flight (only after we have screenshots)
+      // so a quick cancel doesn't poison the cache and prevent retry.
+      verifiedPolygonRef.current = key;
+
       // Restore camera framing — captureMultiView restores prior pose,
       // but recenterRef pulls back to our drone-hover orbit.
       recenterRef.current?.();
@@ -666,7 +834,11 @@ export default function Roof3DViewer({
     return () => {
       cancelled = true;
     };
-  }, [polygons, polygonSource, status, lat, lng, address]);
+    // primaryPolygon is derived from polygonVerifyKey identity — when the
+    // key is the same, primaryPolygon's contents are equivalent. We don't
+    // include it in deps to avoid re-firing on parent array re-creation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [polygonVerifyKey, status, lat, lng, address]);
 
 
   return (
@@ -712,6 +884,7 @@ export default function Roof3DViewer({
         <div className="absolute top-2.5 right-2.5 z-10 flex gap-1.5">
           <button
             onClick={() => {
+              setTopDown(false);
               recenterRef.current?.();
               setOrbiting(true);
             }}
@@ -719,6 +892,22 @@ export default function Roof3DViewer({
             title="Recenter on property"
           >
             <Crosshair size={11} /> <span>Recenter</span>
+          </button>
+          <button
+            onClick={() => {
+              setTopDown((v) => !v);
+              setOrbiting(false);
+            }}
+            aria-pressed={topDown}
+            className="chip chip-accent backdrop-blur-md bg-[#07090d]/65"
+            title={
+              topDown
+                ? "Exit top-down (orthographic)"
+                : "Top-down view (orthographic — polygon lines up with roof)"
+            }
+          >
+            <Square size={11} />
+            <span>Top-Down</span>
           </button>
           <button
             onClick={() => setOrbiting((v) => !v)}
