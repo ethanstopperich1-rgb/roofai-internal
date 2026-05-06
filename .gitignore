@@ -34,6 +34,14 @@ scripts/debug-*
 # Per-developer Claude Code launch configs
 .claude/
 
+# Playwright MCP debug artifacts — local walk-through traces / screenshots
+.playwright-mcp/
+quote-step*.png
+quote-step*.jpeg
+quote-form-*.png
+quote-form-*.jpeg
+step*-fixed.*
+
 # Build-time data extraction cache (the 890MB raw TN building footprint
 # file from microsoft.com — output goes in public/data/ which IS committed)
 .cache/
