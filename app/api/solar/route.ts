@@ -96,6 +96,7 @@ export async function GET(req: Request) {
         segmentPolygonsLatLng: [],
         segments: [],
         dominantAzimuthDeg: null,
+        buildingCenter: null,
       };
       await setCached("solar", lat, lng, empty);
       return NextResponse.json(empty);
@@ -150,6 +151,16 @@ export async function GET(req: Request) {
   const dominantAzimuthDeg = dominantAzimuth(enrichedSegments);
   segmentPolygonsLatLng = rotateAllFacets(enrichedSegments, dominantAzimuthDeg);
 
+  // Solar's `findClosest` returns the actual building's photogrammetric
+  // centroid in `data.center`. It's the closest building to the user's
+  // input — typically 0-5m off the building's true center, vs the user's
+  // geocoded address which sits on the street setback (5-15m off).
+  const dataCenter = data?.center as { latitude?: number; longitude?: number } | undefined;
+  const buildingCenter =
+    typeof dataCenter?.latitude === "number" && typeof dataCenter?.longitude === "number"
+      ? { lat: dataCenter.latitude, lng: dataCenter.longitude }
+      : null;
+
   const summary: SolarSummary = {
     sqft: totalRoofSqft,
     pitch: degreesToPitch(avgPitchDeg),
@@ -161,6 +172,7 @@ export async function GET(req: Request) {
     segmentPolygonsLatLng,
     segments: enrichedSegments,
     dominantAzimuthDeg,
+    buildingCenter,
     maxArrayPanels: stats?.maxArrayPanelsCount ?? null,
     yearlyKwhPotential: stats?.maxSunshineHoursPerYear ?? null,
   };

@@ -166,11 +166,53 @@ export default function HomePage() {
   // (the sam-refine fetch resolves ~5-10s after OSM, by which point the rep
   // may have already moved vertices on the OSM polygon).
   const hasUserEditedRef = useRef(false);
+  // Refs mirror state for the edit-capture closure so its [] dep array is
+  // safe — without these, the captured edit would carry stale address /
+  // source data from the moment handlePolygonsChanged was first created.
+  const addressRef = useRef<AddressInfo | null>(null);
+  const polygonSourceRef = useRef<string>("none");
+  // Active-learning edit capture: when the rep settles on a corrected
+  // polygon (5s of no further edits), persist it as a future training/
+  // eval datapoint. The rep's manual correction IS the ground truth for
+  // this address; capturing thousands of these over time gives us a
+  // labeled corpus for fine-tuning a custom segmenter — without any
+  // extra labeling effort. The original AI source is recorded too so we
+  // can later compute "Roboflow IoU vs rep-corrected truth" by source.
+  const editCaptureTimerRef = useRef<number | null>(null);
+  const lastCapturedSignatureRef = useRef<string | null>(null);
   const handlePolygonsChanged = useCallback(
     (polys: Array<Array<{ lat: number; lng: number }>>) => {
       hasUserEditedRef.current = true;
       setLivePolygons(polys);
+      // Debounced capture: reset on every edit, fire 5s after last edit.
+      if (editCaptureTimerRef.current != null) {
+        window.clearTimeout(editCaptureTimerRef.current);
+      }
+      editCaptureTimerRef.current = window.setTimeout(() => {
+        editCaptureTimerRef.current = null;
+        const primary = polys?.[0];
+        if (!primary || primary.length < 3) return;
+        // De-dup: don't re-POST identical polygons (rep clicked but didn't
+        // change anything, or the debounce caught a no-op flicker).
+        const sig = `${primary.length}|${primary[0].lat.toFixed(6)},${primary[0].lng.toFixed(6)}`;
+        if (sig === lastCapturedSignatureRef.current) return;
+        lastCapturedSignatureRef.current = sig;
+        // Fire-and-forget; failures are non-fatal (capture is opportunistic).
+        const a = addressRef.current;
+        fetch("/api/eval-truth/edit-capture", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            address: a?.formatted ?? null,
+            lat: a?.lat ?? null,
+            lng: a?.lng ?? null,
+            originalSource: polygonSourceRef.current,
+            polygon: primary,
+          }),
+        }).catch(() => { /* opportunistic */ });
+      }, 5000);
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -222,9 +264,16 @@ export default function HomePage() {
   }, [vision?.roofPolygon, address?.lat, address?.lng]);
 
   // Wrong-house guard. Every auto-detected polygon must contain (or be within
-  // 8 m of) the geocoded address. Catches the failure mode where AI traces
-  // the brightest neighbouring roof rather than the actual target. Returns
-  // the polygon when valid, null when it should be rejected.
+  // 8 m of) an anchor on the actual building. Catches the failure mode
+  // where AI traces the brightest neighbouring roof rather than the actual
+  // target. Returns the polygon when valid, null when it should be rejected.
+  //
+  // Two anchors are checked, polygon passes if it satisfies EITHER:
+  //   1. Solar's `buildingCenter` — Solar API's photogrammetric centroid
+  //      for the closest building. Tighter and on the actual roof, vs the
+  //      geocoded address which sits on the street setback (5-15 m off).
+  //   2. The user's geocoded address — fallback when Solar has no coverage
+  //      or `buildingCenter` is null (rural / unmapped).
   //
   // Tightened from 15m → 8m (2026-05-05) after the eval set (scripts/
   // eval-truth/) showed two FL addresses where Roboflow returned an IoU=0
@@ -232,20 +281,30 @@ export default function HomePage() {
   // geocoded address — slipped through the old guard and landed in front
   // of the rep. 8m matches the typical setback of geocoded address points
   // from a residential roof's edge.
+  const buildingCenter = solar?.buildingCenter ?? null;
   const validateAtAddress = (
     poly: Array<{ lat: number; lng: number }> | null,
   ): Array<{ lat: number; lng: number }> | null => {
     if (!poly || poly.length < 3) return null;
-    if (address?.lat == null || address?.lng == null) return poly;
+    // Primary anchor: Solar's reported building center, when available.
+    if (buildingCenter && polygonIsNearAddress(poly, buildingCenter.lat, buildingCenter.lng, 8)) {
+      return poly;
+    }
+    // Fallback anchor: user's geocoded address.
+    if (address?.lat == null || address?.lng == null) {
+      // No address; if Solar gave us a center the polygon already failed
+      // that, so reject. Otherwise pass by default (legacy behaviour).
+      return buildingCenter ? null : poly;
+    }
     return polygonIsNearAddress(poly, address.lat, address.lng, 8) ? poly : null;
   };
 
-  const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng]);
-  const validRoboflow = useMemo(() => validateAtAddress(roboflowPolygon), [roboflowPolygon, address?.lat, address?.lng]);
-  const validSam = useMemo(() => validateAtAddress(samRefinedPolygon), [samRefinedPolygon, address?.lat, address?.lng]);
-  const validOsm = useMemo(() => validateAtAddress(osmBuildingPolygon), [osmBuildingPolygon, address?.lat, address?.lng]);
-  const validMsBuilding = useMemo(() => validateAtAddress(msBuildingPolygon), [msBuildingPolygon, address?.lat, address?.lng]);
-  const validClaude = useMemo(() => validateAtAddress(claudePolygonLatLng), [claudePolygonLatLng, address?.lat, address?.lng]);
+  const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng, buildingCenter]);
+  const validRoboflow = useMemo(() => validateAtAddress(roboflowPolygon), [roboflowPolygon, address?.lat, address?.lng, buildingCenter]);
+  const validSam = useMemo(() => validateAtAddress(samRefinedPolygon), [samRefinedPolygon, address?.lat, address?.lng, buildingCenter]);
+  const validOsm = useMemo(() => validateAtAddress(osmBuildingPolygon), [osmBuildingPolygon, address?.lat, address?.lng, buildingCenter]);
+  const validMsBuilding = useMemo(() => validateAtAddress(msBuildingPolygon), [msBuildingPolygon, address?.lat, address?.lng, buildingCenter]);
+  const validClaude = useMemo(() => validateAtAddress(claudePolygonLatLng), [claudePolygonLatLng, address?.lat, address?.lng, buildingCenter]);
 
   // Pattern A: only consider a source if its 3D-mesh validation score is
   // above MIN_VALIDATION_SCORE (or no score yet — we don't penalize sources
@@ -309,6 +368,43 @@ export default function HomePage() {
     if (ratio > 3.0 || ratio < 0.3 || centroidDistM > 25) {
       console.warn(
         `[hallucination] candidate vs MS Footprint: area ratio=${ratio.toFixed(2)}, centroid dist=${centroidDistM.toFixed(1)}m — flagging as hallucination`,
+      );
+      return false;
+    }
+    return true;
+  };
+
+  // Roof-type prior gate. When Claude vision is highly confident about the
+  // roof's complexity class (simple / moderate / complex), demote candidate
+  // polygons whose vertex count wildly disagrees:
+  //
+  //   • Vision says "simple" (rectangular ranch / single-gable) but
+  //     candidate has >12 vertices  → likely over-traced into yard or
+  //     captured a different irregular structure. Demote.
+  //   • Vision says "complex" (multi-section, dormers) but candidate has
+  //     ≤4 vertices  → likely traced just one wing of a multi-section
+  //     house. Demote.
+  //
+  // Only fires when vision.confidence >= 0.85 because lower-confidence
+  // vision frequently misclassifies complexity. When vision is unavailable
+  // or low-confidence, the gate trivially passes and other gates handle
+  // the candidate.
+  const passesComplexityPrior = (
+    candidate: Array<{ lat: number; lng: number }> | null,
+  ): boolean => {
+    if (!candidate || candidate.length < 3) return true;
+    if (!vision || typeof vision.confidence !== "number") return true;
+    if (vision.confidence < 0.85) return true;
+    const v = candidate.length;
+    if (vision.complexity === "simple" && v > 12) {
+      console.warn(
+        `[complexity-prior] vision=simple but polygon has ${v} vertices — likely over-trace, demoting`,
+      );
+      return false;
+    }
+    if (vision.complexity === "complex" && v <= 4) {
+      console.warn(
+        `[complexity-prior] vision=complex but polygon has only ${v} vertices — likely under-trace, demoting`,
       );
       return false;
     }
@@ -407,16 +503,16 @@ export default function HomePage() {
     // house"). OSM + MS Buildings are footprint-derived themselves so the
     // coverage gate is skipped on them — they're the ground truth Solar's
     // footprint comes from.
-    if (validSolarMask && passesClaude("solar-mask") && passesCoverage(validSolarMask)) return "solar-mask";
-    if (validRoboflow && passesClaude("roboflow") && passesCoverage(validRoboflow) && passesMsHallucinationCheck(validRoboflow)) return "roboflow";
-    if (validSam && passesClaude("sam") && passesCoverage(validSam)) return "sam";
+    if (validSolarMask && passesClaude("solar-mask") && passesCoverage(validSolarMask) && passesComplexityPrior(validSolarMask)) return "solar-mask";
+    if (validRoboflow && passesClaude("roboflow") && passesCoverage(validRoboflow) && passesMsHallucinationCheck(validRoboflow) && passesComplexityPrior(validRoboflow)) return "roboflow";
+    if (validSam && passesClaude("sam") && passesCoverage(validSam) && passesComplexityPrior(validSam)) return "sam";
     // Apply coverage gate to OSM & MS Buildings too — community traces and
     // ML-extracted footprints are sometimes wrong (yard perimeter, included
     // outbuildings, etc). When OSM/MS is the reference itself the gate is
     // self-comparing → trivially passes. Otherwise it catches wrong outlines
     // by ratio against Solar's footprint or whichever source IS the reference.
-    if (validOsm && passesClaude("osm") && passesCoverage(validOsm)) return "osm";
-    if (validMsBuilding && passesClaude("microsoft-buildings") && passesCoverage(validMsBuilding)) return "microsoft-buildings";
+    if (validOsm && passesClaude("osm") && passesCoverage(validOsm) && passesComplexityPrior(validOsm)) return "osm";
+    if (validMsBuilding && passesClaude("microsoft-buildings") && passesCoverage(validMsBuilding) && passesComplexityPrior(validMsBuilding)) return "microsoft-buildings";
     // Solar facets — rotated bboxes from findClosest. Demoted from former
     // position #3 (above SAM) to #6 (after MS Buildings) because the
     // rotated rectangles are visually crude vs. SAM/OSM/MS curated
@@ -439,6 +535,10 @@ export default function HomePage() {
     claudeVerifications,
     msBuildingPolygon,
   ]);
+
+  // Keep refs in sync for the active-learning edit-capture closure.
+  useEffect(() => { addressRef.current = address; }, [address]);
+  useEffect(() => { polygonSourceRef.current = polygonSource; }, [polygonSource]);
 
   // Source polygons — what MapView draws initially. Edited polygons don't
   // come back through this prop (would cause a redraw loop / cancel the
@@ -575,29 +675,71 @@ export default function HomePage() {
     }
     const claudeStrong = !!(claudeV && claudeV.ok && claudeV.confidence >= 0.85);
     const claudeMod = !!(claudeV && claudeV.ok && claudeV.confidence >= 0.6);
+
+    // Imagery-age penalty. Solar / Google Static Maps imagery for any given
+    // property dates 2017-2024. Older imagery means the rep may be looking
+    // at a roof that's since been replaced, extended, or torn off — even
+    // a perfect AI trace describes a stale state. STALE_YEARS=5 is the
+    // point where roof material/condition divergence starts dominating;
+    // 3 is when "noticeably aged" matters for sales accuracy.
+    const STALE_YEARS = 5;
+    const AGED_YEARS = 3;
+    const imageryDateString = solar?.imageryDate ?? null;
+    const imageryAgeYears = imageryDateString
+      ? (Date.now() - new Date(imageryDateString).getTime()) /
+        (365.25 * 24 * 3600 * 1000)
+      : null;
+    const isStaleImagery =
+      imageryAgeYears != null &&
+      isFinite(imageryAgeYears) &&
+      imageryAgeYears > STALE_YEARS;
+    const isAgedImagery =
+      imageryAgeYears != null &&
+      isFinite(imageryAgeYears) &&
+      imageryAgeYears > AGED_YEARS;
+    // Solar's `imageryQuality === "LOW"` also indicates a less reliable
+    // mask — same effect on confidence.
+    const lowQualityImagery = solar?.imageryQuality === "LOW";
+
+    const ageNote = isStaleImagery
+      ? ` · imagery ${Math.round(imageryAgeYears!)}y old`
+      : isAgedImagery
+        ? ` · imagery ${Math.round(imageryAgeYears!)}y old`
+        : lowQualityImagery
+          ? " · imagery LOW quality"
+          : "";
+
+    // Imagery age caps the achievable confidence level. Stale imagery (>5y)
+    // can't be high-confidence even with perfect cross-source agreement —
+    // the underlying ground truth might not be the current roof.
     if (consensusInfo.agreeingSources >= 3 || (claudeStrong && consensusInfo.agreeingSources >= 1)) {
+      const cappedToModerate = isStaleImagery || lowQualityImagery;
       return {
-        level: "high",
-        rationale: `${consensusInfo.agreeingSources + 1} sources agree${claudeStrong ? " · verifier passed" : ""}`,
+        level: cappedToModerate ? "moderate" : "high",
+        rationale: `${consensusInfo.agreeingSources + 1} sources agree${claudeStrong ? " · verifier passed" : ""}${ageNote}`,
       };
     }
     if (consensusInfo.agreeingSources >= 2 || claudeStrong || (claudeMod && consensusInfo.agreeingSources >= 1)) {
+      const cappedToLow = isStaleImagery && !claudeStrong;
       return {
-        level: "moderate",
-        rationale: `${consensusInfo.agreeingSources + 1} sources agree${claudeMod ? " · verifier passed" : ""}`,
+        level: cappedToLow ? "low" : "moderate",
+        rationale: `${consensusInfo.agreeingSources + 1} sources agree${claudeMod ? " · verifier passed" : ""}${ageNote}`,
       };
     }
     if (polygonSource === "ai") {
-      return { level: "low", rationale: "AI fallback (other sources unavailable)" };
+      return { level: "low", rationale: `AI fallback (other sources unavailable)${ageNote}` };
     }
     if (consensusInfo.agreeingSources === 0 && consensusInfo.sources.length > 0) {
       return {
         level: "low",
-        rationale: `Sources disagree (best IoU ${consensusInfo.bestIoU.toFixed(2)})`,
+        rationale: `Sources disagree (best IoU ${consensusInfo.bestIoU.toFixed(2)})${ageNote}`,
       };
     }
-    return { level: "moderate", rationale: "Single-source polygon" };
-  }, [polygonSource, claudeVerifications, consensusInfo]);
+    return {
+      level: isStaleImagery || lowQualityImagery ? "low" : "moderate",
+      rationale: `Single-source polygon${ageNote}`,
+    };
+  }, [polygonSource, claudeVerifications, consensusInfo, solar?.imageryDate, solar?.imageryQuality]);
 
   // Single-image Claude verification was previously triggered here from
   // /api/verify-polygon. That endpoint still exists as a fallback but the
@@ -1172,6 +1314,7 @@ export default function HomePage() {
                 polygonSource={polygonSource === "none" ? undefined : polygonSource}
                 polygonsHidden={!polygonReady}
                 expectedFootprintSqft={referenceFootprintSqft}
+                imageryDate={solar?.imageryDate ?? null}
                 onMultiViewVerified={(result) => {
                   if (!polygonSource || polygonSource === "none") return;
                   setClaudeVerifications((cur) => ({

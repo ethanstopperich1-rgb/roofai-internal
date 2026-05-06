@@ -19,6 +19,12 @@ scripts/eval-output/
 # (`git add -f`) if you want shared regression coverage on them.
 scripts/eval-truth/*.json
 
+# Active-learning rep-edit captures. Auto-saved by /api/eval-truth/edit-
+# capture every time a rep manually corrects an AI polygon. Real customer
+# addresses; per-engineer / per-deployment data. In production these go
+# to Vercel Blob, not the filesystem.
+scripts/eval-truth/edits/
+
 # Throwaway diagnostic scripts from one-off bug hunts.
 scripts/debug-*
 

@@ -115,6 +115,15 @@ export interface SolarSummary {
    *  to [0, 90) since rectangular buildings are bilaterally symmetric.
    *  Drives best-of-N orthogonalization (§8) and the axis-mismatch validator. */
   dominantAzimuthDeg: number | null;
+  /** Solar's photogrammetric building center for the closest building to
+   *  the user's input lat/lng. Tighter and more reliable than the geocoded
+   *  street address for proximity guards — Google's geocode points sit
+   *  on the street/setback (often 5-15m from the building entry); Solar's
+   *  `center` is on the actual building footprint. Used by validateAtAddress
+   *  in app/(internal)/page.tsx as a secondary anchor so polygons that
+   *  overlap the real building pass even when the geocoded address point
+   *  is across the lawn. */
+  buildingCenter?: { lat: number; lng: number } | null;
   maxArrayPanels?: number | null;
   yearlyKwhPotential?: number | null;
 }

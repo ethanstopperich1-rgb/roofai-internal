@@ -3,6 +3,7 @@ import { rateLimit } from "@/lib/ratelimit";
 import Anthropic from "@anthropic-ai/sdk";
 import sharp from "sharp";
 import { getCached, setCached } from "@/lib/cache";
+import { sunPositionAt } from "@/lib/sun-position";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -103,6 +104,11 @@ interface RequestBody {
   polygon?: Array<{ lat: number; lng: number }>;
   topDown?: { base64?: string; halfWidthM?: number };
   obliques?: Array<{ base64?: string; headingDeg?: number }>;
+  /** Optional — ISO date of the underlying satellite imagery (Solar
+   *  API's `imageryDate`). When passed, the verify prompt receives the
+   *  predicted shadow direction for that date so Claude can disregard
+   *  shadow-cast regions when judging eave edges. */
+  imageryDate?: string | null;
   /** Optional sanity context — Solar's reported building footprint area
    *  in sqft. When passed, included in the prompt so Claude can compare
    *  the polygon's footprint against the known building footprint and
@@ -272,6 +278,10 @@ async function callClaude(opts: {
   source?: string;
   polygonAreaSqft: number | null;
   expectedFootprintSqft: number | null;
+  /** Predicted shadow azimuth from sun position at the imagery's capture
+   *  date. When passed, included in the prompt so Claude can disregard
+   *  shadow-cast regions when scoring eave edges. */
+  shadowAzimuthDeg: number | null;
 }): Promise<VerifyResult | null> {
   const client = new Anthropic({ apiKey: opts.apiKey });
   const oblOrder = [...opts.obliques].sort((a, b) => a.headingDeg - b.headingDeg);
@@ -299,6 +309,25 @@ async function callClaude(opts: {
   ) {
     const ratio = opts.polygonAreaSqft / opts.expectedFootprintSqft;
     contextLines.push(`• Size ratio: ${ratio.toFixed(2)}× expected (1.0–1.2× is normal eave overhang; >1.5× suggests over-trace)`);
+  }
+  // Sun / shadow direction. Aerial imagery often has tree/structure shadows
+  // cast onto the roof or yard that AI segmenters misread as roof edges.
+  // Telling Claude where shadows fall lets it disregard shadow-aligned
+  // false eaves rather than flagging them as misplaced polygon edges.
+  if (opts.shadowAzimuthDeg != null && isFinite(opts.shadowAzimuthDeg)) {
+    const az = opts.shadowAzimuthDeg;
+    const dir =
+      az < 22.5 || az >= 337.5 ? "north"
+      : az < 67.5 ? "northeast"
+      : az < 112.5 ? "east"
+      : az < 157.5 ? "southeast"
+      : az < 202.5 ? "south"
+      : az < 247.5 ? "southwest"
+      : az < 292.5 ? "west"
+      : "northwest";
+    contextLines.push(
+      `• Shadow direction: shadows cast roughly to the ${dir} (sun azimuth ~${(((az + 180) % 360)).toFixed(0)}°). Disregard shadow-cast regions when judging where the eave actually is.`,
+    );
   }
   const contextText =
     contextLines.length > 0
@@ -476,6 +505,20 @@ export async function POST(req: Request) {
     cosLat;
   const polygonAreaSqft = polygonAreaSqM * 10.7639;
 
+  // Compute shadow azimuth from the imagery date when available. Solar API
+  // doesn't return time-of-day so sunPositionAt assumes solar noon — fine
+  // for shadow-direction (off by <30° vs actual capture time), which is
+  // all the verify prompt needs.
+  let shadowAzimuthDeg: number | null = null;
+  if (typeof body.imageryDate === "string" && body.imageryDate.length >= 10) {
+    const sun = sunPositionAt({ lat, lng, isoDate: body.imageryDate });
+    if (sun && sun.altitudeDeg > 5) {
+      // Skip when the sun is below the horizon — would mean imagery date
+      // is wrong / future-dated; better to omit shadow context than mislead.
+      shadowAzimuthDeg = sun.shadowAzimuthDeg;
+    }
+  }
+
   let result: VerifyResult | null = null;
   try {
     result = await callClaude({
@@ -489,6 +532,7 @@ export async function POST(req: Request) {
         isFinite(body.expectedFootprintSqft)
           ? body.expectedFootprintSqft
           : null,
+      shadowAzimuthDeg,
     });
   } catch (err) {
     console.error("[verify-multiview] claude error:", err);

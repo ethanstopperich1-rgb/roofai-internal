@@ -41,6 +41,11 @@ interface Props {
    *  size-check the candidate polygon against the known footprint and
    *  flag obvious over- or under-traces. */
   expectedFootprintSqft?: number | null;
+  /** Optional ISO date of the underlying satellite imagery (Solar API's
+   *  `imageryDate`). Forwarded to the multi-view verifier so it can
+   *  compute predicted shadow direction and tell Claude to disregard
+   *  shadow-cast regions when judging eaves. */
+  imageryDate?: string | null;
 }
 
 // Multi-view capture geometry. These constants control the camera poses used
@@ -285,6 +290,7 @@ export default function Roof3DViewer({
   onMultiViewVerified,
   polygonsHidden,
   expectedFootprintSqft,
+  imageryDate,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
@@ -894,6 +900,7 @@ export default function Roof3DViewer({
             address,
             source: polygonSource,
             polygon: primary,
+            imageryDate: imageryDate ?? null,
             expectedFootprintSqft:
               typeof expectedFootprintSqft === "number" &&
               isFinite(expectedFootprintSqft)

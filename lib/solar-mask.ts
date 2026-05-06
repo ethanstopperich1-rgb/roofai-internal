@@ -147,6 +147,129 @@ async function readMaskRaster(buf: ArrayBuffer): Promise<{
 }
 
 /**
+ * Read a DSM (Digital Surface Model) GeoTIFF as a Float32Array of heights
+ * in meters above some local datum. Same dimensions as the mask raster
+ * (Solar API guarantees aligned grids when both are requested at the
+ * same `pixelSizeMeters`). Returns null on any parse / read failure —
+ * mask fusion is opportunistic, never required.
+ */
+async function readDsmRaster(
+  buf: ArrayBuffer,
+): Promise<{ heights: Float32Array; width: number; height: number } | null> {
+  try {
+    const tiff = await fromArrayBuffer(buf);
+    const image = await tiff.getImage();
+    const width = image.getWidth();
+    const height = image.getHeight();
+    const r = await image.readRasters({ interleave: true });
+    const arr = r as unknown as Float32Array | Uint16Array;
+    const heights = new Float32Array(width * height);
+    for (let i = 0; i < heights.length; i++) {
+      heights[i] = Number(arr[i]);
+    }
+    return { heights, width, height };
+  } catch (err) {
+    console.warn("[solar-mask] dsm read error:", err);
+    return null;
+  }
+}
+
+/**
+ * Extend a binary mask with DSM-elevated pixels 4-connected to the mask
+ * AND matching the building's specific height range.
+ *
+ * Initial naive version (Δheight > ground+2.5m, flood-fill 4-connected)
+ * was too aggressive — caught tree canopies that touched the building's
+ * mask boundary and neighbour structures linked by hedges. Worst case
+ * inflated a 2,827 sqft mask to 16,824 sqft (-0.41 IoU).
+ *
+ * Constrained fusion strategy:
+ *   1. Compute the median DSM height of pixels CURRENTLY in the mask
+ *      (= the building's typical roof height). Trust the segmenter on
+ *      what's a building; use DSM only for what its boundary should be.
+ *   2. Find pixels NOT in the mask but 4-connected to it AND with DSM
+ *      height within ±2 m of the building's median (within roof height
+ *      tolerance — eaves vs ridge vary by ~2 m on residential roofs).
+ *   3. Add only those pixels (single-pixel-thick "halo" expansion per
+ *      iteration).
+ *   4. Repeat the boundary expansion at most BFS_HOPS times — limits
+ *      how far the mask can grow even if the height test keeps passing
+ *      (catches the failure mode where a same-height neighbour is
+ *      connected via a thin same-height bridge).
+ *   5. Cap total added pixels at MAX_GROWTH_FRACTION of original mask
+ *      area — extra defence against runaway growth.
+ *
+ * Only adds pixels — never removes — so this can't make the mask wronger
+ * than the segmenter alone, only larger. Caps prevent the "larger than
+ * the entire neighbourhood" failure mode.
+ */
+function fuseDsmIntoMask(
+  mask: Uint8Array,
+  dsmHeights: Float32Array,
+  width: number,
+  height: number,
+): void {
+  if (dsmHeights.length !== mask.length) return;
+
+  // Compute the building's median height from ON-mask pixels.
+  const onMaskHeights: number[] = [];
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i]) {
+      const h = dsmHeights[i];
+      if (Number.isFinite(h)) onMaskHeights.push(h);
+    }
+  }
+  if (onMaskHeights.length < 50) return;
+  onMaskHeights.sort((a, b) => a - b);
+  const buildingMedian = onMaskHeights[Math.floor(onMaskHeights.length / 2)];
+  // ±2m tolerance covers typical roof eave-to-ridge variation. Anything
+  // outside this band (trees +5m, neighbouring 2-story house, etc.) is
+  // explicitly rejected.
+  const minH = buildingMedian - 2;
+  const maxH = buildingMedian + 2;
+
+  const BFS_HOPS = 4; // ~1m of expansion at 0.25 m/px
+  const MAX_GROWTH_FRACTION = 0.2; // never expand more than 20% of mask area
+  const maxAdditions = Math.floor(onMaskHeights.length * MAX_GROWTH_FRACTION);
+
+  let frontier: number[] = [];
+  for (let i = 0; i < mask.length; i++) if (mask[i]) frontier.push(i);
+
+  let added = 0;
+  for (let hop = 0; hop < BFS_HOPS && added < maxAdditions; hop++) {
+    const nextFrontier: number[] = [];
+    for (const idx of frontier) {
+      const x = idx % width;
+      const y = (idx - x) / width;
+      const neighbours: number[] = [];
+      if (x > 0) neighbours.push(idx - 1);
+      if (x < width - 1) neighbours.push(idx + 1);
+      if (y > 0) neighbours.push(idx - width);
+      if (y < height - 1) neighbours.push(idx + width);
+      for (const n of neighbours) {
+        if (mask[n]) continue;
+        const h = dsmHeights[n];
+        if (!Number.isFinite(h)) continue;
+        if (h < minH || h > maxH) continue;
+        mask[n] = 1;
+        added++;
+        nextFrontier.push(n);
+        if (added >= maxAdditions) break;
+      }
+      if (added >= maxAdditions) break;
+    }
+    if (nextFrontier.length === 0) break;
+    frontier = nextFrontier;
+  }
+
+  if (added > 0) {
+    console.log(
+      `[solar-mask] DSM fusion added ${added} pixels (building median=${buildingMedian.toFixed(1)}m, hops=${BFS_HOPS})`,
+    );
+  }
+}
+
+/**
  * Flood-fill the connected component containing (or nearest to) the
  * centerpoint. Returns a mask containing ONLY that component. Used so
  * neighboring buildings in the radius don't bleed into the trace.
@@ -410,10 +533,20 @@ export async function fetchSolarRoofMask(opts: {
     console.warn("[solar-mask] no maskUrl in dataLayers response");
     return null;
   }
-  const buf = await fetchMaskTiff(dataLayers.maskUrl, apiKey);
-  if (!buf) return null;
+  // Fetch mask + DSM tiffs in parallel. DSM is opportunistic — used to
+  // catch under-traces (segmenter missed a wing/garage) by extending the
+  // mask with elevated pixels 4-connected to the building. Fusion is
+  // skipped when DSM is missing or shape-mismatched; it never makes the
+  // mask wronger.
+  const [maskBuf, dsmBuf] = await Promise.all([
+    fetchMaskTiff(dataLayers.maskUrl, apiKey),
+    dataLayers.dsmUrl
+      ? fetchMaskTiff(dataLayers.dsmUrl, apiKey)
+      : Promise.resolve(null),
+  ]);
+  if (!maskBuf) return null;
 
-  const raster = await readMaskRaster(buf);
+  const raster = await readMaskRaster(maskBuf);
   if (!raster) return null;
   const { data: rawMask, width, height, bbox } = raster;
 
@@ -422,6 +555,15 @@ export async function fetchSolarRoofMask(opts: {
   if (!mask) {
     console.warn("[solar-mask] no roof component near centerpoint");
     return null;
+  }
+
+  // DSM fusion — only after isolating the center component so neighbour
+  // buildings don't get dragged in via 4-connected elevated paths.
+  if (dsmBuf) {
+    const dsm = await readDsmRaster(dsmBuf);
+    if (dsm && dsm.width === width && dsm.height === height) {
+      fuseDsmIntoMask(mask, dsm.heights, width, height);
+    }
   }
 
   let area = 0;
