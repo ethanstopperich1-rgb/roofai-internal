@@ -135,6 +135,13 @@ interface Testimonial {
   rating: 5;
 }
 
+// Sample placeholder testimonials. NOT real customer quotes — kept here
+// as visual scaffolding until verified reviews land. The Testimonials
+// component below renders nothing unless `NEXT_PUBLIC_REVIEWS_VERIFIED=true`
+// is set on the deploy. Asserting "Recent quotes through the platform"
+// next to fabricated names + cities + initials is FTC deceptive-
+// testimonial territory; gate kept off by default so any /quote
+// deployment that hasn't curated real reviews simply omits the section.
 const TESTIMONIALS: Testimonial[] = [
   {
     quote:
@@ -160,6 +167,10 @@ const TESTIMONIALS: Testimonial[] = [
 ];
 
 export function Testimonials() {
+  // Render nothing until real, verified reviews are wired in. The
+  // placeholder copy above is for design preview only.
+  if (process.env.NEXT_PUBLIC_REVIEWS_VERIFIED !== "true") return null;
+
   return (
     <section
       id="reviews"
@@ -169,7 +180,7 @@ export function Testimonials() {
         <SectionHeading
           eyebrow="Reviews"
           title="What homeowners say"
-          sub="Recent quotes generated through the platform. Names initialized for privacy."
+          sub="Verified homeowners who used the platform to compare quotes."
         />
 
         <div className="grid md:grid-cols-3 gap-4 sm:gap-6 mt-10">
