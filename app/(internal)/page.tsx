@@ -777,17 +777,25 @@ export default function HomePage() {
     });
   }, [vision?.penetrations, activePolygons, address?.lat, address?.lng]);
 
-  // Whenever the active polygon changes, sync the derived roof area into
-  // assumptions.sqft so map label, blueprint label, and line-item engine
-  // all read the same number. Solar API takes precedence on initial load
-  // (Solar's per-facet area is more accurate for multi-pitch roofs than
-  // a single-pitch polygon projection) — but once the rep edits the
-  // polygon, the edit is the truth and we recompute from it. Without
-  // this carve-out, the displayed sqft / line items stayed at Solar's
-  // original number even after the rep redraw the polygon to a smaller
-  // shape.
+  // Whenever the active polygon changes, derive the roof area from it
+  // and write to assumptions.sqft. Polygon-derived sqft is now the
+  // canonical number — Solar API's `roofSegmentStats` total is no
+  // longer used as the displayed sqft because it consistently
+  // undercounts on complex / multi-section / older-imagery roofs
+  // (Solar drops segments it can't confidently re-orient or whose
+  // photogrammetry is shadowed). User feedback: "the rep is looking
+  // AT the polygon — the number better match what they see."
+  //
+  // Trade-off accepted: applying a single pitch correction to the
+  // whole polygon is approximate on multi-pitch roofs. Solar's per-
+  // facet area would be more precise IF Solar caught all facets — but
+  // when it doesn't, polygon × averaged pitch is closer than Solar's
+  // truncated sum.
+  //
+  // Solar's `pitchDegrees` is still the preferred pitch (it's an
+  // area-weighted average across all detected facets); we only fall
+  // through to the rep's selected pitch when Solar has no signal.
   useEffect(() => {
-    if (solar?.sqft && !livePolygons) return;
     if (!activePolygons || activePolygons.length === 0) return;
     // Shoelace area in m² (lat/lng → meters via cosLat scale)
     const M = 111_320;
@@ -824,7 +832,7 @@ export default function HomePage() {
     if (sqft >= 200 && sqft <= 30_000) {
       setAssumptions((a) => ({ ...a, sqft }));
     }
-  }, [activePolygons, solar?.sqft, solar?.pitchDegrees, assumptions.pitch]);
+  }, [activePolygons, solar?.pitchDegrees, assumptions.pitch]);
 
   // Auto-derive complexity from polygon shape — strictly geometric, beats
   // Vision's noisy-thumbnail guess. Vision still wins when it returns
