@@ -28,6 +28,24 @@ interface Props {
   submitting?: boolean;
   /** Optional nav rendered inside the hero (right-side of the top bar) */
   nav?: React.ReactNode;
+  /** Iframe-friendly variant for /embed:
+   *   - drops min-h-screen → content-sized (host site picks the height)
+   *   - hides the Voxaris logo / nav / free-chip top bar (third-party site)
+   *   - shrinks vertical rhythm so the form is visible without scrolling
+   *   - replaces the trust-pill row with a single "powered by Voxaris" line
+   *
+   * The radial blue rays, announcement chip, italicized accent headline,
+   * and card form treatment all stay so the embed reads as the same
+   * product, not a generic shrunk-down form. */
+  embedMode?: boolean;
+  /** Override the italicized accent in the headline. Defaults to "roof
+   *  your house" — set this when the embed is on a brand's site so the
+   *  headline can match local language ("re-roof your home in Tampa"). */
+  titleAccent?: string;
+  /** Hex color (with #) overriding the cyan accent. Used by /embed to
+   *  match the host roofer's brand color on the CTA + ring + outline.
+   *  Defaults to undefined (uses the global cy-300 / cy-400 tokens). */
+  accentHex?: string;
 }
 
 /**
@@ -45,6 +63,9 @@ export function BoltStyleHero({
   onSubmit,
   submitting = false,
   nav,
+  embedMode = false,
+  titleAccent = "roof your house",
+  accentHex,
 }: Props) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -70,49 +91,74 @@ export function BoltStyleHero({
   };
 
   return (
-    <div className="relative flex flex-col items-center min-h-screen w-full overflow-hidden">
+    <div
+      className={`relative flex flex-col items-center w-full overflow-hidden ${
+        embedMode ? "py-10 sm:py-14" : "min-h-screen"
+      }`}
+    >
       <RayBackground />
 
       {/* Top bar — logo big on the left, nav center, free-no-obligation right.
-          Sits inside the bolt canvas so there's no color seam between header
-          strip and hero background. */}
-      <header className="relative z-20 w-full">
-        <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-20 sm:h-24 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <img
-              src="/brand/logo-wordmark-alpha.png"
-              alt="Voxaris Pitch"
-              width={1672}
-              height={941}
-              className="h-12 sm:h-16 w-auto max-w-[260px] object-contain drop-shadow-[0_4px_24px_rgba(103,220,255,0.30)]"
-            />
+          Hidden in embed mode (the widget lives inside a third-party site
+          where the host's own header is already on screen). */}
+      {!embedMode && (
+        <header className="relative z-20 w-full">
+          <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-20 sm:h-24 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <img
+                src="/brand/logo-wordmark-alpha.png"
+                alt="Voxaris Pitch"
+                width={1672}
+                height={941}
+                className="h-12 sm:h-16 w-auto max-w-[260px] object-contain drop-shadow-[0_4px_24px_rgba(103,220,255,0.30)]"
+              />
+            </div>
+            {nav && <div className="hidden md:block">{nav}</div>}
+            <div className="hidden sm:flex items-center gap-2 text-[12px] font-mono uppercase tracking-[0.14em] text-slate-300">
+              <ShieldCheck size={13} className="text-mint" />
+              <span>Free · No-obligation</span>
+            </div>
           </div>
-          {nav && <div className="hidden md:block">{nav}</div>}
-          <div className="hidden sm:flex items-center gap-2 text-[12px] font-mono uppercase tracking-[0.14em] text-slate-300">
-            <ShieldCheck size={13} className="text-mint" />
-            <span>Free · No-obligation</span>
-          </div>
-        </div>
-      </header>
+        </header>
+      )}
 
       {/* Spacer pushes the rest into the rays */}
-      <div className="flex-1 flex flex-col items-center justify-center w-full pb-12">
+      <div
+        className={`flex flex-col items-center justify-center w-full ${
+          embedMode ? "" : "flex-1 pb-12"
+        }`}
+      >
         {/* Announcement chip */}
-        <div className="relative z-10 mb-8">
+        <div className={`relative z-10 ${embedMode ? "mb-5" : "mb-8"}`}>
           <AnnouncementBadge text={announcementText} />
         </div>
 
         <div className="relative z-10 w-full max-w-3xl px-4 mx-auto">
         {/* Headline */}
-        <div className="text-center mb-8">
-          <h1 className="font-display text-[34px] sm:text-[48px] md:text-[56px] leading-[1.05] tracking-[-0.025em] font-semibold text-white">
+        <div className={`text-center ${embedMode ? "mb-6" : "mb-8"}`}>
+          <h1
+            className={`font-display leading-[1.05] tracking-[-0.025em] font-semibold text-white ${
+              embedMode
+                ? "text-[28px] sm:text-[36px] md:text-[42px]"
+                : "text-[34px] sm:text-[48px] md:text-[56px]"
+            }`}
+          >
             {title}{" "}
-            <span className="bg-gradient-to-b from-cy-300 via-cy-300 to-white bg-clip-text text-transparent italic">
-              roof your house
+            <span
+              className="bg-gradient-to-b from-cy-300 via-cy-300 to-white bg-clip-text text-transparent italic"
+              style={
+                accentHex
+                  ? {
+                      backgroundImage: `linear-gradient(to bottom, ${accentHex}, ${accentHex}, #ffffff)`,
+                    }
+                  : undefined
+              }
+            >
+              {titleAccent}
             </span>
             ?
           </h1>
-          <p className="mt-3 text-[15px] sm:text-[17px] font-medium text-slate-300">
+          <p className="mt-3 text-[14px] sm:text-[16px] font-medium text-slate-300">
             {subtitle}
           </p>
         </div>
@@ -179,9 +225,20 @@ export function BoltStyleHero({
                 disabled={!valid || submitting}
                 className={`ml-auto flex items-center gap-2 px-5 py-2.5 rounded-xl text-[14px] font-medium transition-all ${
                   valid && !submitting
-                    ? "bg-cy-400 hover:bg-cy-300 text-[#051019] shadow-[0_0_24px_rgba(20,136,252,0.45)] active:scale-[0.98]"
+                    ? accentHex
+                      ? "active:scale-[0.98] hover:opacity-90"
+                      : "bg-cy-400 hover:bg-cy-300 text-[#051019] shadow-[0_0_24px_rgba(20,136,252,0.45)] active:scale-[0.98]"
                     : "bg-white/10 text-slate-500 cursor-not-allowed"
                 }`}
+                style={
+                  valid && !submitting && accentHex
+                    ? {
+                        background: accentHex,
+                        color: "#051019",
+                        boxShadow: `0 0 24px ${accentHex}73`,
+                      }
+                    : undefined
+                }
               >
                 {submitting ? (
                   <>
@@ -197,16 +254,24 @@ export function BoltStyleHero({
           </div>
         </div>
 
-          {/* Trust */}
-          <div className="grid grid-cols-3 gap-3 mt-7">
-            <Trust icon={<Sparkles size={13} />} title="Satellite-measured" body="No tape measure visit needed" />
-            <Trust icon={<ShieldCheck size={13} />} title="Private" body="Your address is never sold" />
-            <Trust
-              icon={<ShieldCheck size={13} />}
-              title="No obligation"
-              body="See the price before sharing more"
-            />
-          </div>
+          {/* Trust — full grid on /quote, compact single-line on /embed
+                so we don't tip the iframe over a fold the host expects. */}
+          {embedMode ? (
+            <div className="mt-5 flex items-center justify-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-400">
+              <Sparkles size={11} className="text-cy-300" />
+              <span>Satellite-measured · No spam · Powered by Voxaris Pitch</span>
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-3 mt-7">
+              <Trust icon={<Sparkles size={13} />} title="Satellite-measured" body="No tape measure visit needed" />
+              <Trust icon={<ShieldCheck size={13} />} title="Private" body="Your address is never sold" />
+              <Trust
+                icon={<ShieldCheck size={13} />}
+                title="No obligation"
+                body="See the price before sharing more"
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
