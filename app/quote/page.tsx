@@ -19,6 +19,7 @@ import {
   FAQ,
   TrustStrip,
 } from "@/components/quote/BelowFold";
+import EditableRoofMap from "@/components/quote/EditableRoofMap";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
 import type { AddressInfo, Material } from "@/types/estimate";
 import { BRAND_CONFIG } from "@/lib/branding";
@@ -98,6 +99,11 @@ export default function QuotePage() {
   const [sqft, setSqft] = useState<number | null>(null);
   const [pitch, setPitch] = useState<string | null>(null);
   const [satelliteUrl, setSatelliteUrl] = useState<string | null>(null);
+  // Polygon shown overlaid on the satellite tile so the customer can
+  // visually confirm "yes, that's my roof" before trusting the sqft.
+  // Comes from whichever tier won (Solar mask / Roboflow / MS Buildings);
+  // null when nothing usable returned (manual-entry case).
+  const [roofPolygon, setRoofPolygon] = useState<Array<{ lat: number; lng: number }> | null>(null);
   const [loadingRoof, setLoadingRoof] = useState(false);
   const [material, setMaterial] = useState<Material>("asphalt-architectural");
   const [addOns, setAddOns] = useState<SimpleAddon[]>(QUOTE_ADDONS);
@@ -178,9 +184,15 @@ export default function QuotePage() {
       try {
         let resolvedSqft: number | null = null;
         let resolvedPitch: string | null = null;
+        let resolvedPolygon: Array<{ lat: number; lng: number }> | null = null;
 
-        // Tier 1 / 2 — Solar API
-        const solarRes = await fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`);
+        // Tier 1 / 2 — Solar API. When Solar has data, fetch /api/solar-mask
+        // in parallel for the visual polygon (Solar's findClosest doesn't
+        // return a single outline; solar-mask traces it from dataLayers).
+        const [solarRes, solarMaskRes] = await Promise.all([
+          fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`),
+          fetch(`/api/solar-mask?lat=${addr.lat}&lng=${addr.lng}`).catch(() => null),
+        ]);
         if (solarRes.ok) {
           const data = await solarRes.json();
           if (data.sqft) {
@@ -197,9 +209,22 @@ export default function QuotePage() {
             resolvedPitch = data.pitch ?? null;
           }
         }
+        // If Solar provided sqft, prefer the solar-mask polygon as the
+        // visual (it's photogrammetric, matches Solar's measurement).
+        if (resolvedSqft && solarMaskRes && solarMaskRes.ok) {
+          try {
+            const mask = await solarMaskRes.json();
+            const poly: Array<{ lat: number; lng: number }> | null =
+              Array.isArray(mask?.latLng) && mask.latLng.length >= 3 ? mask.latLng : null;
+            if (poly) resolvedPolygon = poly;
+          } catch {
+            /* opportunistic */
+          }
+        }
 
-        // Tier 3 — Roboflow polygon (when no Solar data)
-        if (!resolvedSqft) {
+        // Tier 3 — Roboflow polygon (when no Solar data, or Solar gave us
+        // a number but solar-mask didn't return a polygon).
+        if (!resolvedSqft || !resolvedPolygon) {
           try {
             const rfRes = await fetch(`/api/roboflow?lat=${addr.lat}&lng=${addr.lng}`);
             if (rfRes.ok) {
@@ -209,7 +234,8 @@ export default function QuotePage() {
               if (poly) {
                 const sqft = polygonAreaSqftLocal(poly);
                 if (sqft >= 200 && sqft <= 20_000) {
-                  resolvedSqft = Math.round(sqft * 1.118);
+                  if (!resolvedSqft) resolvedSqft = Math.round(sqft * 1.118);
+                  if (!resolvedPolygon) resolvedPolygon = poly;
                 }
               }
             }
@@ -219,7 +245,7 @@ export default function QuotePage() {
         }
 
         // Tier 4 — Microsoft Buildings footprint (last resort before manual)
-        if (!resolvedSqft) {
+        if (!resolvedSqft || !resolvedPolygon) {
           try {
             const msRes = await fetch(
               `/api/microsoft-building?lat=${addr.lat}&lng=${addr.lng}`,
@@ -231,7 +257,8 @@ export default function QuotePage() {
               if (poly) {
                 const sqft = polygonAreaSqftLocal(poly);
                 if (sqft >= 200 && sqft <= 20_000) {
-                  resolvedSqft = Math.round(sqft * 1.118);
+                  if (!resolvedSqft) resolvedSqft = Math.round(sqft * 1.118);
+                  if (!resolvedPolygon) resolvedPolygon = poly;
                 }
               }
             }
@@ -242,12 +269,40 @@ export default function QuotePage() {
 
         if (resolvedSqft) setSqft(resolvedSqft);
         if (resolvedPitch) setPitch(resolvedPitch);
+        if (resolvedPolygon) setRoofPolygon(resolvedPolygon);
 
         const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
         if (key) {
-          setSatelliteUrl(
-            `https://maps.googleapis.com/maps/api/staticmap?center=${addr.lat},${addr.lng}&zoom=20&size=720x420&maptype=satellite&markers=color:0x67dcff%7C${addr.lat},${addr.lng}&key=${key}`,
-          );
+          // Static Maps URL with optional polygon overlay. Brand-cyan
+          // translucent fill (0x67dcff at ~26% alpha) + 2px solid stroke
+          // — high-contrast against suburban roofs and bright greenery,
+          // readable on dark and light tiles.
+          const params = new URLSearchParams({
+            center: `${addr.lat},${addr.lng}`,
+            zoom: "20",
+            size: "720x420",
+            maptype: "satellite",
+            markers: `color:0x67dcff|${addr.lat},${addr.lng}`,
+            key,
+          });
+          let url = `https://maps.googleapis.com/maps/api/staticmap?${params.toString()}`;
+          if (resolvedPolygon && resolvedPolygon.length >= 3) {
+            // Static Maps caps URL at ~16K chars. Decimating to ≤40
+            // vertices keeps the path well under that even at full
+            // precision and matches the visual fidelity Static Maps can
+            // render at zoom 20.
+            const stride = Math.max(1, Math.ceil(resolvedPolygon.length / 40));
+            const sampled = resolvedPolygon.filter((_, i) => i % stride === 0);
+            const pathPts = sampled
+              .map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`)
+              .join("|");
+            url +=
+              "&path=" +
+              encodeURIComponent(
+                `fillcolor:0x67dcff44|color:0x67dcffff|weight:3|${pathPts}|${sampled[0].lat.toFixed(6)},${sampled[0].lng.toFixed(6)}`,
+              );
+          }
+          setSatelliteUrl(url);
         }
       } finally {
         setLoadingRoof(false);
@@ -353,8 +408,27 @@ export default function QuotePage() {
             sqft={sqft}
             pitch={pitch}
             satelliteUrl={satelliteUrl}
+            roofPolygon={roofPolygon}
             loading={loadingRoof}
             onChangeSqft={setSqft}
+            onPolygonEdited={(poly) => {
+              setRoofPolygon(poly);
+              // Recompute sqft from the edited polygon: footprint via
+              // shoelace × slope multiplier from Solar pitch (or 1.118
+              // default for 6/12 when pitch unknown).
+              const PITCH_MAP: Record<string, number> = {
+                "4/12": 18.43,
+                "5/12": 22.62,
+                "6/12": 26.57,
+                "7/12": 30.26,
+                "8/12+": 35.0,
+              };
+              const pitchDeg = pitch ? (PITCH_MAP[pitch] ?? 26.57) : 26.57;
+              const slope = 1 / Math.cos((pitchDeg * Math.PI) / 180);
+              const footprint = polygonAreaSqftLocal(poly);
+              const newSqft = Math.round(footprint * slope);
+              if (newSqft >= 200 && newSqft <= 30_000) setSqft(newSqft);
+            }}
             onBack={goBack}
             onNext={goNext}
           />
@@ -490,8 +564,10 @@ function RoofStep({
   sqft,
   pitch,
   satelliteUrl,
+  roofPolygon,
   loading,
   onChangeSqft,
+  onPolygonEdited,
   onBack,
   onNext,
 }: {
@@ -499,8 +575,10 @@ function RoofStep({
   sqft: number | null;
   pitch: string | null;
   satelliteUrl: string | null;
+  roofPolygon: Array<{ lat: number; lng: number }> | null;
   loading: boolean;
   onChangeSqft: (n: number) => void;
+  onPolygonEdited: (poly: Array<{ lat: number; lng: number }>) => void;
   onBack: () => void;
   onNext: () => void;
 }) {
@@ -519,11 +597,18 @@ function RoofStep({
         </p>
       </div>
 
-      <div className="rounded-2xl overflow-hidden border border-white/[0.075] bg-black/30 aspect-video">
+      <div className="rounded-2xl overflow-hidden border border-white/[0.075] bg-black/30 aspect-video relative">
         {loading ? (
           <div className="w-full h-full flex items-center justify-center text-slate-400 text-[13px]">
             <Loader2 size={16} className="animate-spin mr-2" /> Measuring your roof…
           </div>
+        ) : address?.lat != null && address?.lng != null ? (
+          <EditableRoofMap
+            lat={address.lat}
+            lng={address.lng}
+            initialPolygon={roofPolygon}
+            onPolygonChanged={onPolygonEdited}
+          />
         ) : satelliteUrl ? (
           <img
             src={satelliteUrl}
