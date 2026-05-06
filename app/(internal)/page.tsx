@@ -433,12 +433,38 @@ export default function HomePage() {
         : osmFootprintSqft && osmFootprintSqft >= 100
           ? "osm"
           : null;
+  // Solar-anchored coverage gate. Solar's wholeRoofStats.groundAreaMeters2
+  // is the SUM of segments Solar confidently identified — a *lower bound*
+  // on the real roof, never an upper bound. Gating polygons that EXCEED
+  // Solar's number was rejecting accuracy: complex FL homes with wide
+  // eaves / lanais / multi-section roofs routinely trace 1.5-2× Solar's
+  // partial footprint. We now only use the Solar-anchored gate where it
+  // genuinely catches a known failure mode — Solar mask polygon coming
+  // back tinier than Solar's own segment sum (the "Solar found a
+  // sub-section, not the building" failure).
+  //
+  // Other sources (Roboflow, SAM, OSM, MS Buildings) just need a basic
+  // absolute-size sanity check via passesAbsoluteSize — not a noise
+  // speck, not the whole parcel. The rep sees the polygon overlaid on
+  // the satellite tile and visually judges whether it matches the actual
+  // roof; clicking "Draw fresh" lets them re-trace if it doesn't.
   const passesCoverage = (
     poly: Array<{ lat: number; lng: number }> | null | undefined,
   ) => polygonCoversFootprint(poly, referenceFootprintSqft, 0.55);
   const passesCoverageMulti = (
     polys: Array<Array<{ lat: number; lng: number }>> | null | undefined,
   ) => polygonsCoverFootprint(polys, referenceFootprintSqft, 0.55);
+  // Absolute size sanity. ~93 m² ≈ 1000 sqft minimum (smaller than that
+  // is almost always a noise blob or a shed, not a residential roof);
+  // ~1860 m² ≈ 20,000 sqft maximum (larger than that is almost always
+  // tracing the entire parcel or the neighbour's house too).
+  const passesAbsoluteSize = (
+    poly: Array<{ lat: number; lng: number }> | null | undefined,
+  ): boolean => {
+    if (!poly || poly.length < 3) return false;
+    const sqft = polygonAreaSqft(poly);
+    return sqft >= 200 && sqft <= 20_000;
+  };
 
   // Polygon source priority — best-quality first.
   //
@@ -486,30 +512,40 @@ export default function HomePage() {
     | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
-    // tiles3d removed — Roboflow + Claude verification is the path now.
-    // Coverage gates (passesCoverage / passesCoverageMulti) preserved from
-    // f5523d3: a polygon must cover ≥X% of the Solar-known footprint or
-    // it gets demoted (catches "polygon is on a shed/garage, not the main
-    // house"). OSM + MS Buildings are footprint-derived themselves so the
-    // coverage gate is skipped on them — they're the ground truth Solar's
-    // footprint comes from.
+    // Coverage gating policy (revised 2026-05-06):
+    //
+    // • Solar mask: still gated against Solar's reported footprint via
+    //   `passesCoverage`. Catches the failure mode where Solar's mask
+    //   only traced a sub-section of its own segment-detected building
+    //   (under-trace by ≥45%); without this gate, Solar mask polygons
+    //   like Benwick Aly's 700 sqft fragment vs Solar's own 2202 sqft
+    //   footprint would ship as the displayed polygon.
+    //
+    // • Other sources (Roboflow, SAM, OSM, MS Buildings, Claude vision)
+    //   only need an absolute size sanity check. Solar's footprint
+    //   isn't a reliable upper bound — Solar misses segments routinely,
+    //   and complex FL homes with wide eaves / lanais / multi-section
+    //   roofs trace 1.5-2× Solar's partial number. Gating those
+    //   polygons against Solar's incomplete reference was hiding
+    //   accurate traces. We trust the rep to visually verify the
+    //   polygon overlay against the satellite tile and click "Draw
+    //   fresh" if it's wrong.
     if (validSolarMask && passesClaude("solar-mask") && passesCoverage(validSolarMask) && passesComplexityPrior(validSolarMask)) return "solar-mask";
-    if (validRoboflow && passesClaude("roboflow") && passesCoverage(validRoboflow) && passesMsHallucinationCheck(validRoboflow) && passesComplexityPrior(validRoboflow)) return "roboflow";
-    if (validSam && passesClaude("sam") && passesCoverage(validSam) && passesComplexityPrior(validSam)) return "sam";
-    // Apply coverage gate to OSM & MS Buildings too — community traces and
-    // ML-extracted footprints are sometimes wrong (yard perimeter, included
-    // outbuildings, etc). When OSM/MS is the reference itself the gate is
-    // self-comparing → trivially passes. Otherwise it catches wrong outlines
-    // by ratio against Solar's footprint or whichever source IS the reference.
-    if (validOsm && passesClaude("osm") && passesCoverage(validOsm) && passesComplexityPrior(validOsm)) return "osm";
-    if (validMsBuilding && passesClaude("microsoft-buildings") && passesCoverage(validMsBuilding) && passesComplexityPrior(validMsBuilding)) return "microsoft-buildings";
-    // Solar facets — rotated bboxes from findClosest. Demoted from former
-    // position #3 (above SAM) to #6 (after MS Buildings) because the
-    // rotated rectangles are visually crude vs. SAM/OSM/MS curated
-    // outlines, even though their sqft sum is reasonable. Used as a
-    // last-resort polygon source before AI fallback.
-    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1 && passesCoverageMulti(solar.segmentPolygonsLatLng)) return "solar";
-    if (validClaude && passesClaude("ai") && passesCoverage(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
+    if (validRoboflow && passesClaude("roboflow") && passesAbsoluteSize(validRoboflow) && passesMsHallucinationCheck(validRoboflow) && passesComplexityPrior(validRoboflow)) return "roboflow";
+    if (validSam && passesClaude("sam") && passesAbsoluteSize(validSam) && passesComplexityPrior(validSam)) return "sam";
+    if (validOsm && passesClaude("osm") && passesAbsoluteSize(validOsm) && passesComplexityPrior(validOsm)) return "osm";
+    if (validMsBuilding && passesClaude("microsoft-buildings") && passesAbsoluteSize(validMsBuilding) && passesComplexityPrior(validMsBuilding)) return "microsoft-buildings";
+    // Solar facets — rotated bboxes from findClosest. Multi-polygon, so
+    // we sum the absolute area against the size band instead of using
+    // single-polygon `passesAbsoluteSize`.
+    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) {
+      const totalSqft = solar.segmentPolygonsLatLng.reduce(
+        (sum, p) => sum + polygonAreaSqft(p),
+        0,
+      );
+      if (totalSqft >= 200 && totalSqft <= 20_000) return "solar";
+    }
+    if (validClaude && passesClaude("ai") && passesAbsoluteSize(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
     return "none";
   }, [
     livePolygons,
