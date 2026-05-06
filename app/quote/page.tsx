@@ -12,6 +12,13 @@ import Link from "next/link";
 import { AuroraButton } from "@/components/ui/aurora-button";
 import { BoltStyleHero, type QuoteHeroFormValues } from "@/components/ui/bolt-style-chat";
 import NavHeader from "@/components/ui/nav-header";
+import {
+  StatsStrip,
+  HowItWorks,
+  Testimonials,
+  FAQ,
+  TrustStrip,
+} from "@/components/quote/BelowFold";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
 import type { AddressInfo, Material } from "@/types/estimate";
 import { BRAND_CONFIG } from "@/lib/branding";
@@ -201,26 +208,39 @@ export default function QuotePage() {
     }
   };
 
-  // Step 1 — full-bleed bolt hero. No separate header strip — the logo
-  // lives INSIDE the bolt canvas (see BoltStyleHero) so there's no color
-  // seam between header and hero background.
+  // Step 1 — full-bleed bolt hero followed by the public-facing
+  // funnel sections (How It Works, Reviews, FAQ). Each section has an
+  // anchor id matched by the top-nav so clicks scroll directly to the
+  // relevant content. Logo lives inside the bolt canvas — no seam
+  // between header strip and hero background.
   if (step === "Lead" && !submitted) {
     return (
-      <BoltStyleHero
-        title="What will it cost to"
-        subtitle="Free, instant, no calls until you ask."
-        onSubmit={onLeadSubmit}
-        submitting={submitting}
-        nav={
-          <NavHeader
-            items={[
-              { label: "Quote", href: "/quote" },
-              { label: "How It Works", href: "/quote#how" },
-              { label: "FAQ", href: "/quote#faq" },
-            ]}
-          />
-        }
-      />
+      <div className="relative z-[1]">
+        <BoltStyleHero
+          title="What will it cost to"
+          subtitle="Free, instant, no calls until you ask."
+          onSubmit={onLeadSubmit}
+          submitting={submitting}
+          nav={
+            <NavHeader
+              items={[
+                { label: "How It Works", href: "#how" },
+                { label: "Reviews", href: "#reviews" },
+                { label: "FAQ", href: "#faq" },
+              ]}
+            />
+          }
+        />
+
+        <div className="bg-[#07090d]">
+          <StatsStrip />
+          <HowItWorks />
+          <Testimonials />
+          <FAQ />
+          <TrustStrip />
+          <PublicFooter />
+        </div>
+      </div>
     );
   }
 
@@ -259,6 +279,9 @@ export default function QuotePage() {
           <QuoteStep
             range={range}
             lead={lead}
+            sqft={sqft}
+            material={material}
+            addOns={addOns}
             onBack={goBack}
             onSubmit={submitFinal}
             submitting={submitting}
@@ -562,6 +585,9 @@ function MaterialStep({
 function QuoteStep({
   range,
   lead,
+  sqft,
+  material,
+  addOns,
   onBack,
   onSubmit,
   submitting,
@@ -569,11 +595,40 @@ function QuoteStep({
 }: {
   range: { low: number; high: number };
   lead: QuoteHeroFormValues | null;
+  sqft: number | null;
+  material: Material;
+  addOns: SimpleAddon[];
   onBack: () => void;
   onSubmit: () => void;
   submitting: boolean;
   error: string;
 }) {
+  // Build a transparent line-item breakdown so the rep — and the homeowner —
+  // can see why the price is what it is. Itemized estimates dramatically
+  // reduce "is this number real?" objections vs a single bottom-line range.
+  const m = MATERIAL_RATES[material];
+  const breakdown = sqft
+    ? [
+        {
+          label: `${MATERIAL_COPY[material].title} (${sqft.toLocaleString()} sf)`,
+          low: Math.round(sqft * m.low),
+          high: Math.round(sqft * m.high),
+        },
+        ...(m.removeLow > 0
+          ? [
+              {
+                label: "Tear-off + haul-away",
+                low: Math.round(sqft * m.removeLow),
+                high: Math.round(sqft * m.removeHigh),
+              },
+            ]
+          : []),
+        ...addOns
+          .filter((a) => a.enabled)
+          .map((a) => ({ label: a.label, low: a.price, high: a.price })),
+      ]
+    : [];
+  const enabledAddonCount = addOns.filter((a) => a.enabled).length;
   return (
     <div className="space-y-6 float-in">
       <div>
@@ -601,10 +656,38 @@ function QuoteStep({
             {fmt(range.low)} <span className="text-slate-500">–</span> {fmt(range.high)}
           </div>
           <div className="text-[12px] text-slate-400 mt-2">
-            Final pricing requires an on-site inspection. No obligation.
+            Materials + labor + tear-off included. Final pricing requires an on-site inspection.
           </div>
         </div>
       </div>
+
+      {breakdown.length > 0 && (
+        <div className="glass rounded-3xl p-6 space-y-3">
+          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
+            What&apos;s in the estimate
+          </div>
+          <ul className="divide-y divide-white/[0.04]">
+            {breakdown.map((row, i) => (
+              <li
+                key={i}
+                className="flex items-center justify-between gap-3 py-2.5 text-[13px]"
+              >
+                <span className="text-slate-200">{row.label}</span>
+                <span className="font-mono tabular text-slate-300 text-[12.5px]">
+                  {row.low === row.high
+                    ? fmt(row.low)
+                    : `${fmt(row.low)} – ${fmt(row.high)}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <div className="text-[11px] text-slate-500 pt-1">
+            {enabledAddonCount === 0
+              ? "No optional upgrades selected. You can add ice & water shield, ridge ventilation, or skylight work in the previous step."
+              : `${enabledAddonCount} upgrade${enabledAddonCount === 1 ? "" : "s"} selected.`}
+          </div>
+        </div>
+      )}
 
       {lead && (
         <div className="glass rounded-3xl p-6 space-y-3">
@@ -661,29 +744,107 @@ function ThankYou({
   range: { low: number; high: number };
 }) {
   return (
-    <div className="space-y-6 float-in text-center">
-      <div className="w-14 h-14 mx-auto rounded-2xl bg-mint/10 border border-mint/30 flex items-center justify-center text-mint">
-        <Check size={26} strokeWidth={2.5} />
-      </div>
-      <div>
-        <h2 className="font-display text-[28px] sm:text-[36px] leading-tight tracking-tight font-medium">
+    <div className="space-y-7 float-in">
+      <div className="text-center">
+        <div className="w-14 h-14 mx-auto rounded-2xl bg-mint/10 border border-mint/30 flex items-center justify-center text-mint">
+          <Check size={26} strokeWidth={2.5} />
+        </div>
+        <h2 className="font-display text-[28px] sm:text-[36px] leading-tight tracking-tight font-medium mt-5">
           You&apos;re all set.
         </h2>
         <p className="text-slate-300 text-[14px] mt-3 max-w-xl mx-auto">
-          A Voxaris partner roofer will reach out within 1 business hour with a precise on-site
-          quote. Your reference number:
+          A {BRAND_CONFIG.companyName} partner roofer will reach out shortly. Reference:
         </p>
-        <div className="font-mono text-[13px] text-cy-300 mt-2">{leadId}</div>
+        <div className="font-mono text-[13px] text-cy-300 mt-2 select-all">{leadId}</div>
       </div>
-      <div className="glass rounded-3xl p-5 max-w-md mx-auto">
+
+      <div className="glass rounded-3xl p-5 sm:p-6 max-w-md mx-auto text-center">
         <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
           Your estimate range
         </div>
-        <div className="font-display tabular text-[28px] font-semibold tracking-tight mt-1">
+        <div className="font-display tabular text-[28px] sm:text-[32px] font-semibold tracking-tight mt-1">
           {fmt(range.low)} <span className="text-slate-500">–</span> {fmt(range.high)}
         </div>
+        <div className="text-[11px] text-slate-500 mt-2">
+          Final pricing requires an on-site inspection.
+        </div>
+      </div>
+
+      {/* What happens next — concrete timeline.  Roofing leads often abandon
+          here because they don't know when/how the contractor will reach
+          out, and assume the worst (immediate spam call).  An explicit
+          "no calls until you ask" + 3-step timeline with realistic
+          windows reassures and reduces no-show rate. */}
+      <div className="rounded-3xl border border-white/[0.06] bg-white/[0.015] p-6 sm:p-7 max-w-2xl mx-auto">
+        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-cy-300 text-center">
+          What happens next
+        </div>
+        <ol className="mt-5 space-y-4">
+          <NextStep
+            n={1}
+            title="Within 1 business hour"
+            body="Your assigned roofer emails a refined quote with material specs, pitch confirmation, and licensing/insurance details. No phone calls unless you check the box for a callback."
+            time="≤ 1 hr"
+          />
+          <NextStep
+            n={2}
+            title="Within 1–3 business days"
+            body="If you'd like an on-site walkthrough, your roofer schedules a 20-minute inspection (drone or ladder) at no charge. Storm-damage cases are typically same-day."
+            time="1–3 days"
+          />
+          <NextStep
+            n={3}
+            title="Whenever you're ready"
+            body="Pick a start date, sign the contract digitally, and (if needed) apply for 0% APR financing through the contractor. No commitment required at any prior step."
+            time="up to you"
+            last
+          />
+        </ol>
+      </div>
+
+      <div className="text-center">
+        <Link
+          href="/quote"
+          className="text-[12px] font-mono uppercase tracking-[0.14em] text-slate-400 hover:text-cy-300 transition-colors"
+        >
+          Get a quote for another property →
+        </Link>
       </div>
     </div>
+  );
+}
+
+function NextStep({
+  n,
+  title,
+  body,
+  time,
+  last,
+}: {
+  n: number;
+  title: string;
+  body: string;
+  time: string;
+  last?: boolean;
+}) {
+  return (
+    <li className="relative flex gap-4">
+      <div className="flex flex-col items-center">
+        <div className="w-7 h-7 rounded-full bg-cy-300/[0.12] border border-cy-300/30 text-cy-300 flex items-center justify-center text-[11px] font-mono font-semibold flex-shrink-0">
+          {n}
+        </div>
+        {!last && <div className="flex-1 w-px bg-white/[0.06] mt-1" />}
+      </div>
+      <div className="flex-1 pb-4">
+        <div className="flex items-baseline justify-between gap-3">
+          <div className="text-[14px] font-medium text-slate-100">{title}</div>
+          <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 flex-shrink-0">
+            {time}
+          </div>
+        </div>
+        <p className="text-[12.5px] text-slate-400 mt-1.5 leading-relaxed">{body}</p>
+      </div>
+    </li>
   );
 }
 
