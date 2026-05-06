@@ -13,6 +13,18 @@ gcloud-mcp/
 # binary overlays and tile dumps don't belong in git.
 scripts/eval-output/
 
+# Hand-traced ground truth polygons — generated locally per engineer via
+# the /eval-trace UI. These contain real residential addresses and stay
+# out of source control by default. Commit specific truth files manually
+# (`git add -f`) if you want shared regression coverage on them.
+scripts/eval-truth/*.json
+
+# Throwaway diagnostic scripts from one-off bug hunts.
+scripts/debug-*
+
+# Local backups of secret files (created by scripts/fix-env-quotes.py).
+.env.local.backup-*
+
 # Per-developer Claude Code launch configs
 .claude/
 
