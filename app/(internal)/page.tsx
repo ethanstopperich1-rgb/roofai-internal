@@ -433,27 +433,47 @@ export default function HomePage() {
         : osmFootprintSqft && osmFootprintSqft >= 100
           ? "osm"
           : null;
-  // Solar-anchored coverage gate. Solar's wholeRoofStats.groundAreaMeters2
-  // is the SUM of segments Solar confidently identified — a *lower bound*
-  // on the real roof, never an upper bound. Gating polygons that EXCEED
-  // Solar's number was rejecting accuracy: complex FL homes with wide
-  // eaves / lanais / multi-section roofs routinely trace 1.5-2× Solar's
-  // partial footprint. We now only use the Solar-anchored gate where it
-  // genuinely catches a known failure mode — Solar mask polygon coming
-  // back tinier than Solar's own segment sum (the "Solar found a
-  // sub-section, not the building" failure).
+  // Solar-anchored coverage gate. Tier-aware upper bound — Solar's
+  // `segmentCount` is our independent complexity signal (independent of
+  // whichever polygon is being checked, so no circularity):
+  //   • ≤2 segments → simple gable / single-pitch  → cap at 1.3× footprint
+  //   • 3–5 segments → moderate (typical hip)       → cap at 1.6×
+  //   • ≥6 segments → complex (multi-section, FL)  → cap at 2.0×
+  //   • 0 segments  → no Solar findClosest signal  → cap at 1.20×
   //
-  // Other sources (Roboflow, SAM, OSM, MS Buildings) just need a basic
-  // absolute-size sanity check via passesAbsoluteSize — not a noise
-  // speck, not the whole parcel. The rep sees the polygon overlaid on
-  // the satellite tile and visually judges whether it matches the actual
-  // roof; clicking "Draw fresh" lets them re-trace if it doesn't.
+  // The 0-segment case is the *strictest* because the only reference left
+  // is MS Buildings / OSM footprint. Those are top-down satellite-derived
+  // footprints with no eave / overhang information — a candidate polygon
+  // with light eaves should land within ~10-20% of them. Anything above
+  // 1.20× is almost certainly an over-trace into shadow / driveway / yard.
+  //
+  // History: was 1.6 → loosened to 2.2 (Doctor Phillips Orlando complex
+  // FL home) → 5385 Henley Rd Mt Juliet shipped over-traced Solar mask at
+  // 1.235× MS Buildings footprint. Tightening the no-Solar case to 1.20
+  // rejects Mt Juliet's over-trace, falls through to Roboflow (~0.98× of
+  // MS Buildings, clean), which becomes the displayed polygon.
+  const overTraceUpperRatio = (() => {
+    const sc = solar?.segmentCount ?? 0;
+    if (sc >= 6) return 2.0;
+    if (sc >= 3) return 1.6;
+    if (sc >= 1) return 1.3;
+    return 1.20;
+  })();
   const passesCoverage = (
     poly: Array<{ lat: number; lng: number }> | null | undefined,
-  ) => polygonCoversFootprint(poly, referenceFootprintSqft, 0.55);
+  ) => polygonCoversFootprint(poly, referenceFootprintSqft, 0.55, overTraceUpperRatio);
   const passesCoverageMulti = (
     polys: Array<Array<{ lat: number; lng: number }>> | null | undefined,
-  ) => polygonsCoverFootprint(polys, referenceFootprintSqft, 0.55);
+  ) => polygonsCoverFootprint(polys, referenceFootprintSqft, 0.55, overTraceUpperRatio);
+  // Skip self-comparison when the source IS the reference (OSM gated
+  // against an OSM-derived footprint = circular, trivially passes).
+  const passesCoverageNonRef = (
+    poly: Array<{ lat: number; lng: number }> | null | undefined,
+    source: "ms" | "osm",
+  ): boolean => {
+    if (referenceSource === source) return true;
+    return passesCoverage(poly);
+  };
   // Absolute size sanity. ~93 m² ≈ 1000 sqft minimum (smaller than that
   // is almost always a noise blob or a shed, not a residential roof);
   // ~1860 m² ≈ 20,000 sqft maximum (larger than that is almost always
@@ -530,11 +550,22 @@ export default function HomePage() {
     //   accurate traces. We trust the rep to visually verify the
     //   polygon overlay against the satellite tile and click "Draw
     //   fresh" if it's wrong.
+    // Gate composition (revised 2026-05-06, regression-fix pass):
+    //   • passesAbsoluteSize: 200–20,000 sf hard band (sheds & whole-parcel guard)
+    //   • passesCoverage: tier-aware ratio vs Solar/MS/OSM reference footprint
+    //     (lower 0.55, upper 1.3–2.0 by Solar segmentCount)
+    //   • passesClaude: multi-view verifier (advisory, demotes on strong reject)
+    //   • passesComplexityPrior: vertex count vs vision-detected complexity
+    //   • passesMsHallucinationCheck: catches MS-derived hallucinations
+    //
+    // Coverage was previously skipped on Roboflow/SAM/OSM/MS — that bypass
+    // let the Mt. Juliet over-trace ship. Now applied to every source,
+    // with self-comparison skipped via passesCoverageNonRef where applicable.
     if (validSolarMask && passesClaude("solar-mask") && passesCoverage(validSolarMask) && passesComplexityPrior(validSolarMask)) return "solar-mask";
-    if (validRoboflow && passesClaude("roboflow") && passesAbsoluteSize(validRoboflow) && passesMsHallucinationCheck(validRoboflow) && passesComplexityPrior(validRoboflow)) return "roboflow";
-    if (validSam && passesClaude("sam") && passesAbsoluteSize(validSam) && passesComplexityPrior(validSam)) return "sam";
-    if (validOsm && passesClaude("osm") && passesAbsoluteSize(validOsm) && passesComplexityPrior(validOsm)) return "osm";
-    if (validMsBuilding && passesClaude("microsoft-buildings") && passesAbsoluteSize(validMsBuilding) && passesComplexityPrior(validMsBuilding)) return "microsoft-buildings";
+    if (validRoboflow && passesClaude("roboflow") && passesAbsoluteSize(validRoboflow) && passesCoverage(validRoboflow) && passesMsHallucinationCheck(validRoboflow) && passesComplexityPrior(validRoboflow)) return "roboflow";
+    if (validSam && passesClaude("sam") && passesAbsoluteSize(validSam) && passesCoverage(validSam) && passesComplexityPrior(validSam)) return "sam";
+    if (validOsm && passesClaude("osm") && passesAbsoluteSize(validOsm) && passesCoverageNonRef(validOsm, "osm") && passesComplexityPrior(validOsm)) return "osm";
+    if (validMsBuilding && passesClaude("microsoft-buildings") && passesAbsoluteSize(validMsBuilding) && passesCoverageNonRef(validMsBuilding, "ms") && passesComplexityPrior(validMsBuilding)) return "microsoft-buildings";
     // Solar facets — rotated bboxes from findClosest. Multi-polygon, so
     // we sum the absolute area against the size band instead of using
     // single-polygon `passesAbsoluteSize`.
@@ -545,7 +576,7 @@ export default function HomePage() {
       );
       if (totalSqft >= 200 && totalSqft <= 20_000) return "solar";
     }
-    if (validClaude && passesClaude("ai") && passesAbsoluteSize(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
+    if (validClaude && passesClaude("ai") && passesAbsoluteSize(validClaude) && passesCoverage(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
     return "none";
   }, [
     livePolygons,
@@ -829,25 +860,34 @@ export default function HomePage() {
     });
   }, [vision?.penetrations, activePolygons, address?.lat, address?.lng]);
 
-  // Whenever the active polygon changes, derive the roof area from it
-  // and write to assumptions.sqft. Polygon-derived sqft is now the
-  // canonical number — Solar API's `roofSegmentStats` total is no
-  // longer used as the displayed sqft because it consistently
-  // undercounts on complex / multi-section / older-imagery roofs
-  // (Solar drops segments it can't confidently re-orient or whose
-  // photogrammetry is shadowed). User feedback: "the rep is looking
-  // AT the polygon — the number better match what they see."
+  // Sqft source priority — Solar's photogrammetric measurement wins on
+  // initial load, polygon-derived area takes over only after rep edits.
   //
-  // Trade-off accepted: applying a single pitch correction to the
-  // whole polygon is approximate on multi-pitch roofs. Solar's per-
-  // facet area would be more precise IF Solar caught all facets — but
-  // when it doesn't, polygon × averaged pitch is closer than Solar's
-  // truncated sum.
+  // Solar API's `roofSegmentStats[].areaMeters2` is the actual 3D surface
+  // area Google computed from stereo aerial imagery — it's measurement,
+  // not tracing. When Solar has segment coverage, that's the truth;
+  // any polygon-shoelace-times-pitch number is a degraded approximation.
   //
-  // Solar's `pitchDegrees` is still the preferred pitch (it's an
-  // area-weighted average across all detected facets); we only fall
-  // through to the rep's selected pitch when Solar has no signal.
+  // The earlier "always use polygon" approach (commit aa5f5cc) tried to
+  // solve a real problem: Solar undercounts on complex / multi-section
+  // roofs, and a 4,500 sf polygon paired with 1,898 sf line items felt
+  // wrong to the rep. But the cure was worse than the disease: when the
+  // polygon over-traces (catches shadow / driveway / yard), the inflated
+  // sqft now shows directly to the customer. See 5385 Henley Rd Mt Juliet:
+  // polygon caught driveway shadow → 3,960 sf, ~40% above truth.
+  //
+  // Resolution: Solar wins on initial load (handled by the early-return
+  // guard below + the assignment in runEstimate). Once the rep edits the
+  // polygon (livePolygons set), the edit is the truth — recompute from it.
+  // For addresses where Solar has no segments at all, polygon × pitch is
+  // the fallback (handled by `solar?.sqft` being null → guard skipped).
   useEffect(() => {
+    // Solar's segment-summed sqft is canonical when available + no rep edit.
+    // assumptions.sqft is set from solar.sqft in runEstimate; this guard
+    // prevents a fresh polygon (Solar mask / Roboflow / etc) from stomping
+    // it with a polygon-shoelace estimate. Once the rep edits, livePolygons
+    // is set and the guard releases.
+    if (solar?.sqft && !livePolygons) return;
     if (!activePolygons || activePolygons.length === 0) return;
     // Shoelace area in m² (lat/lng → meters via cosLat scale)
     const M = 111_320;
@@ -884,7 +924,7 @@ export default function HomePage() {
     if (sqft >= 200 && sqft <= 30_000) {
       setAssumptions((a) => ({ ...a, sqft }));
     }
-  }, [activePolygons, solar?.pitchDegrees, assumptions.pitch]);
+  }, [activePolygons, solar?.sqft, solar?.pitchDegrees, livePolygons, assumptions.pitch]);
 
   // Auto-derive complexity from polygon shape — strictly geometric, beats
   // Vision's noisy-thumbnail guess. Vision still wins when it returns
