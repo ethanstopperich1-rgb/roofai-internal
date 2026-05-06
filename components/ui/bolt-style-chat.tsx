@@ -254,23 +254,32 @@ export function BoltStyleHero({
           </div>
         </div>
 
-          {/* Trust — full grid on /quote, compact single-line on /embed
-                so we don't tip the iframe over a fold the host expects. */}
+          {/* Trust — full grid on /quote desktop, compact single-line on
+                /embed AND on /quote mobile. Customers on phones don't
+                need three glass cards under the form selling the form
+                they just looked at; one mono-strip line keeps the form
+                the hero. */}
           {embedMode ? (
             <div className="mt-5 flex items-center justify-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-400">
               <Sparkles size={11} className="text-cy-300" />
               <span>Satellite-measured · No spam · Powered by Voxaris Pitch</span>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-3 mt-7">
-              <Trust icon={<Sparkles size={13} />} title="Satellite-measured" body="No tape measure visit needed" />
-              <Trust icon={<ShieldCheck size={13} />} title="Private" body="Your address is never sold" />
-              <Trust
-                icon={<ShieldCheck size={13} />}
-                title="No obligation"
-                body="See the price before sharing more"
-              />
-            </div>
+            <>
+              <div className="hidden sm:grid grid-cols-3 gap-3 mt-7">
+                <Trust icon={<Sparkles size={13} />} title="Satellite-measured" body="No tape measure visit needed" />
+                <Trust icon={<ShieldCheck size={13} />} title="Private" body="Your address is never sold" />
+                <Trust
+                  icon={<ShieldCheck size={13} />}
+                  title="No obligation"
+                  body="See the price before sharing more"
+                />
+              </div>
+              <div className="sm:hidden mt-5 flex items-center justify-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-400 px-4">
+                <Sparkles size={11} className="text-cy-300" />
+                <span>Satellite-measured · Private · No obligation</span>
+              </div>
+            </>
           )}
         </div>
       </div>

@@ -37,8 +37,12 @@ const STATS: Stat[] = [
 ];
 
 export function StatsStrip() {
+  // Hidden on mobile entirely. Customers on cell phones don't need the
+  // four-stat marketing strip — they need the form. On desktop the
+  // statistics back up the headline; on mobile they push the value
+  // proposition below 2-3 scrolls and add nothing the form doesn't show.
   return (
-    <section className="relative z-10 px-4 sm:px-6 py-14 sm:py-20">
+    <section className="relative z-10 px-4 sm:px-6 py-14 sm:py-20 hidden md:block">
       <div className="max-w-5xl mx-auto">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {STATS.map((s) => (
@@ -93,16 +97,20 @@ export function HowItWorks() {
   return (
     <section
       id="how"
-      className="relative z-10 px-4 sm:px-6 py-14 sm:py-20 scroll-mt-20"
+      className="relative z-10 px-4 sm:px-6 py-10 sm:py-20 scroll-mt-20"
     >
       <div className="max-w-5xl mx-auto">
         <SectionHeading
           eyebrow="How it works"
           title="Three steps. About thirty seconds."
-          sub="No measuring tape. No salesperson at the door. The roof you see in your driveway is the same roof we measure from above."
+          sub="No measuring tape. No salesperson at the door."
         />
 
-        <div className="grid md:grid-cols-3 gap-4 sm:gap-6 mt-10">
+        {/* Desktop: 3-card grid with full body copy. Mobile: vertical
+            single-line list — title + icon + 1 short sentence each.
+            Customers on phones don't read 50-word body paragraphs three
+            times in a row; they need to know the shape of the flow. */}
+        <div className="hidden md:grid md:grid-cols-3 gap-4 sm:gap-6 mt-10">
           {STEPS.map((s, i) => (
             <div
               key={s.title}
@@ -121,6 +129,20 @@ export function HowItWorks() {
             </div>
           ))}
         </div>
+
+        <ol className="md:hidden mt-8 space-y-2">
+          {STEPS.map((s, i) => (
+            <li
+              key={s.title}
+              className="flex items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-3.5"
+            >
+              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-cy-300 text-[#051019] text-[11px] font-mono font-semibold flex items-center justify-center">
+                {i + 1}
+              </span>
+              <span className="text-[13.5px] text-slate-100 font-medium">{s.title}</span>
+            </li>
+          ))}
+        </ol>
       </div>
     </section>
   );
@@ -255,10 +277,16 @@ const FAQS: FaqItem[] = [
 
 export function FAQ() {
   const [open, setOpen] = useState<number | null>(0);
+  const [showAll, setShowAll] = useState(false);
+  // On mobile, default to the 3 highest-converting questions (accuracy,
+  // free/catch, spam-call). The remaining 5 hide behind a "Show more
+  // questions" toggle so the customer doesn't have to scroll past 8
+  // accordion rows on a 4-inch screen. Desktop shows all 8 inline.
+  const MOBILE_PRIMARY = 3;
   return (
     <section
       id="faq"
-      className="relative z-10 px-4 sm:px-6 py-14 sm:py-20 scroll-mt-20"
+      className="relative z-10 px-4 sm:px-6 py-10 sm:py-20 scroll-mt-20"
     >
       <div className="max-w-3xl mx-auto">
         <SectionHeading
@@ -267,13 +295,16 @@ export function FAQ() {
           sub="If your question isn't here, the contractor you pick will answer it directly."
         />
 
-        <div className="mt-10 space-y-2">
+        <div className="mt-8 sm:mt-10 space-y-2">
           {FAQS.map((f, i) => {
             const isOpen = open === i;
+            const hideOnMobile = !showAll && i >= MOBILE_PRIMARY;
             return (
               <div
                 key={i}
-                className="rounded-2xl border border-white/[0.06] bg-white/[0.015] overflow-hidden"
+                className={`rounded-2xl border border-white/[0.06] bg-white/[0.015] overflow-hidden ${
+                  hideOnMobile ? "hidden md:block" : ""
+                }`}
               >
                 <button
                   onClick={() => setOpen(isOpen ? null : i)}
@@ -299,6 +330,15 @@ export function FAQ() {
             );
           })}
         </div>
+
+        {!showAll && FAQS.length > MOBILE_PRIMARY && (
+          <button
+            onClick={() => setShowAll(true)}
+            className="md:hidden mt-3 w-full text-[12.5px] font-mono uppercase tracking-[0.14em] text-slate-400 hover:text-slate-200 py-3 rounded-xl border border-white/[0.06] bg-white/[0.015]"
+          >
+            Show {FAQS.length - MOBILE_PRIMARY} more questions
+          </button>
+        )}
       </div>
     </section>
   );
@@ -314,18 +354,38 @@ const TRUST_ITEMS = [
 ];
 
 export function TrustStrip() {
+  // Mobile: only the two highest-trust items ("BBB-vetted" + "never sell
+  // your info"). The other two (47-min reply, license + insurance on
+  // every quote) live in the FAQ already, so we don't need to repeat them
+  // in a footer on a 4-inch screen. Desktop shows all four.
+  const MOBILE_TRUST = TRUST_ITEMS.filter((_, i) => i === 0 || i === 3);
   return (
-    <section className="relative z-10 px-4 sm:px-6 py-8 border-t border-white/[0.04]">
+    <section className="relative z-10 px-4 sm:px-6 py-6 sm:py-8 border-t border-white/[0.04]">
       <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-center gap-x-8 gap-y-3">
-        {TRUST_ITEMS.map((item, i) => (
-          <div
-            key={i}
-            className="flex items-center gap-2 text-[12px] sm:text-[12.5px] text-slate-400"
-          >
-            <span className="text-cy-300">{item.icon}</span>
-            <span>{item.label}</span>
-          </div>
-        ))}
+        {/* Mobile only — 2 items */}
+        <div className="md:hidden contents">
+          {MOBILE_TRUST.map((item, i) => (
+            <div
+              key={`m-${i}`}
+              className="flex items-center gap-2 text-[12px] text-slate-400"
+            >
+              <span className="text-cy-300">{item.icon}</span>
+              <span>{item.label}</span>
+            </div>
+          ))}
+        </div>
+        {/* Desktop only — all 4 items */}
+        <div className="hidden md:contents">
+          {TRUST_ITEMS.map((item, i) => (
+            <div
+              key={`d-${i}`}
+              className="flex items-center gap-2 text-[12.5px] text-slate-400"
+            >
+              <span className="text-cy-300">{item.icon}</span>
+              <span>{item.label}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );

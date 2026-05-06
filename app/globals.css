@@ -324,6 +324,40 @@ textarea.input { resize: vertical; min-height: 90px; line-height: 1.5; }
   animation: generating-loader-bar-anim 2.4s ease-in-out infinite;
 }
 
+/* ─── Mobile form input zoom prevention ───────────────────────────────
+ *
+ * iOS Safari auto-zooms into any text input whose computed font-size is
+ * below 16px when the user focuses it. The zoom-in is fine; the problem
+ * is iOS doesn't reliably zoom back out when the input blurs, leaving
+ * the page in a weird half-zoomed state where touch targets misalign
+ * and the form layout reflows. Customers reported this as "the form
+ * resets and I have to type everything again" — what they're actually
+ * seeing is the layout shift, not a real reset.
+ *
+ * Fix: force every text-style input + textarea to >=16px on screens
+ * narrower than 768px (md breakpoint). Doesn't affect desktop styling
+ * (Tailwind's text-[14px]/etc. wins above 768px because we only target
+ * mobile). Applies to all the form inputs across /quote, /embed, /, and
+ * the rep estimator.
+ *
+ * `font-size: max(16px, 1em)` keeps the explicit-sized inputs that are
+ * already >16px (e.g. the address field at 16px on sm:) unchanged.
+ */
+@media (max-width: 767.98px) {
+  input[type="text"],
+  input[type="email"],
+  input[type="tel"],
+  input[type="search"],
+  input[type="number"],
+  input[type="url"],
+  input[type="password"],
+  input:not([type]),
+  textarea,
+  select {
+    font-size: max(16px, 1em);
+  }
+}
+
 /* ─── Range slider ─────────────────────────────────────────────────── */
 
 input[type="range"] {
