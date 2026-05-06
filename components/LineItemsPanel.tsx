@@ -51,7 +51,7 @@ export default function LineItemsPanel({
               Line-item breakdown
             </div>
             <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500 -mt-0.5">
-              {detailed.lineItems.length} items · {detailed.squares.toFixed(1)} squares
+              Xactimate retail · incl. O&amp;P · {detailed.lineItems.length} items · {detailed.squares.toFixed(1)} squares
             </div>
           </div>
         </div>

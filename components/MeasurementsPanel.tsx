@@ -64,7 +64,7 @@ export default function MeasurementsPanel({ lengths, waste, defaultOpen = false 
           </span>
         </div>
         <div className="flex items-center gap-3 text-[12.5px] text-slate-400">
-          <span className="font-mono tabular">{waste.measuredSquares} sq</span>
+          <span className="font-mono tabular">{waste.measuredSquares.toFixed(1)} sq</span>
           {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </div>
       </button>

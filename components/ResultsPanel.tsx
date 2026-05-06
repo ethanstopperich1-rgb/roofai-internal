@@ -103,6 +103,9 @@ export default function ResultsPanel({
           <div className="mt-1 font-mono text-[11px] text-slate-400 tabular">
             range {fmt(baseLow)} <span className="text-slate-600">→</span> {fmt(baseHigh)}
           </div>
+          <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500 lg:text-right">
+            Contract reroof · base
+          </div>
         </div>
       </div>
 
