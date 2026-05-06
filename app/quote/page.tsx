@@ -33,6 +33,31 @@ interface SimpleAddon {
   enabled: boolean;
 }
 
+/**
+ * Spherical polygon footprint in square feet via shoelace on lat/lng
+ * (degrees → meters via cos-latitude scaling). Lives here, not lib/, so the
+ * customer wizard has no dependency on the rep-side polygon utilities and
+ * stays small for the hero bundle.
+ */
+function polygonAreaSqftLocal(poly: Array<{ lat: number; lng: number }>): number {
+  if (poly.length < 3) return 0;
+  const M = 111_320;
+  const cLat = poly.reduce((s, v) => s + v.lat, 0) / poly.length;
+  const cosLat = Math.cos((cLat * Math.PI) / 180);
+  let sum = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const ax = a.lng * M * cosLat;
+    const ay = a.lat * M;
+    const bx = b.lng * M * cosLat;
+    const by = b.lat * M;
+    sum += ax * by - bx * ay;
+  }
+  const m2 = Math.abs(sum) / 2;
+  return m2 * 10.7639;
+}
+
 const QUOTE_ADDONS: SimpleAddon[] = [
   { id: "ice-water", label: "Ice & water shield", price: 850, enabled: false },
   { id: "ridge-vent", label: "Upgraded ventilation", price: 425, enabled: false },
@@ -137,16 +162,87 @@ export default function QuotePage() {
       /* silent */
     });
 
-    // Solar API for roof size + pitch
+    // Resolve sqft + pitch via the tier ladder so customers on
+    // Solar-uncovered addresses (rural / new construction / non-US) still
+    // get a usable estimate instead of a stuck wizard.
+    //   Tier 1: Solar segments sum  → photogrammetric, trust as-is
+    //   Tier 2: Solar footprint × Solar pitch (when segments missing
+    //           but findClosest still returned a building)
+    //   Tier 3: Roboflow polygon × 1.118 (default 6/12 pitch). Polygon
+    //           is roof-trained ML so it traces just the roof, not the
+    //           whole-building footprint.
+    //   Tier 4: Microsoft Buildings polygon × 1.118 (footprint × default
+    //           pitch). Last resort before manual entry.
     if (addr.lat != null && addr.lng != null) {
       setLoadingRoof(true);
       try {
-        const res = await fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.sqft) setSqft(data.sqft);
-          if (data.pitch) setPitch(data.pitch);
+        let resolvedSqft: number | null = null;
+        let resolvedPitch: string | null = null;
+
+        // Tier 1 / 2 — Solar API
+        const solarRes = await fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`);
+        if (solarRes.ok) {
+          const data = await solarRes.json();
+          if (data.sqft) {
+            resolvedSqft = data.sqft;
+            resolvedPitch = data.pitch ?? null;
+          } else if (data.buildingFootprintSqft) {
+            // Solar saw the building but couldn't segment it — fall back
+            // to footprint × pitch (Solar's pitchDegrees if any, else 1.118).
+            const slope =
+              data.pitchDegrees && data.pitchDegrees > 0
+                ? 1 / Math.cos((data.pitchDegrees * Math.PI) / 180)
+                : 1.118;
+            resolvedSqft = Math.round(data.buildingFootprintSqft * slope);
+            resolvedPitch = data.pitch ?? null;
+          }
         }
+
+        // Tier 3 — Roboflow polygon (when no Solar data)
+        if (!resolvedSqft) {
+          try {
+            const rfRes = await fetch(`/api/roboflow?lat=${addr.lat}&lng=${addr.lng}`);
+            if (rfRes.ok) {
+              const rf = await rfRes.json();
+              const poly: Array<{ lat: number; lng: number }> | null =
+                Array.isArray(rf?.polygon) && rf.polygon.length >= 3 ? rf.polygon : null;
+              if (poly) {
+                const sqft = polygonAreaSqftLocal(poly);
+                if (sqft >= 200 && sqft <= 20_000) {
+                  resolvedSqft = Math.round(sqft * 1.118);
+                }
+              }
+            }
+          } catch {
+            /* opportunistic */
+          }
+        }
+
+        // Tier 4 — Microsoft Buildings footprint (last resort before manual)
+        if (!resolvedSqft) {
+          try {
+            const msRes = await fetch(
+              `/api/microsoft-building?lat=${addr.lat}&lng=${addr.lng}`,
+            );
+            if (msRes.ok) {
+              const ms = await msRes.json();
+              const poly: Array<{ lat: number; lng: number }> | null =
+                Array.isArray(ms?.polygon) && ms.polygon.length >= 3 ? ms.polygon : null;
+              if (poly) {
+                const sqft = polygonAreaSqftLocal(poly);
+                if (sqft >= 200 && sqft <= 20_000) {
+                  resolvedSqft = Math.round(sqft * 1.118);
+                }
+              }
+            }
+          } catch {
+            /* opportunistic */
+          }
+        }
+
+        if (resolvedSqft) setSqft(resolvedSqft);
+        if (resolvedPitch) setPitch(resolvedPitch);
+
         const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
         if (key) {
           setSatelliteUrl(
@@ -451,20 +547,25 @@ function RoofStep({
               type="number"
               value={sqft ?? ""}
               onChange={(e) => onChangeSqft(Number(e.target.value) || 0)}
-              className="w-32 bg-transparent border-0 outline-none font-display tabular text-[28px] font-semibold tracking-tight"
+              placeholder="Enter sq ft"
+              className="w-32 bg-transparent border-0 outline-none font-display tabular text-[28px] font-semibold tracking-tight placeholder:text-slate-600 placeholder:text-[18px]"
             />
             <span className="font-mono text-[12px] text-slate-500">sq ft</span>
           </div>
-          <div className="text-[11px] text-slate-500 mt-1">Edit if it looks off</div>
+          <div className="text-[11px] text-slate-500 mt-1">
+            {sqft ? "Edit if it looks off" : "Couldn’t auto-measure — enter approximate size"}
+          </div>
         </div>
         <div className="rounded-2xl border border-white/[0.05] bg-white/[0.015] p-4">
           <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
             Roof pitch
           </div>
           <div className="font-display tabular text-[28px] font-semibold tracking-tight mt-1">
-            {pitch ?? "—"}
+            {pitch ?? "Standard"}
           </div>
-          <div className="text-[11px] text-slate-500 mt-1">Auto-detected from satellite</div>
+          <div className="text-[11px] text-slate-500 mt-1">
+            {pitch ? "Auto-detected from satellite" : "Estimated — confirmed at on-site quote"}
+          </div>
         </div>
       </div>
 
