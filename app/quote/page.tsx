@@ -376,7 +376,12 @@ export default function QuotePage() {
             <NavHeader
               items={[
                 { label: "How It Works", href: "#how" },
-                { label: "Reviews", href: "#reviews" },
+                // Only show the Reviews tab when verified reviews are live —
+                // matches the gate in components/quote/BelowFold.tsx so the
+                // tab and the section appear/disappear together.
+                ...(process.env.NEXT_PUBLIC_REVIEWS_VERIFIED === "true"
+                  ? [{ label: "Reviews", href: "#reviews" }]
+                  : []),
                 { label: "FAQ", href: "#faq" },
               ]}
             />
@@ -395,9 +400,11 @@ export default function QuotePage() {
     );
   }
 
-  // Steps 2–4 — wizard with stepper
+  // Steps 2–4 — wizard with stepper. Wrap in a solid ink background so the
+  // global indigo radial-gradient on app/layout.tsx doesn't bleed through and
+  // wash out the slate-400/500 secondary text on the material cards / stats.
   return (
-    <div className="min-h-screen flex flex-col relative z-[1]">
+    <div className="min-h-screen flex flex-col relative z-[1] bg-[#07090d]">
       <PublicHeader />
       <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-10 sm:py-16 space-y-8">
         {!submitted && <Stepper current={stepIdx} />}
@@ -654,15 +661,20 @@ function RoofStep({
           <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
             Estimated roof size
           </div>
-          <div className="flex items-baseline gap-2 mt-1">
+          <div className="flex items-baseline gap-1.5 mt-1">
             <input
               type="number"
               value={sqft ?? ""}
               onChange={(e) => onChangeSqft(Number(e.target.value) || 0)}
               placeholder="Enter sq ft"
-              className="w-32 bg-transparent border-0 outline-none font-display tabular text-[28px] font-semibold tracking-tight placeholder:text-slate-600 placeholder:text-[18px]"
+              // Auto-size to content via field-sizing (Chrome 124+, Safari
+              // 17.4+) with size="5" as the fallback width hint. Avoids the
+              // huge "4946________sq ft" gap from the prior fixed w-32.
+              size={5}
+              style={{ fieldSizing: "content" } as React.CSSProperties}
+              className="bg-transparent border-0 outline-none font-display tabular text-[28px] font-semibold tracking-tight placeholder:text-slate-600 placeholder:text-[18px]"
             />
-            <span className="font-mono text-[12px] text-slate-500">sq ft</span>
+            <span className="font-mono text-[12px] text-slate-400">sq ft</span>
           </div>
           <div className="text-[11px] text-slate-500 mt-1">
             {sqft ? "Edit if it looks off" : "Couldn’t auto-measure — enter approximate size"}
@@ -754,8 +766,8 @@ function MaterialStep({
                   </div>
                 )}
               </div>
-              <div className="text-[12px] text-slate-400 mt-1">{copy.tagline}</div>
-              <div className="text-[11px] font-mono uppercase tracking-[0.12em] text-slate-500 mt-3">
+              <div className="text-[12.5px] text-slate-300 mt-1">{copy.tagline}</div>
+              <div className="text-[11px] font-mono uppercase tracking-[0.12em] text-slate-400 mt-3">
                 {copy.warranty}
               </div>
             </button>

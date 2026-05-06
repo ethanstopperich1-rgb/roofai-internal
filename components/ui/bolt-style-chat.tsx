@@ -170,7 +170,7 @@ export function BoltStyleHero({
 
             {/* Footer — submit button */}
             <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.06]">
-              <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-500 hidden sm:flex items-center gap-2">
+              <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-300 hidden sm:flex items-center gap-2">
                 <Zap size={11} className="text-cy-300" />
                 <span>~5 seconds · we never sell your info</span>
               </div>

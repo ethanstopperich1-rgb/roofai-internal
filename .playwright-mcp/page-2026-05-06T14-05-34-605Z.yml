@@ -1,0 +1,152 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - img "Voxaris Pitch" [ref=e8]
+        - list [ref=e10]:
+          - listitem [ref=e11]:
+            - link "How It Works" [ref=e12] [cursor=pointer]:
+              - /url: "#how"
+          - listitem [ref=e13]:
+            - link "Reviews" [ref=e14] [cursor=pointer]:
+              - /url: "#reviews"
+          - listitem [ref=e15]:
+            - link "FAQ" [ref=e16] [cursor=pointer]:
+              - /url: "#faq"
+          - listitem
+        - generic [ref=e17]:
+          - img [ref=e18]
+          - generic [ref=e21]: Free · No-obligation
+    - generic [ref=e22]:
+      - generic [ref=e24]:
+        - img [ref=e26]
+        - generic [ref=e28]: Voxaris Pitch · Quick Quote
+      - generic [ref=e29]:
+        - generic [ref=e30]:
+          - heading "What will it cost to roof your house?" [level=1] [ref=e31]
+          - paragraph [ref=e32]: Free, instant, no calls until you ask.
+        - generic [ref=e34]:
+          - generic [ref=e36]:
+            - img [ref=e37]
+            - textbox "123 Main St, your city, state" [ref=e40]
+          - generic [ref=e41]:
+            - textbox "Full name" [ref=e42]
+            - textbox "Email address" [ref=e43]
+            - textbox "Phone number" [ref=e44]
+          - generic [ref=e45]:
+            - generic [ref=e46]:
+              - img [ref=e47]
+              - generic [ref=e49]: ~5 seconds · we never sell your info
+            - button "See my quote" [disabled] [ref=e50]:
+              - text: See my quote
+              - img [ref=e51]
+        - generic [ref=e53]:
+          - generic [ref=e54]:
+            - generic [ref=e55]:
+              - img [ref=e56]
+              - generic [ref=e58]: Satellite-measured
+            - generic [ref=e59]: No tape measure visit needed
+          - generic [ref=e60]:
+            - generic [ref=e61]:
+              - img [ref=e62]
+              - generic [ref=e65]: Private
+            - generic [ref=e66]: Your address is never sold
+          - generic [ref=e67]:
+            - generic [ref=e68]:
+              - img [ref=e69]
+              - generic [ref=e72]: No obligation
+            - generic [ref=e73]: See the price before sharing more
+  - generic [ref=e74]:
+    - generic [ref=e77]:
+      - generic [ref=e78]:
+        - generic [ref=e79]: 30s
+        - generic [ref=e80]: Average estimate time
+        - generic [ref=e81]: from address to price
+      - generic [ref=e82]:
+        - generic [ref=e83]: ±10%
+        - generic [ref=e84]: Accuracy vs final quote
+        - generic [ref=e85]: vs in-person inspection
+      - generic [ref=e86]:
+        - generic [ref=e87]: <1hr
+        - generic [ref=e88]: Contractor response
+        - generic [ref=e89]: during business hours
+      - generic [ref=e90]:
+        - generic [ref=e91]: $0
+        - generic [ref=e92]: Cost to homeowner
+        - generic [ref=e93]: no obligation, ever
+    - generic [ref=e95]:
+      - generic [ref=e96]:
+        - generic [ref=e97]: How it works
+        - heading "Three steps. About thirty seconds." [level=2] [ref=e98]
+        - paragraph [ref=e99]: No measuring tape. No salesperson at the door. The roof you see in your driveway is the same roof we measure from above.
+      - generic [ref=e100]:
+        - generic [ref=e101]:
+          - generic [ref=e102]: "01"
+          - generic [ref=e103]:
+            - img [ref=e104]
+            - heading "Enter your address" [level=3] [ref=e107]
+          - paragraph [ref=e108]: Just your street address — no measurements, no calls, no in-home visit. We pull your roof from satellite the moment you submit.
+        - generic [ref=e109]:
+          - generic [ref=e110]: "02"
+          - generic [ref=e111]:
+            - img [ref=e112]
+            - heading "AI measures your roof" [level=3] [ref=e118]
+          - paragraph [ref=e119]: Photogrammetric segmentation determines square footage, pitch, and complexity in seconds. Same data Google uses for solar panel sizing.
+        - generic [ref=e120]:
+          - generic [ref=e121]: "03"
+          - generic [ref=e122]:
+            - img [ref=e123]
+            - heading "See your estimate, pick a contractor" [level=3] [ref=e125]
+          - paragraph [ref=e126]: Pick your preferred material; see the price range. A vetted local roofer follows up only if you ask. Zero obligation otherwise.
+    - generic [ref=e128]:
+      - generic [ref=e129]:
+        - generic [ref=e130]: FAQ
+        - heading "Common questions" [level=2] [ref=e131]
+        - paragraph [ref=e132]: If your question isn't here, the contractor you pick will answer it directly.
+      - generic [ref=e133]:
+        - generic [ref=e134]:
+          - button "How accurate is the satellite estimate?" [expanded] [ref=e135]:
+            - generic [ref=e136]: How accurate is the satellite estimate?
+            - img [ref=e137]
+          - generic [ref=e140]: Within ~10% of an in-person quote on most residential properties. We measure from Google's photogrammetric satellite imagery — the same source Google uses for solar-panel sizing — and apply standard pitch and waste factors. Older imagery (>5 years) carries a wider band; we flag that explicitly when relevant.
+        - button "How is this free? What's the catch?" [ref=e142]:
+          - generic [ref=e143]: How is this free? What's the catch?
+          - img [ref=e144]
+        - button "Will I get spam-called by a bunch of contractors?" [ref=e147]:
+          - generic [ref=e148]: Will I get spam-called by a bunch of contractors?
+          - img [ref=e149]
+        - button "What materials and roof types do you cover?" [ref=e152]:
+          - generic [ref=e153]: What materials and roof types do you cover?
+          - img [ref=e154]
+        - button "What if my roof needs repair, not replacement?" [ref=e157]:
+          - generic [ref=e158]: What if my roof needs repair, not replacement?
+          - img [ref=e159]
+        - button "Is there financing available?" [ref=e162]:
+          - generic [ref=e163]: Is there financing available?
+          - img [ref=e164]
+        - button "How long until I get a precise quote?" [ref=e167]:
+          - generic [ref=e168]: How long until I get a precise quote?
+          - img [ref=e169]
+        - button "Does this work with insurance claims?" [ref=e172]:
+          - generic [ref=e173]: Does this work with insurance claims?
+          - img [ref=e174]
+    - generic [ref=e177]:
+      - generic [ref=e178]:
+        - img [ref=e180]
+        - generic [ref=e183]: BBB-vetted roofers only
+      - generic [ref=e184]:
+        - img [ref=e186]
+        - generic [ref=e189]: Average 47 min reply
+      - generic [ref=e190]:
+        - img [ref=e192]
+        - generic [ref=e195]: License + insurance on every quote
+      - generic [ref=e196]:
+        - img [ref=e198]
+        - generic [ref=e201]: We never sell your info
+    - contentinfo [ref=e202]:
+      - generic [ref=e203]:
+        - generic [ref=e204]: © 2026 Voxaris
+        - generic [ref=e205]:
+          - generic [ref=e206]: Estimates are non-binding
+          - generic [ref=e207]: ·
+          - generic [ref=e208]: Estimate to deal in five minutes.
