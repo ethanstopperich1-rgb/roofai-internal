@@ -40,6 +40,10 @@ quote-step*.png
 quote-step*.jpeg
 quote-form-*.png
 quote-form-*.jpeg
+embed-*.png
+embed-*.jpeg
+internal-*.png
+internal-*.jpeg
 step*-fixed.*
 
 # Build-time data extraction cache (the 890MB raw TN building footprint
