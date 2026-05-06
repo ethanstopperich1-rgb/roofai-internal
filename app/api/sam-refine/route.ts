@@ -5,6 +5,7 @@ import {
   refineRoofWithGroundedSam,
 } from "@/lib/grounded-sam";
 import { fetchBuildingPolygon } from "@/lib/buildings";
+import { fetchSolarRoofMask } from "@/lib/solar-mask";
 import { getCached, setCached } from "@/lib/cache";
 import { fetchSatelliteImage, validateRoofPolygon } from "@/lib/anthropic";
 import {
@@ -125,7 +126,12 @@ function clipSamToOsm(
 
 interface SamRefineCachedResult {
   polygon: Array<{ lat: number; lng: number }>;
-  source: "sam-grounded" | "sam-clipped-osm" | "osm-fallback";
+  source:
+    | "sam-grounded"
+    | "sam-clipped-osm"
+    | "sam-clipped-solar"
+    | "osm-fallback"
+    | "solar-fallback";
   /** Vision QA gate output (Claude). Low confidence (<0.45) blocks the
    *  polygon from being returned — the route falls through to whatever
    *  the next-priority source gives the client. */
@@ -214,14 +220,22 @@ export async function POST(req: Request) {
   const cached = await getCached<SamRefineCachedResult>("sam-refine", lat, lng);
   if (cached) return NextResponse.json(cached);
 
-  // Run OSM lookup + Grounded SAM in parallel. SAM throws specific errors
-  // for credit / token issues that we want to surface as proper HTTP codes;
-  // anything else collapses to "null result" so the chain still works.
+  // Run OSM + Solar mask + Grounded SAM in parallel. OSM is the preferred
+  // guard polygon (hand-traced footprint), but coverage is uneven — only
+  // ~50-60% of US residential addresses have OSM data, and suburban/rural
+  // markets like central Florida get 0%. Solar mask (Project Sunroof's
+  // photogrammetric roof segmentation) covers most of the US and serves
+  // as a reliable SAM-guard fallback when OSM is missing. SAM throws
+  // specific errors for credit / token issues that we surface as proper
+  // HTTP codes; anything else collapses to "null result" so the chain
+  // still works.
   let osmResult: Awaited<ReturnType<typeof fetchBuildingPolygon>> | null = null;
+  let solarMaskResult: Awaited<ReturnType<typeof fetchSolarRoofMask>> = null;
   let samResult: Awaited<ReturnType<typeof refineRoofWithGroundedSam>> = null;
   try {
-    [osmResult, samResult] = await Promise.all([
+    [osmResult, solarMaskResult, samResult] = await Promise.all([
       fetchBuildingPolygon({ lat, lng }).catch(() => null),
+      fetchSolarRoofMask({ lat, lng, apiKey: googleMapsKey }).catch(() => null),
       refineRoofWithGroundedSam({ lat, lng, googleMapsKey }),
     ]);
   } catch (err) {
@@ -242,46 +256,66 @@ export async function POST(req: Request) {
         { status: 401 },
       );
     }
-    // Other failures: try to recover via OSM only
-    osmResult = await fetchBuildingPolygon({ lat, lng }).catch(() => null);
+    // Other failures: try to recover via OSM/Solar mask only
+    [osmResult, solarMaskResult] = await Promise.all([
+      fetchBuildingPolygon({ lat, lng }).catch(() => null),
+      fetchSolarRoofMask({ lat, lng, apiKey: googleMapsKey }).catch(() => null),
+    ]);
     samResult = null;
   }
 
-  // Build the candidate polygon (SAM × OSM clip when available, fall back
-  // through the chain), then run the QA gate at the end. Centralising the
-  // gate at one spot avoids duplicating the validate-or-reject logic at
-  // every return site.
+  // Pick a guard polygon for SAM clipping. OSM > Solar mask. OSM is hand-
+  // traced (most reliable when present); Solar mask is photogrammetric
+  // (reliable, broader coverage). Either works as a clip target — the
+  // intersection trims SAM bleed into lawn/shadows.
+  const guard: { poly: Array<{ lat: number; lng: number }>; source: "osm" | "solar" } | null =
+    osmResult
+      ? { poly: osmResult.latLng, source: "osm" }
+      : solarMaskResult
+        ? { poly: solarMaskResult.latLng, source: "solar" }
+        : null;
+
+  // Build the candidate polygon (SAM × guard clip when available, fall
+  // back through the chain), then run the QA gate at the end. Centralising
+  // the gate at one spot avoids duplicating the validate-or-reject logic
+  // at every return site.
   let candidate:
     | { polygon: Array<{ lat: number; lng: number }>; source: SamRefineCachedResult["source"] }
     | null = null;
 
   if (samResult) {
-    if (osmResult) {
-      const clipped = clipSamToOsm(samResult.latLng, osmResult.latLng);
+    if (guard) {
+      const clipped = clipSamToOsm(samResult.latLng, guard.poly);
       if (clipped && clipped.length >= 3) {
-        // Re-orthogonalize the clipped polygon using the OSM building's
+        // Re-orthogonalize the clipped polygon using the guard polygon's
         // principal axis as a candidate. Polygon clipping reintroduces
-        // jaggies at intersection corners, and the OSM axis is usually
+        // jaggies at intersection corners, and the guard axis is usually
         // the most reliable building-axis signal we have for this property.
-        const osmAxis = polygonPrincipalAxisDeg(osmResult.latLng);
+        const guardAxis = polygonPrincipalAxisDeg(guard.poly);
         const clippedPoints = clipped.map((v) => [v.lng, v.lat] as [number, number]);
         const reOrtho = bestOrthogonalize({
           poly: clippedPoints,
-          candidateAxesDeg: [osmAxis],
+          candidateAxesDeg: [guardAxis],
           toleranceDeg: 14,
         });
         const finalPoints = mergeNearbyVertices(reOrtho.polygon, 1e-6);
         const finalLatLng = finalPoints.map(([lng, lat]) => ({ lat, lng }));
         console.log(
-          `[sam-refine] clipped SAM (${samResult.latLng.length} verts) × OSM (${osmResult.latLng.length}) → ortho@${reOrtho.chosenAxisDeg.toFixed(1)}° → ${finalLatLng.length} verts`,
+          `[sam-refine] clipped SAM (${samResult.latLng.length} verts) × ${guard.source.toUpperCase()} (${guard.poly.length}) → ortho@${reOrtho.chosenAxisDeg.toFixed(1)}° → ${finalLatLng.length} verts`,
         );
-        candidate = { polygon: finalLatLng, source: "sam-clipped-osm" };
+        candidate = {
+          polygon: finalLatLng,
+          source: guard.source === "osm" ? "sam-clipped-osm" : "sam-clipped-solar",
+        };
       } else {
-        console.warn("[sam-refine] SAM × OSM intersection empty — checking SAM centroid against OSM");
+        console.warn(`[sam-refine] SAM × ${guard.source.toUpperCase()} intersection empty — checking centroid`);
         const c = centroidOf(samResult.latLng);
-        if (!pointInPolygon(c.lat, c.lng, osmResult.latLng)) {
-          // SAM landed off-building — trust OSM
-          candidate = { polygon: osmResult.latLng, source: "osm-fallback" };
+        if (!pointInPolygon(c.lat, c.lng, guard.poly)) {
+          // SAM landed off-building — trust the guard
+          candidate = {
+            polygon: guard.poly,
+            source: guard.source === "osm" ? "osm-fallback" : "solar-fallback",
+          };
         } else {
           // Centroid on building but intersection degenerate — raw SAM
           candidate = { polygon: samResult.latLng, source: "sam-grounded" };
@@ -290,8 +324,11 @@ export async function POST(req: Request) {
     } else {
       candidate = { polygon: samResult.latLng, source: "sam-grounded" };
     }
-  } else if (osmResult) {
-    candidate = { polygon: osmResult.latLng, source: "osm-fallback" };
+  } else if (guard) {
+    candidate = {
+      polygon: guard.poly,
+      source: guard.source === "osm" ? "osm-fallback" : "solar-fallback",
+    };
   }
 
   if (!candidate) {
@@ -304,13 +341,16 @@ export async function POST(req: Request) {
     );
   }
 
-  // Vision QA gate. OSM polygons are human-traced and trusted — skip the
-  // gate for them. SAM/SAM-clipped go through Claude validation: confidence
-  // < 0.45 means the polygon doesn't actually look like the centred building's
-  // roof, so we discard it and return 502 (client falls through to the
-  // Claude AI source or the manual draw mode).
+  // Vision QA gate. OSM polygons are human-traced and trusted; Solar mask
+  // polygons are photogrammetric ground truth — skip the gate for both.
+  // SAM/SAM-clipped go through Claude validation: confidence < 0.45 means
+  // the polygon doesn't actually look like the centred building's roof,
+  // so we discard it and return 502 (client falls through to the Claude
+  // AI source or the manual draw mode).
+  const isTrustedFallback =
+    candidate.source === "osm-fallback" || candidate.source === "solar-fallback";
   let qa: { confidence: number; reason: string } | null = null;
-  if (candidate.source !== "osm-fallback") {
+  if (!isTrustedFallback) {
     qa = await runQaGate({
       polygon: candidate.polygon,
       lat,
@@ -321,11 +361,11 @@ export async function POST(req: Request) {
       console.warn(
         `[sam-refine] QA gate REJECTED ${candidate.source} polygon — falling through`,
       );
-      // If we have an OSM polygon as backup, return it instead
-      if (osmResult) {
+      // If we have a guard polygon as backup, return it instead
+      if (guard) {
         const result: SamRefineCachedResult = {
-          polygon: osmResult.latLng,
-          source: "osm-fallback",
+          polygon: guard.poly,
+          source: guard.source === "osm" ? "osm-fallback" : "solar-fallback",
         };
         await setCached("sam-refine", lat, lng, result);
         return NextResponse.json(result);

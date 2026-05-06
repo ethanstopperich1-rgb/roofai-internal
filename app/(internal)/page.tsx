@@ -222,15 +222,22 @@ export default function HomePage() {
   }, [vision?.roofPolygon, address?.lat, address?.lng]);
 
   // Wrong-house guard. Every auto-detected polygon must contain (or be within
-  // 15 m of) the geocoded address. Catches the failure mode where AI traces
+  // 8 m of) the geocoded address. Catches the failure mode where AI traces
   // the brightest neighbouring roof rather than the actual target. Returns
   // the polygon when valid, null when it should be rejected.
+  //
+  // Tightened from 15m → 8m (2026-05-05) after the eval set (scripts/
+  // eval-truth/) showed two FL addresses where Roboflow returned an IoU=0
+  // polygon traced on a neighbour's roof but still within 15m of the
+  // geocoded address — slipped through the old guard and landed in front
+  // of the rep. 8m matches the typical setback of geocoded address points
+  // from a residential roof's edge.
   const validateAtAddress = (
     poly: Array<{ lat: number; lng: number }> | null,
   ): Array<{ lat: number; lng: number }> | null => {
     if (!poly || poly.length < 3) return null;
     if (address?.lat == null || address?.lng == null) return poly;
-    return polygonIsNearAddress(poly, address.lat, address.lng, 15) ? poly : null;
+    return polygonIsNearAddress(poly, address.lat, address.lng, 8) ? poly : null;
   };
 
   const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng]);

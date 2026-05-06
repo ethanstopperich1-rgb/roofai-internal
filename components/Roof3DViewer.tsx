@@ -758,7 +758,12 @@ export default function Roof3DViewer({
             glowPower,
             color: stroke,
           }),
-          clampToGround: true,
+          // Drape onto the photogrammetric mesh via classification only.
+          // `clampToGround: true` is for the WGS84 ellipsoid / terrain
+          // provider; on a Tileset that's a no-op at best and at worst
+          // fights the classification, painting the outline at ground
+          // level instead of on the rooftop. Classification alone is the
+          // right primitive here.
           classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
         },
       });

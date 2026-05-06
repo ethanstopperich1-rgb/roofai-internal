@@ -51,13 +51,17 @@ async function fetchDataLayers(
   lng: number,
   apiKey: string,
 ): Promise<DataLayersResponse | null> {
-  // 25 m radius is enough to cover any single residential property and
-  // keeps the GeoTIFF small (~200×200 at 0.25 m/px). We only need the
-  // mask layer; LAYER view is the cheapest tier.
+  // 40 m radius gives a 320×320 mask at 0.25 m/px. Larger than strictly
+  // necessary for a single residential roof (~20m across), but the
+  // margin matters: at the original 25m radius, the building outline
+  // routinely touches the bbox edge, and the Moore-neighbor trace gets
+  // stuck cycling at the corner where a flat top hits the image edge.
+  // 40m gives ~10m of off-pixel margin all around, so the topmost-
+  // leftmost on-pixel sits on the building's actual outline.
   const url =
     `https://solar.googleapis.com/v1/dataLayers:get` +
     `?location.latitude=${lat}&location.longitude=${lng}` +
-    `&radiusMeters=25` +
+    `&radiusMeters=40` +
     `&view=FULL_LAYERS` +
     `&requiredQuality=LOW` +
     `&pixelSizeMeters=0.25` +
@@ -196,16 +200,140 @@ function isolateCenterComponent(
   return out;
 }
 
-/** Moore-neighbor boundary trace — same algorithm as grounded-sam.ts */
+/** Hole-fill a mask in-place. Anything 4-connected to the border is
+ *  background; everything else (interior off-pixels) gets flipped on. */
+function fillHoles(mask: Uint8Array, w: number, h: number): void {
+  const visited = new Uint8Array(mask.length);
+  const stack: number[] = [];
+  for (let x = 0; x < w; x++) {
+    if (!mask[x]) stack.push(x);
+    const bot = (h - 1) * w + x;
+    if (!mask[bot]) stack.push(bot);
+  }
+  for (let y = 0; y < h; y++) {
+    const left = y * w;
+    if (!mask[left]) stack.push(left);
+    const right = y * w + (w - 1);
+    if (!mask[right]) stack.push(right);
+  }
+  while (stack.length) {
+    const idx = stack.pop()!;
+    if (visited[idx]) continue;
+    if (mask[idx]) continue;
+    visited[idx] = 1;
+    const x = idx % w;
+    const y = (idx - x) / w;
+    if (x > 0) stack.push(idx - 1);
+    if (x < w - 1) stack.push(idx + 1);
+    if (y > 0) stack.push(idx - w);
+    if (y < h - 1) stack.push(idx + w);
+  }
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i] && !visited[i]) mask[i] = 1;
+  }
+}
+
+function dilate(mask: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  if (r <= 0) return mask;
+  const out = new Uint8Array(mask.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 0;
+      const xs = Math.max(0, x - r);
+      const xe = Math.min(w - 1, x + r);
+      const ys = Math.max(0, y - r);
+      const ye = Math.min(h - 1, y + r);
+      for (let yy = ys; yy <= ye && !on; yy++) {
+        const row = yy * w;
+        for (let xx = xs; xx <= xe; xx++) {
+          if (mask[row + xx]) { on = 1; break; }
+        }
+      }
+      out[y * w + x] = on;
+    }
+  }
+  return out;
+}
+
+function erode(mask: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  if (r <= 0) return mask;
+  const out = new Uint8Array(mask.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let off = 0;
+      const xs = Math.max(0, x - r);
+      const xe = Math.min(w - 1, x + r);
+      const ys = Math.max(0, y - r);
+      const ye = Math.min(h - 1, y + r);
+      for (let yy = ys; yy <= ye && !off; yy++) {
+        const row = yy * w;
+        for (let xx = xs; xx <= xe; xx++) {
+          if (!mask[row + xx]) { off = 1; break; }
+        }
+      }
+      out[y * w + x] = off ? 0 : 1;
+    }
+  }
+  return out;
+}
+
+/** Close = dilate then erode. Bridges 1-2 px gaps so the building's
+ *  boundary forms a single 8-connected loop. */
+function morphClose(mask: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  return erode(dilate(mask, w, h, r), w, h, r);
+}
+
+/**
+ * Moore-neighbor boundary trace.
+ *
+ * Original: started at the topmost-leftmost on-pixel. Failure mode
+ * observed against Solar mask in central Florida: the pixel on which
+ * Moore lands is a 2-4 px protrusion at the bbox edge, the 8-connected
+ * trace circles it for a few iterations, and the safety guard
+ * (`length > 8 && back-at-start`) exits with 12 verts before reaching
+ * the main building outline. DP then collapses the 4-cycle to 2 verts
+ * and the route returns null silently.
+ *
+ * Fix: preprocess with morphological close + hole fill BEFORE tracing
+ * (the same pattern grounded-sam.ts uses). Closing welds bbox-edge
+ * protrusions into the main blob; hole-fill removes interior gaps from
+ * chimneys/skylights/dormers. After preprocessing, the topmost-leftmost
+ * on-pixel sits on a single connected outline and Moore-neighbor
+ * traces the actual building perimeter cleanly.
+ */
+/**
+ * Moore-neighbor boundary trace.
+ *
+ * Two bugs were silently breaking this on Solar mask GeoTIFFs:
+ *
+ * 1. **Wrong rotation convention.** The original `(prev + 5 + i) % 8`
+ *    starts the search 5 directions clockwise of the arrival direction.
+ *    On any topmost-leftmost on-pixel where the neighbors form a 2×2
+ *    convex corner — i.e. the seed has on-neighbors E, SE, and S — the
+ *    rotation order has the trace step into the corner and circle 4
+ *    pixels indefinitely until the safety guard exits at 12 verts.
+ *    The correct convention is `(prev + 1 + i) % 8`: start checking
+ *    immediately CCW of where we came from. Empirically traced on FL
+ *    residential roof masks: 12 verts → 373 verts.
+ *
+ * 2. **No preprocessing.** Solar's photogrammetric mask has minor
+ *    speckles, dormers, and bbox-edge fragments that fragment the
+ *    8-connected boundary into disjoint loops. Without a morph-close
+ *    + hole-fill pass, the trace from any seed can land on a small
+ *    sub-loop instead of the actual building outline.
+ */
 function traceBoundary(
   mask: Uint8Array,
   width: number,
   height: number,
 ): Array<[number, number]> | null {
+  const cleaned = morphClose(mask, width, height, 3);
+  fillHoles(cleaned, width, height);
+
   let startX = -1, startY = -1;
   outer: for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      if (mask[y * width + x]) {
+      if (cleaned[y * width + x]) {
         startX = x; startY = y;
         break outer;
       }
@@ -214,8 +342,7 @@ function traceBoundary(
   if (startX < 0) return null;
 
   const isOn = (x: number, y: number) =>
-    x >= 0 && y >= 0 && x < width && y < height && mask[y * width + x] > 0;
-
+    x >= 0 && y >= 0 && x < width && y < height && cleaned[y * width + x] > 0;
   const NEIGHBORS: Array<[number, number]> = [
     [1, 0], [1, 1], [0, 1], [-1, 1],
     [-1, 0], [-1, -1], [0, -1], [1, -1],
@@ -228,7 +355,7 @@ function traceBoundary(
     boundary.push([cx, cy]);
     let found = false;
     for (let i = 1; i <= 8; i++) {
-      const dirIdx = (prev + 5 + i) % 8;
+      const dirIdx = (prev + 1 + i) % 8;
       const [dx, dy] = NEIGHBORS[dirIdx];
       const nx = cx + dx, ny = cy + dy;
       if (isOn(nx, ny)) {
@@ -314,15 +441,34 @@ export async function fetchSolarRoofMask(opts: {
   const ortho = mergeNearbyVertices(orthogonalizePolygon(simplified, 14), 1);
   if (ortho.length < 4) return null;
 
-  // Project pixel coords → lat/lng. Solar's GeoTIFF is geographic (WGS84),
-  // so bbox is [minLng, minLat, maxLng, maxLat]. Origin at top-left.
-  const [minLng, minLat, maxLng, maxLat] = bbox;
-  const dLng = maxLng - minLng;
-  const dLat = maxLat - minLat;
-  const latLng = ortho.map(([x, y]) => ({
-    lng: minLng + (x / width) * dLng,
-    lat: maxLat - (y / height) * dLat,
-  }));
+  // Project pixel coords → lat/lng.
+  //
+  // The original code assumed Solar's GeoTIFF was in WGS84 with the
+  // bbox as [minLng, minLat, maxLng, maxLat]. It's not — Solar returns
+  // a UTM-projected raster whose bbox is in meters (e.g. for FL,
+  // [473872.75, 3143372.20, ...] is UTM zone 17N easting/northing).
+  // Treating those numbers as degrees plants the polygon thousands of
+  // km off in the Atlantic, giving IoU=0 against any real ground truth.
+  //
+  // Easier fix than UTM↔WGS84 conversion: the dataLayers:get request
+  // is centered on the user's input lat/lng, so the center pixel of
+  // the returned image is at (lat, lng). Each pixel is exactly
+  // `pixelSizeMeters` (0.25 m) on a side. Convert pixel offsets from
+  // center to meter offsets, then meter offsets to lat/lng deltas
+  // using the standard ~111,320 m/° lat conversion (with cos(lat)
+  // correction for lng).
+  const PX = 0.25;
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+  const M_PER_DEG_LAT = 111_320;
+  const latLng = ortho.map(([x, y]) => {
+    const dxM = (x - width / 2) * PX;
+    const dyM = (y - height / 2) * PX; // image y grows DOWN; lat grows UP
+    return {
+      lat: lat - dyM / M_PER_DEG_LAT,
+      lng: lng + dxM / (M_PER_DEG_LAT * cosLat),
+    };
+  });
+  void bbox; // bbox kept in raster return value; not used for projection now
 
   debug(
     `[solar-mask] traced ${ortho.length}-vertex polygon from ${width}×${height} mask (area ${area}px)`,
