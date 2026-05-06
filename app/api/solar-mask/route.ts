@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import { fetchSolarRoofMask, type SolarMaskPolygon } from "@/lib/solar-mask";
 import { getCached, setCached } from "@/lib/cache";
 
@@ -16,6 +17,8 @@ export const maxDuration = 30;
  * Cached server-side per lat/lng for 24h (data layers update infrequently).
  */
 export async function GET(req: Request) {
+  const __rl = await rateLimit(req, "standard");
+  if (__rl) return __rl;
   const { searchParams } = new URL(req.url);
   const lat = Number(searchParams.get("lat"));
   const lng = Number(searchParams.get("lng"));

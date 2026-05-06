@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import polygonClipping from "polygon-clipping";
 import {
   refineRoofWithGroundedSam,
@@ -180,6 +181,8 @@ async function runQaGate(opts: {
 }
 
 export async function POST(req: Request) {
+  const __rl = await rateLimit(req, "expensive");
+  if (__rl) return __rl;
   let body: Body;
   try {
     body = await req.json();

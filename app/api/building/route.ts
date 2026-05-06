@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import { fetchBuildingPolygon, type BuildingPolygon } from "@/lib/buildings";
 import { getCached, setCached } from "@/lib/cache";
 
@@ -13,6 +14,8 @@ export const maxDuration = 30;
  * { polygon: Array<{ lat, lng }>, source: "osm", osmId?: number } | { error }
  */
 export async function GET(req: Request) {
+  const __rl = await rateLimit(req, "standard");
+  if (__rl) return __rl;
   const { searchParams } = new URL(req.url);
   const lat = Number(searchParams.get("lat"));
   const lng = Number(searchParams.get("lng"));

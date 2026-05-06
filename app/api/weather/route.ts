@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import { parseLatLng } from "@/lib/validate";
 
 export async function GET(req: Request) {
+  const __rl = await rateLimit(req, "standard");
+  if (__rl) return __rl;
   const apiKey = process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
   if (!apiKey) return NextResponse.json({ error: "Missing key" }, { status: 503 });
   const ll = parseLatLng(new URL(req.url).searchParams);
@@ -9,7 +12,7 @@ export async function GET(req: Request) {
   const { lat, lng } = ll;
 
   const url = `https://weather.googleapis.com/v1/currentConditions:lookup?key=${apiKey}&location.latitude=${lat}&location.longitude=${lng}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
   const data = await res.json();
   if (!res.ok) return NextResponse.json({ error: "Weather error", detail: data }, { status: res.status });
 

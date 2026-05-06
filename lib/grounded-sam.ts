@@ -12,6 +12,7 @@
  * stray segments that landed outside the actual building.
  */
 
+import { debug } from "@/lib/debug";
 import Replicate from "replicate";
 import sharp from "sharp";
 import { bestOrthogonalize, mergeNearbyVertices } from "./polygon";
@@ -427,13 +428,13 @@ export async function refineRoofWithGroundedSam(opts: {
     console.warn("[sam] no mask URLs from either model");
     return null;
   }
-  console.log(`[sam] received ${urls.length} mask URL(s)`);
+  debug(`[sam] received ${urls.length} mask URL(s)`);
 
   // Process each mask, keep the largest non-degenerate one
   let best: { polygon: Array<[number, number]>; area: number } | null = null;
   for (const url of urls) {
     try {
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
       if (!res.ok) continue;
       const buf = Buffer.from(await res.arrayBuffer());
       const { data, info } = await sharp(buf)
@@ -465,7 +466,7 @@ export async function refineRoofWithGroundedSam(opts: {
     );
     return null;
   }
-  console.log(
+  debug(
     `[grounded-sam] roof polygon: ${best.polygon.length} vertices, ${(fillFraction * 100).toFixed(1)}% of tile`,
   );
 

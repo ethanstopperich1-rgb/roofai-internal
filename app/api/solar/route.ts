@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import type { Pitch, SolarSegment, SolarSummary } from "@/types/estimate";
 import { getCached, setCached } from "@/lib/cache";
+import { fetchWithTimeout } from "@/lib/safe-fetch";
 import { rotateAllFacets } from "@/lib/solar-facets";
 
 export const runtime = "nodejs";
@@ -57,6 +59,8 @@ function dominantAzimuth(segs: SolarSegment[]): number | null {
 }
 
 export async function GET(req: Request) {
+  const __rl = await rateLimit(req, "standard");
+  if (__rl) return __rl;
   const apiKey = process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
   if (!apiKey) {
     return NextResponse.json({ error: "Missing key" }, { status: 503 });
@@ -77,7 +81,7 @@ export async function GET(req: Request) {
     `?location.latitude=${lat}&location.longitude=${lng}` +
     `&requiredQuality=HIGH&key=${apiKey}`;
 
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetchWithTimeout(url, { cache: "no-store", timeoutMs: 15_000 });
   if (!res.ok) {
     // Cache empty result briefly so we don't hammer Solar for known-misses
     if (res.status === 404) {

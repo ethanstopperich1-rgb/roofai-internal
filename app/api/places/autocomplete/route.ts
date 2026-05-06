@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 
 interface PlacePrediction {
   placePrediction?: {
@@ -8,6 +9,8 @@ interface PlacePrediction {
 }
 
 export async function GET(req: Request) {
+  const __rl = await rateLimit(req, "standard");
+  if (__rl) return __rl;
   const apiKey = process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
   if (!apiKey) return NextResponse.json({ error: "Missing key" }, { status: 503 });
   const { searchParams } = new URL(req.url);
@@ -28,6 +31,7 @@ export async function GET(req: Request) {
       includedRegionCodes: ["us"],
       includedPrimaryTypes: ["street_address", "premise", "subpremise", "route"],
     }),
+    signal: AbortSignal.timeout(8_000),
   });
   const data = await res.json();
   if (!res.ok) {

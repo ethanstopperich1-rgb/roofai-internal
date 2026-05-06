@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 
@@ -26,6 +27,8 @@ interface LeadPayload {
  * confirmation. Optionally posts to LEAD_WEBHOOK_URL for CRM intake.
  */
 export async function POST(req: Request) {
+  const __rl = await rateLimit(req, "public");
+  if (__rl) return __rl;
   let body: LeadPayload;
   try {
     body = (await req.json()) as LeadPayload;
@@ -54,6 +57,7 @@ export async function POST(req: Request) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ leadId, submittedAt, ...body }),
+        signal: AbortSignal.timeout(8_000),
       });
     } catch (err) {
       console.error("[leads] webhook failed:", err);

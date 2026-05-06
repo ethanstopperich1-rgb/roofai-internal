@@ -21,7 +21,21 @@ const bricolage = Bricolage_Grotesque({
   axes: ["opsz", "wdth"],
 });
 
+// metadataBase resolves relative URLs in OG / Twitter card images against a
+// real origin so shared links (Slack, iMessage, X) load the social card from
+// production instead of the build-host's localhost fallback. Falls through
+// to Vercel's auto-injected origins for preview deploys, then to the
+// production domain as a last resort.
+const metadataBase = process.env.NEXT_PUBLIC_SITE_ORIGIN
+  ? new URL(process.env.NEXT_PUBLIC_SITE_ORIGIN)
+  : process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? new URL(`https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`)
+    : process.env.VERCEL_URL
+      ? new URL(`https://${process.env.VERCEL_URL}`)
+      : new URL("https://pitch.voxaris.io");
+
 export const metadata: Metadata = {
+  metadataBase,
   title: "Voxaris Pitch · Roofing Estimator",
   description: "Estimate to deal in five minutes. The closing tool for roofing teams.",
 };

@@ -75,7 +75,7 @@ export async function fetchSatelliteImage(
       `${lng},${lat},${zoom}/${sizePx}x${sizePx}${retina}` +
       `?access_token=${token}&attribution=false&logo=false`;
     try {
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
       if (res.ok) {
         const buf = await res.arrayBuffer();
         return {
@@ -99,7 +99,7 @@ export async function fetchSatelliteImage(
     `?center=${lat},${lng}&zoom=${zoom}&size=${sizePx}x${sizePx}` +
     `&scale=${scale}&maptype=satellite&key=${googleApiKey}`;
   try {
-    const res = await fetch(gUrl, { cache: "no-store" });
+    const res = await fetch(gUrl, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return null;
     const buf = await res.arrayBuffer();
     return {

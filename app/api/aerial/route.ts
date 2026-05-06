@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 
 export async function GET(req: Request) {
+  const __rl = await rateLimit(req, "standard");
+  if (__rl) return __rl;
   const apiKey = process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
   if (!apiKey) return NextResponse.json({ error: "Missing key" }, { status: 503 });
   const { searchParams } = new URL(req.url);
@@ -8,7 +11,7 @@ export async function GET(req: Request) {
   if (!address) return NextResponse.json({ error: "address required" }, { status: 400 });
 
   const url = `https://aerialview.googleapis.com/v1/videos:lookupVideo?address=${encodeURIComponent(address)}&key=${apiKey}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
   const data = await res.json();
   if (!res.ok) return NextResponse.json({ error: "Aerial error", detail: data }, { status: res.status });
 
@@ -23,6 +26,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const __rl = await rateLimit(req, "standard");
+  if (__rl) return __rl;
   // Render request to start processing for new address
   const apiKey = process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
   if (!apiKey) return NextResponse.json({ error: "Missing key" }, { status: 503 });
@@ -34,6 +39,7 @@ export async function POST(req: Request) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ address: body.address }),
+    signal: AbortSignal.timeout(15_000),
   });
   const data = await res.json();
   return NextResponse.json(data, { status: res.status });

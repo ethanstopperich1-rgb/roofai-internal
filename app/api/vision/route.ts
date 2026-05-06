@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import { analyzeRoofImage, fetchSatelliteImage } from "@/lib/anthropic";
 import { getCached, setCached } from "@/lib/cache";
 import type { RoofVision } from "@/types/estimate";
@@ -7,6 +8,8 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function GET(req: Request) {
+  const __rl = await rateLimit(req, "expensive");
+  if (__rl) return __rl;
   const { searchParams } = new URL(req.url);
   const lat = Number(searchParams.get("lat"));
   const lng = Number(searchParams.get("lng"));

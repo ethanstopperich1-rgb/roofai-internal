@@ -18,6 +18,7 @@
  *      project pixel coords → lat/lng via the standard Web Mercator math
  */
 
+import { debug } from "@/lib/debug";
 import polygonClipping from "polygon-clipping";
 import sharp from "sharp";
 import { bestOrthogonalize, mergeNearbyVertices } from "./polygon";
@@ -350,6 +351,10 @@ async function callRoboflow(opts: {
       // their hosted-API docs.
       body: opts.base64,
       cache: "no-store",
+      // 25s — Roboflow inference is normally <2s, but cold starts can hit
+      // 10s+. Anything past 25s is broken; bail rather than pin the
+      // function instance.
+      signal: AbortSignal.timeout(25_000),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -580,7 +585,7 @@ export async function refineRoofWithRoboflow(opts: {
       // Merging this candidate would balloon the polygon — skip it. The
       // candidate stays unused (not added to standalone either; it likely
       // describes the same area as the primary, just bigger/wonkier).
-      console.log(
+      debug(
         `[roboflow] skip union: would expand area ${(candidateArea / workingArea).toFixed(2)}× (cap ${UNION_AREA_CAP}×)`,
       );
       continue;
@@ -611,7 +616,7 @@ export async function refineRoofWithRoboflow(opts: {
           ),
           pixelArea: pixelPolygonArea(merged),
         };
-        console.log(
+        debug(
           `[roboflow] unioned ${mergedCount} overlapping predictions → ${merged.length} verts`,
         );
       }
@@ -665,12 +670,12 @@ export async function refineRoofWithRoboflow(opts: {
               ),
               pixelArea: pixelPolygonArea(mergedClip),
             };
-            console.log(
+            debug(
               `[roboflow] OSM clip applied → ${mergedClip.length} verts, ${(bestArea / pixelPolygonArea(workingPixels) * 100).toFixed(0)}% retention`,
             );
           }
         } else {
-          console.log(
+          debug(
             `[roboflow] OSM clip skipped: would retain only ${((bestArea / primary.pixelArea) * 100).toFixed(0)}% (< 70% threshold)`,
           );
         }
@@ -681,7 +686,7 @@ export async function refineRoofWithRoboflow(opts: {
   }
 
   const finalPolygons = [primary, ...standalone];
-  console.log(
+  debug(
     `[roboflow] ${opts.model.slug}/${opts.model.version} → ${finalPolygons.length} polygon(s); primary: ${primary.class} @ ${primary.confidence.toFixed(2)}, ${primary.pixels.length} verts, containsAddr=${containsCenter(primary.pixels)}`,
   );
 

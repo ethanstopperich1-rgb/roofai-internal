@@ -20,6 +20,7 @@
  *   7. project pixel coords → lat/lng using the GeoTIFF georeferencing
  */
 
+import { debug } from "@/lib/debug";
 import { fromArrayBuffer, type GeoTIFF, type GeoTIFFImage } from "geotiff";
 import { mergeNearbyVertices, orthogonalizePolygon } from "./polygon";
 
@@ -323,7 +324,7 @@ export async function fetchSolarRoofMask(opts: {
     lat: maxLat - (y / height) * dLat,
   }));
 
-  console.log(
+  debug(
     `[solar-mask] traced ${ortho.length}-vertex polygon from ${width}×${height} mask (area ${area}px)`,
   );
 

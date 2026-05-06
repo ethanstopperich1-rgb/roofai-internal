@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import { getBigQuery } from "@/lib/bigquery";
 
 export const runtime = "nodejs";
@@ -25,6 +26,8 @@ interface StormRow {
  * recent ones), so distance is informational. We use Haversine for accuracy.
  */
 export async function GET(req: Request) {
+  const __rl = await rateLimit(req, "standard");
+  if (__rl) return __rl;
   const bq = getBigQuery();
   if (!bq) {
     return NextResponse.json(

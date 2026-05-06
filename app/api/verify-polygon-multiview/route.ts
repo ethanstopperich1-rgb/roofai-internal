@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import Anthropic from "@anthropic-ai/sdk";
 import sharp from "sharp";
 import { getCached, setCached } from "@/lib/cache";
@@ -387,6 +388,8 @@ const VERIFY_OBLIQUE_RANGE_M = 130;
 const VERIFY_OBLIQUE_PITCH_DEG = -45;
 
 export async function POST(req: Request) {
+  const __rl = await rateLimit(req, "expensive");
+  if (__rl) return __rl;
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ error: "Missing ANTHROPIC_API_KEY" }, { status: 503 });

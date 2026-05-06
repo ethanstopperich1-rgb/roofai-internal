@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 
 interface AddressComponent {
   types?: string[];
@@ -7,6 +8,8 @@ interface AddressComponent {
 }
 
 export async function GET(req: Request) {
+  const __rl = await rateLimit(req, "standard");
+  if (__rl) return __rl;
   const apiKey = process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
   if (!apiKey) return NextResponse.json({ error: "Missing key" }, { status: 503 });
   const { searchParams } = new URL(req.url);
@@ -18,6 +21,7 @@ export async function GET(req: Request) {
       "X-Goog-Api-Key": apiKey,
       "X-Goog-FieldMask": "formattedAddress,addressComponents,location",
     },
+    signal: AbortSignal.timeout(8_000),
   });
   const data = await res.json();
   if (!res.ok) {

@@ -19,6 +19,7 @@
  * snaps the actual edges if needed.
  */
 
+import { debug } from "@/lib/debug";
 import { readFile } from "node:fs/promises";
 import { gunzip } from "node:zlib";
 import { promisify } from "node:util";
@@ -56,7 +57,7 @@ async function loadData(): Promise<DataFile | null> {
       const compressed = await readFile(DATA_PATH);
       const buf = await gunzipAsync(compressed);
       const parsed = JSON.parse(buf.toString("utf8")) as DataFile;
-      console.log(
+      debug(
         `[ms-buildings] loaded ${parsed.count.toLocaleString()} buildings (built ${parsed.builtAt})`,
       );
       _data = parsed;
@@ -149,7 +150,7 @@ export async function fetchMicrosoftBuildingPolygon(opts: {
 
   const { bbox } = data;
   if (lat < bbox.minLat || lat > bbox.maxLat || lng < bbox.minLng || lng > bbox.maxLng) {
-    console.log(
+    debug(
       `[ms-buildings] (${lat.toFixed(4)}, ${lng.toFixed(4)}) outside coverage bbox`,
     );
     return null;
@@ -187,7 +188,7 @@ export async function fetchMicrosoftBuildingPolygon(opts: {
     }
   }
   if (!bestPoly) {
-    console.log(
+    debug(
       `[ms-buildings] no building within 25m of (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
     );
     return null;

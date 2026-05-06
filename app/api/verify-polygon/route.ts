@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import Anthropic from "@anthropic-ai/sdk";
 import sharp from "sharp";
 import { getCached, setCached } from "@/lib/cache";
@@ -101,7 +102,7 @@ async function fetchSatelliteTile(
   apiKey: string,
 ): Promise<Buffer | null> {
   const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${SATELLITE_ZOOM}&size=${SATELLITE_SIZE}x${SATELLITE_SIZE}&scale=${SATELLITE_SCALE}&maptype=satellite&key=${apiKey}`;
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
   if (!res.ok) return null;
   return Buffer.from(await res.arrayBuffer());
 }
@@ -200,6 +201,8 @@ async function callClaude(opts: {
 }
 
 export async function POST(req: Request) {
+  const __rl = await rateLimit(req, "expensive");
+  if (__rl) return __rl;
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json(

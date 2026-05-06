@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 
 interface InsightRequest {
   address: string;
@@ -11,6 +12,8 @@ interface InsightRequest {
 }
 
 export async function POST(req: Request) {
+  const __rl = await rateLimit(req, "expensive");
+  if (__rl) return __rl;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
@@ -44,6 +47,7 @@ Cover: (1) likely condition concerns at this age, (2) one upsell opportunity wor
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { temperature: 0.5, maxOutputTokens: 400 },
     }),
+    signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) {
     const text = await res.text();

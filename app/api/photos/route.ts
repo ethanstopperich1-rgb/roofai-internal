@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rateLimit } from "@/lib/ratelimit";
 import { put } from "@vercel/blob";
 import exifr from "exifr";
 import Anthropic from "@anthropic-ai/sdk";
@@ -45,6 +46,8 @@ interface AnalysisOut {
  * a one-sentence caption. Returns full PhotoMeta.
  */
 export async function POST(req: Request) {
+  const __rl = await rateLimit(req, "expensive");
+  if (__rl) return __rl;
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     return NextResponse.json(
       { error: "BLOB_READ_WRITE_TOKEN not set on server" },
@@ -112,7 +115,11 @@ export async function POST(req: Request) {
 
   // ─── Upload to Vercel Blob ─────────────────────────────────────────────
   const id = `ph_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
-  const ext = file.name.split(".").pop() || "jpg";
+  // Sanitize extension — blob keys are flat strings (no filesystem
+  // semantics) so nothing dangerous, but a clean alpha-num ext keeps the
+  // public blob URL readable + ASCII.
+  const rawExt = file.name.split(".").pop() ?? "jpg";
+  const ext = /^[A-Za-z0-9]{1,6}$/.test(rawExt) ? rawExt.toLowerCase() : "jpg";
   const blob = await put(`photos/${id}.${ext}`, buf, {
     access: "public",
     addRandomSuffix: false,
