@@ -604,30 +604,42 @@ export default function HomePage() {
   // Live edits override source.
   const activePolygons = livePolygons ?? sourcePolygons;
 
-  // Generation gate: don't show the polygon to the rep until Claude has
-  // verified it (or until we're at a no-verify source like edited/ai).
-  // Avoids the "three different outlines flickering" UX where Roboflow
-  // showed first, then OSM swapped in, then Solar mask, etc. Now: blank
-  // map + "Generating…" pill until verification completes.
-  const polygonReady = useMemo(() => {
-    if (polygonSource === "none") return true; // nothing to show; map is just satellite
-    if (polygonSource === "edited") return true; // rep already approved by hand
-    if (polygonSource === "tiles3d") return true; // legacy, no longer active
-    if (polygonSource === "ai") return true; // last-resort, skip verify (Claude on Claude)
-    // For all real AI / footprint sources: wait for the multi-view Claude verdict.
-    return claudeVerifications[polygonSource] !== undefined;
-  }, [polygonSource, claudeVerifications]);
+  // Polygon visibility gate.
+  //
+  // Previous behaviour: polygon was hidden until Claude multi-view verify
+  // completed, on the theory that an unverified polygon might be wrong.
+  // Failure mode in production: Claude verify can hang (network, slow
+  // 3D-tile load, Replicate cold start, capture timing) — and when it
+  // does, the rep stares at a blank map indefinitely with no way to
+  // proceed. The polygon IS computed (priority chain settled) but
+  // hidden behind a "Generating…" overlay that never clears.
+  //
+  // New policy: show the polygon as soon as the priority chain picks
+  // one. Claude verify still runs in the background; if it rejects
+  // strongly (ok=false, confidence ≥ 0.7), `passesClaude` demotes the
+  // source out of the priority chain on the next render → the polygon
+  // either swaps to the next-best source or disappears (with the chain
+  // settling on "none"). The confidence chip in mapBadges reflects
+  // verify status as it lands. Rep is in the loop and can visually
+  // verify the outline against the satellite tile; clicking "Draw
+  // fresh" lets them re-trace if it's wrong.
+  const polygonReady = useMemo(
+    () => polygonSource !== "none",
+    [polygonSource],
+  );
 
-  // Polygons we actually pass to the viewers. Undefined while !polygonReady
-  // so MapView / Roof3DViewer don't draw an unverified outline.
+  // Polygons passed to the viewers. With the verify-gate removal above,
+  // `polygonReady` is true iff we have any priority-chain source — so
+  // these mirror activePolygons / sourcePolygons whenever a source is
+  // available. Kept the gate condition as a no-op safeguard against
+  // future refactors that might re-introduce a "ready" state.
   const renderedPolygons = polygonReady ? activePolygons : undefined;
   const renderedSourcePolygons = polygonReady ? sourcePolygons : undefined;
-  // Verifying state for the spinner: we have an address + we're not yet
-  // showing a polygon AND there's at least one source candidate fetching.
-  const verifying =
-    !!address?.lat &&
-    !polygonReady &&
-    polygonSource !== "none";
+  // Verifying overlay state. With the new "show polygon immediately"
+  // policy, this is always false — kept as a hook for any future state
+  // where we'd want to gate display on something other than source
+  // selection.
+  const verifying = false;
 
   // Cross-source consensus. Compute IoU between the active polygon and
   // every OTHER valid source's polygon — when multiple independent
