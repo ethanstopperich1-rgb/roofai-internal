@@ -154,7 +154,17 @@ export function polygonCoversFootprint(
   poly: Array<{ lat: number; lng: number }> | null | undefined,
   solarFootprintSqft: number | null | undefined,
   minRatio: number = 0.55,
-  maxRatio: number = 1.6,
+  // Loosened upper bound 1.6 → 2.2 (2026-05-06) after a Doctor Phillips
+  // Orlando test address rejected a legit Roboflow polygon at 1.71× the
+  // Solar-reported footprint. Complex FL homes with wide eaves, attached
+  // lanais, covered porches, and multi-section roofs routinely exceed
+  // Solar's `wholeRoofStats.groundAreaMeters2` by 50-100% because Solar
+  // sometimes only captures the central building envelope while the AI
+  // segmenter (Roboflow) traces the full roof footprint including
+  // covered outdoor areas. The visual rep-facing cost of an over-trace
+  // (rep sees polygon extending into yard) is much lower than the cost
+  // of an under-trace (rep ships a number that's silently 30% low).
+  maxRatio: number = 2.2,
 ): boolean {
   if (!poly || poly.length < 3) return false;
   if (!solarFootprintSqft || solarFootprintSqft < 100) return true; // no signal → don't demote
@@ -171,7 +181,7 @@ export function polygonsCoverFootprint(
   polys: Array<Array<{ lat: number; lng: number }>> | null | undefined,
   solarFootprintSqft: number | null | undefined,
   minRatio: number = 0.55,
-  maxRatio: number = 1.6,
+  maxRatio: number = 2.2,
 ): boolean {
   if (!polys || polys.length === 0) return false;
   if (!solarFootprintSqft || solarFootprintSqft < 100) return true;

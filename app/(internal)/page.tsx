@@ -401,7 +401,11 @@ export default function HomePage() {
   //   • UNDER-trace: segmenter caught one center section, missed wings.
   //     Polygon is < 55% of expected building footprint.
   //   • OVER-trace: segmenter followed fence / yard / driveway. Polygon
-  //     is > 1.6× expected footprint (real eave overhang adds ~10–15%).
+  //     is > 2.2× expected footprint (eave overhang + attached lanais /
+  //     covered porches / multi-section roofs in FL routinely add 50-
+  //     100% to the Solar-reported footprint; tightened to 1.6 was
+  //     rejecting legitimate polygons on complex Doctor-Phillips-style
+  //     properties).
   //
   // Reference: prefer Solar's `buildingFootprintSqft` (DSM-derived,
   // closest to ground truth). When Solar has no footprint signal, fall
