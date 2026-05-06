@@ -45,10 +45,14 @@ html, body {
 }
 
 body {
+  /* Radial accent washes — kept subtle so they read as a barely-there
+     atmospheric tint, not a foreground gradient. Customer-facing wizard
+     pages have white text over this background; opacities above ~0.05
+     started reading as a lavender overlay that hurt contrast. */
   background:
-    radial-gradient(1100px 700px at 8% -10%,  rgba(56,197,238,0.10), transparent 55%),
-    radial-gradient(900px 600px  at 100% 5%,  rgba(95,227,176,0.05), transparent 60%),
-    radial-gradient(1400px 1000px at 50% 110%, rgba(24,166,214,0.06), transparent 60%),
+    radial-gradient(1100px 700px at 8% -10%,  rgba(56,197,238,0.04), transparent 55%),
+    radial-gradient(900px 600px  at 100% 5%,  rgba(95,227,176,0.02), transparent 60%),
+    radial-gradient(1400px 1000px at 50% 110%, rgba(24,166,214,0.025), transparent 60%),
     #07090d;
   position: relative;
   min-height: 100vh;

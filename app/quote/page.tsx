@@ -459,7 +459,29 @@ export default function QuotePage() {
           />
         )}
 
-        {submitted && <ThankYou leadId={submitted.leadId} range={range} />}
+        {submitted && (
+          <ThankYou
+            leadId={submitted.leadId}
+            range={range}
+            onReset={() => {
+              // Clear every wizard slot so "another property" lands the
+              // customer on a fresh Lead step. Without this, the Link
+              // navigated to /quote but the page didn't unmount (same
+              // route), so submitted stayed set and ThankYou kept rendering.
+              setSubmitted(null);
+              setStep("Lead");
+              setLead(null);
+              setAddress(null);
+              setSqft(null);
+              setPitch(null);
+              setSatelliteUrl(null);
+              setRoofPolygon(null);
+              setMaterial("asphalt-architectural");
+              setAddOns(QUOTE_ADDONS);
+              setSubmitError("");
+            }}
+          />
+        )}
       </main>
       <PublicFooter />
     </div>
@@ -471,8 +493,13 @@ export default function QuotePage() {
 function PublicHeader() {
   return (
     <header className="relative z-30 border-b border-white/[0.06] bg-[#07090d]/70 backdrop-blur-xl">
-      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-16 sm:h-20 flex items-center justify-between gap-3">
-        <Link href="/quote" className="flex items-center gap-2 min-w-0">
+      {/* 3-column grid (1fr | auto | 1fr) instead of flex justify-between, so
+          the nav pill in the middle column is truly centered on the page —
+          flex justify-between centers it between the left and right
+          siblings, which have different widths and pulled the nav
+          off-center. */}
+      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-16 sm:h-20 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+        <Link href="/quote" className="flex items-center gap-2 min-w-0 justify-self-start">
           <img
             src="/brand/logo-wordmark-alpha.png"
             alt="Voxaris Pitch"
@@ -491,7 +518,7 @@ function PublicHeader() {
           ]}
         />
 
-        <div className="hidden sm:flex items-center gap-3 text-[12px] text-slate-300">
+        <div className="hidden sm:flex items-center gap-3 text-[12px] text-slate-300 justify-self-end">
           <Check size={13} className="text-mint" />
           <span>Free · No-obligation</span>
         </div>
@@ -640,6 +667,18 @@ function RoofStep({
           <div className="text-[11px] text-slate-500 mt-1">
             {sqft ? "Edit if it looks off" : "Couldn’t auto-measure — enter approximate size"}
           </div>
+          {/* Sets the customer's expectation that the roof number is bigger
+              than their Zillow heated-sqft. Without this, FL ranches and
+              other homes with attached garages + covered porches generate
+              a "wait, my house isn't that big" reaction even though the
+              measurement is right. */}
+          {sqft ? (
+            <div className="text-[11.5px] text-slate-400 mt-3 leading-relaxed border-t border-white/[0.04] pt-3">
+              Includes the roof over your garage and any covered patios. Often larger
+              than your home’s interior square footage because it covers the full
+              footprint, not just heated living space.
+            </div>
+          ) : null}
         </div>
         <div className="rounded-2xl border border-white/[0.05] bg-white/[0.015] p-4">
           <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
@@ -925,9 +964,11 @@ function QuoteStep({
 function ThankYou({
   leadId,
   range,
+  onReset,
 }: {
   leadId: string;
   range: { low: number; high: number };
+  onReset: () => void;
 }) {
   return (
     <div className="space-y-7 float-in">
@@ -989,12 +1030,12 @@ function ThankYou({
       </div>
 
       <div className="text-center">
-        <Link
-          href="/quote"
+        <button
+          onClick={onReset}
           className="text-[12px] font-mono uppercase tracking-[0.14em] text-slate-400 hover:text-cy-300 transition-colors"
         >
           Get a quote for another property →
-        </Link>
+        </button>
       </div>
     </div>
   );
