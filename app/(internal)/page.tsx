@@ -263,40 +263,51 @@ export default function HomePage() {
     });
   }, [vision?.roofPolygon, address?.lat, address?.lng]);
 
-  // Wrong-house guard. Every auto-detected polygon must contain (or be within
-  // 8 m of) an anchor on the actual building. Catches the failure mode
-  // where AI traces the brightest neighbouring roof rather than the actual
-  // target. Returns the polygon when valid, null when it should be rejected.
+  // Wrong-house guard. Every auto-detected polygon must contain (or be
+  // within tolerance of) an anchor on the actual building. Catches the
+  // failure mode where AI traces the brightest neighbouring roof rather
+  // than the actual target. Returns the polygon when valid, null when
+  // it should be rejected.
   //
-  // Two anchors are checked, polygon passes if it satisfies EITHER:
+  // Polygon passes if it satisfies EITHER anchor:
   //   1. Solar's `buildingCenter` — Solar API's photogrammetric centroid
-  //      for the closest building. Tighter and on the actual roof, vs the
-  //      geocoded address which sits on the street setback (5-15 m off).
-  //   2. The user's geocoded address — fallback when Solar has no coverage
-  //      or `buildingCenter` is null (rural / unmapped).
+  //      for the closest building. On the actual roof when present.
+  //   2. The user's geocoded address — Google's address point. Sits on
+  //      the building footprint for tightly-platted suburban lots, but
+  //      may be 10-20m off on large lots / set-back houses / parcels
+  //      where the address geocodes to the lot center / driveway / pool.
   //
-  // Tightened from 15m → 8m (2026-05-05) after the eval set (scripts/
-  // eval-truth/) showed two FL addresses where Roboflow returned an IoU=0
-  // polygon traced on a neighbour's roof but still within 15m of the
-  // geocoded address — slipped through the old guard and landed in front
-  // of the rep. 8m matches the typical setback of geocoded address points
-  // from a residential roof's edge.
+  // Tolerance tuned to 18m: the eval surfaced two FL addresses where
+  // Roboflow returned an IoU=0 polygon on a neighbour's roof but within
+  // 15m of the geocoded address — that's the upper bound we need to
+  // reject. But early production testing showed 8m was too tight on
+  // large lots where the geocoded point lands on the patio/lawn rather
+  // than the building. 18m keeps the wrong-house failures we measured
+  // out while letting through correct polygons whose anchor sits on
+  // hardscape adjacent to the building.
+  const PROXIMITY_M = 18;
   const buildingCenter = solar?.buildingCenter ?? null;
   const validateAtAddress = (
     poly: Array<{ lat: number; lng: number }> | null,
   ): Array<{ lat: number; lng: number }> | null => {
     if (!poly || poly.length < 3) return null;
-    // Primary anchor: Solar's reported building center, when available.
-    if (buildingCenter && polygonIsNearAddress(poly, buildingCenter.lat, buildingCenter.lng, 8)) {
+    // Either anchor passes — buildingCenter is a BONUS signal, not a gate.
+    // When Solar finds a building close to the user's geocoded address it
+    // confirms which lot is the target; when it finds a neighbour's
+    // building (Solar's `findClosest` is "closest to the input lat/lng",
+    // which can be off when the address is rural or on a corner lot),
+    // we don't want it to invalidate polygons that ARE on the user's
+    // actual building.
+    if (
+      buildingCenter &&
+      polygonIsNearAddress(poly, buildingCenter.lat, buildingCenter.lng, PROXIMITY_M)
+    ) {
       return poly;
     }
-    // Fallback anchor: user's geocoded address.
     if (address?.lat == null || address?.lng == null) {
-      // No address; if Solar gave us a center the polygon already failed
-      // that, so reject. Otherwise pass by default (legacy behaviour).
       return buildingCenter ? null : poly;
     }
-    return polygonIsNearAddress(poly, address.lat, address.lng, 8) ? poly : null;
+    return polygonIsNearAddress(poly, address.lat, address.lng, PROXIMITY_M) ? poly : null;
   };
 
   const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng, buildingCenter]);
@@ -374,42 +385,17 @@ export default function HomePage() {
     return true;
   };
 
-  // Roof-type prior gate. When Claude vision is highly confident about the
-  // roof's complexity class (simple / moderate / complex), demote candidate
-  // polygons whose vertex count wildly disagrees:
-  //
-  //   • Vision says "simple" (rectangular ranch / single-gable) but
-  //     candidate has >12 vertices  → likely over-traced into yard or
-  //     captured a different irregular structure. Demote.
-  //   • Vision says "complex" (multi-section, dormers) but candidate has
-  //     ≤4 vertices  → likely traced just one wing of a multi-section
-  //     house. Demote.
-  //
-  // Only fires when vision.confidence >= 0.85 because lower-confidence
-  // vision frequently misclassifies complexity. When vision is unavailable
-  // or low-confidence, the gate trivially passes and other gates handle
-  // the candidate.
+  // Roof-type prior gate. Originally rejected polygons whose vertex
+  // count wildly disagreed with vision.complexity (simple+>12 verts or
+  // complex+≤4 verts). Production testing showed Vision's complexity
+  // classification was less reliable than its confidence score
+  // suggested, particularly on complex-segment roofs that Vision tagged
+  // as "simple" — the gate then rejected good Solar/Roboflow polygons.
+  // Currently a no-op pending more eval data; vertex-count vs Solar's
+  // segmentCount may be a better signal than vision.complexity.
   const passesComplexityPrior = (
-    candidate: Array<{ lat: number; lng: number }> | null,
-  ): boolean => {
-    if (!candidate || candidate.length < 3) return true;
-    if (!vision || typeof vision.confidence !== "number") return true;
-    if (vision.confidence < 0.85) return true;
-    const v = candidate.length;
-    if (vision.complexity === "simple" && v > 12) {
-      console.warn(
-        `[complexity-prior] vision=simple but polygon has ${v} vertices — likely over-trace, demoting`,
-      );
-      return false;
-    }
-    if (vision.complexity === "complex" && v <= 4) {
-      console.warn(
-        `[complexity-prior] vision=complex but polygon has only ${v} vertices — likely under-trace, demoting`,
-      );
-      return false;
-    }
-    return true;
-  };
+    _candidate: Array<{ lat: number; lng: number }> | null,
+  ): boolean => true;
 
   // Footprint-coverage gate. Two failure modes:
   //   • UNDER-trace: segmenter caught one center section, missed wings.
@@ -1287,7 +1273,14 @@ export default function HomePage() {
               lng={address?.lng}
               address={address?.formatted}
               segments={renderedSourcePolygons}
-              penetrations={filteredPenetrations}
+              // Penetration markers (numbered yellow circles for vents,
+              // chimneys, skylights) hidden from the rep-facing map per
+              // user feedback — they cluttered the view without adding
+              // sales value and reps confused them with the polygon
+              // outline. Vision still detects them server-side and the
+              // detailed estimate uses them for vent/flashing line items;
+              // we just don't render the markers on the satellite tile.
+              penetrations={undefined}
               metaBadges={mapBadges}
               editable={polygonReady && polygonSource !== "none"}
               onPolygonsChanged={handlePolygonsChanged}

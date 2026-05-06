@@ -557,14 +557,16 @@ export async function fetchSolarRoofMask(opts: {
     return null;
   }
 
-  // DSM fusion — only after isolating the center component so neighbour
-  // buildings don't get dragged in via 4-connected elevated paths.
-  if (dsmBuf) {
-    const dsm = await readDsmRaster(dsmBuf);
-    if (dsm && dsm.width === width && dsm.height === height) {
-      fuseDsmIntoMask(mask, dsm.heights, width, height);
-    }
-  }
+  // DSM fusion — DISABLED in production after early testing showed it
+  // could over-extend the mask into adjacent connected structures on
+  // some properties (catwalks/garages/sheds with matching roof
+  // height), pushing the polygon over the coverage gate's 1.6×
+  // upper bound and getting rejected downstream. The eval IoU lift
+  // was only +0.01 anyway. Code kept for reference; re-enable once we
+  // have wider eval coverage and tighter same-building constraints.
+  void dsmBuf;
+  void readDsmRaster;
+  void fuseDsmIntoMask;
 
   let area = 0;
   for (let i = 0; i < mask.length; i++) if (mask[i]) area++;
