@@ -44,6 +44,8 @@ embed-*.png
 embed-*.jpeg
 internal-*.png
 internal-*.jpeg
+mobile-*.png
+mobile-*.jpeg
 step*-fixed.*
 
 # Build-time data extraction cache (the 890MB raw TN building footprint
