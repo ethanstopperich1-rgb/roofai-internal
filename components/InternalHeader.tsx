@@ -5,12 +5,17 @@ import { usePathname } from "next/navigation";
 import NavHeader from "@/components/ui/nav-header";
 
 /**
- * Internal staff header. Hidden on customer-facing routes (/quote, /p/[id]).
- * Those routes render their own dedicated chrome.
+ * Internal staff header. Hidden on customer-facing routes (/quote, /p/[id])
+ * and on the embeddable widget (/embed) — those render their own chrome,
+ * or in /embed's case, no chrome at all because they live inside an iframe
+ * on a third-party site.
  */
 export default function InternalHeader() {
   const pathname = usePathname() ?? "/";
-  const isCustomerRoute = pathname.startsWith("/quote") || pathname.startsWith("/p/");
+  const isCustomerRoute =
+    pathname.startsWith("/quote") ||
+    pathname.startsWith("/p/") ||
+    pathname.startsWith("/embed");
   if (isCustomerRoute) return null;
 
   return (
