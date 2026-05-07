@@ -81,6 +81,13 @@ const SAM3_AREA_RATIO_MAX = 1.5;
  *  reflect SAM3 tracing roof material and GIS tracing wall footprint. */
 const TRUSTED_IOU_THRESHOLD = 0.5;
 
+/** Below this IoU, SAM3 and the GIS footprint don't meaningfully overlap.
+ *  That's a textbook wrong-building signal — even when the area ratio
+ *  looks fine, SAM3 is tracing a roof in a different place than the
+ *  building footprint we have for this address. Reject regardless of
+ *  area, regardless of centroid proximity. */
+const ZERO_OVERLAP_IOU = 0.15;
+
 /** SAM3 centroid must be within this distance of the geocoded address.
  *  Beyond this, SAM3 is almost certainly tracing the wrong building. */
 const CATASTROPHIC_DRIFT_M = 15;
@@ -220,14 +227,38 @@ export async function reconcileRoofPolygon(
     CATASTROPHIC_DRIFT_M,
   );
 
-  // Wrong-building check first — overrides area ratio. A SAM3 polygon
-  // that's 100% of the neighbor's footprint still gets rejected.
+  // Wrong-building check #1 — centroid drift. A SAM3 polygon whose
+  // centroid is far from the reference (geocoded address or resolved
+  // building center) is almost certainly a neighbor's roof.
   if (!sam3CentroidNearAddress) {
     return {
       polygon: gis.polygon,
       footprintSqft: Math.round(gisSqft * EAVE_OVERHANG_FACTOR),
       source: "footprint-occluded",
       reason: `SAM3 centroid >${CATASTROPHIC_DRIFT_M}m from address (likely wrong building); using GIS footprint × ${EAVE_OVERHANG_FACTOR}`,
+      diagnostics: {
+        sam3Sqft,
+        gisSqft,
+        areaRatio,
+        iou,
+        gisSource: gis.source,
+        sam3CentroidNearAddress,
+      },
+    };
+  }
+
+  // Wrong-building check #2 — IoU floor. The centroid check can pass
+  // when SAM3 traced a small neighbor whose edge happens to be within
+  // 15m of the address (e.g. dense urban / suburban lots). But IoU=0
+  // with the GIS footprint means the polygons describe geometrically
+  // different buildings, regardless of centroid distance or area ratio.
+  // Always reject in that case.
+  if (iou < ZERO_OVERLAP_IOU) {
+    return {
+      polygon: gis.polygon,
+      footprintSqft: Math.round(gisSqft * EAVE_OVERHANG_FACTOR),
+      source: "footprint-occluded",
+      reason: `SAM3 has IoU ${iou.toFixed(2)} with GIS footprint (different buildings); using GIS footprint × ${EAVE_OVERHANG_FACTOR}`,
       diagnostics: {
         sam3Sqft,
         gisSqft,
