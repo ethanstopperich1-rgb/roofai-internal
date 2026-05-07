@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { CloudHail, Loader2, Radar, Tornado, Wind } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { CloudHail, Crosshair, Loader2, Radar, Tornado, Wind } from "lucide-react";
 
 interface StormEvent {
   type: string;
@@ -98,13 +98,56 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
       .finally(() => setLoading(false));
   }, [lat, lng, radiusMi]);
 
+  // Sort SPC events by proximity to the property (closest first), with
+  // date as a tiebreaker. The /api/storms route returns by date desc;
+  // re-sorting client-side keeps the API generic but surfaces "did
+  // anything actually hit THIS roof?" as the rep's first read instead
+  // of "what's the most recent thing in the radius?"
+  const sortedEvents = useMemo(() => {
+    if (!data?.events) return [];
+    return [...data.events].sort((a, b) => {
+      const da = a.distanceMiles ?? Infinity;
+      const db = b.distanceMiles ?? Infinity;
+      if (Math.abs(da - db) > 0.05) return da - db;
+      const ta = a.date ? new Date(a.date).getTime() : 0;
+      const tb = b.date ? new Date(b.date).getTime() : 0;
+      return tb - ta;
+    });
+  }, [data?.events]);
+
+  // Find the highest-severity event closest to the property — what gets
+  // surfaced as the proximity hero stat. Hail and tornado outrank
+  // generic wind. Within a category, closer wins; if equally close,
+  // larger magnitude wins.
+  const closestSignificant = useMemo(() => {
+    if (!data?.events?.length) return null;
+    const scored = data.events
+      .filter((e) => e.distanceMiles != null)
+      .map((e) => {
+        let priority = 0;
+        if (/hail/i.test(e.type)) priority = 3;
+        else if (/tornado/i.test(e.type)) priority = 4;
+        else if (/wind/i.test(e.type)) priority = 1;
+        return { e, priority };
+      });
+    if (!scored.length) return null;
+    scored.sort((x, y) => {
+      if (x.priority !== y.priority) return y.priority - x.priority;
+      const dx = x.e.distanceMiles ?? Infinity;
+      const dy = y.e.distanceMiles ?? Infinity;
+      if (Math.abs(dx - dy) > 0.05) return dx - dy;
+      return (y.e.magnitude ?? 0) - (x.e.magnitude ?? 0);
+    });
+    return scored[0]?.e ?? null;
+  }, [data?.events]);
+
   if (lat == null || lng == null) return null;
 
   const showCard = loading || error || data;
   if (!showCard) return null;
 
   const s = data?.summary;
-  const events = data?.events ?? [];
+  const events = sortedEvents;
   const significantHail = (s?.maxHailInches ?? 0) >= 0.75; // 0.75" is the NWS severe hail threshold
   const insuranceWorthy = significantHail || (s?.tornadoCount ?? 0) > 0;
 
@@ -206,6 +249,63 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
             />
           </div>
 
+          {/* Closest event hero. Different from "largest hail" — this is
+              "what's the worst thing that happened nearest to the actual
+              roof." On-property (≤ 0.5 mi) gets a stronger amber treatment
+              + bullseye icon to telegraph "this hit your roof". Beyond
+              that we still surface it but in calm slate — useful context,
+              not a claim trigger. */}
+          {closestSignificant && closestSignificant.distanceMiles != null && (
+            <div
+              className={`rounded-xl border px-3 py-2.5 ${
+                closestSignificant.distanceMiles <= 0.5
+                  ? "border-amber/40 bg-amber/[0.08]"
+                  : closestSignificant.distanceMiles <= 1.5
+                    ? "border-amber/25 bg-amber/[0.04]"
+                    : "border-white/[0.06] bg-white/[0.02]"
+              }`}
+            >
+              <div className="flex items-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.14em] text-slate-400 mb-1">
+                <Crosshair size={11} className="text-cy-300" />
+                <span>Closest event to this address</span>
+              </div>
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="font-display tabular text-[20px] font-semibold leading-none text-slate-50">
+                  {closestSignificant.distanceMiles.toFixed(1)} mi
+                </span>
+                <span className="text-[12.5px] text-slate-300">
+                  away ·{" "}
+                  <span className="text-slate-100 font-medium">
+                    {closestSignificant.type}
+                  </span>
+                  {closestSignificant.magnitude != null && (
+                    <span className="font-mono tabular text-amber ml-1">
+                      {closestSignificant.magnitude}
+                      {/hail/i.test(closestSignificant.type)
+                        ? "″"
+                        : closestSignificant.magnitudeType
+                          ? ` ${closestSignificant.magnitudeType}`
+                          : ""}
+                    </span>
+                  )}
+                </span>
+              </div>
+              <div className="text-[11.5px] text-slate-400 mt-1">
+                {closestSignificant.date
+                  ? new Date(closestSignificant.date).toLocaleDateString(
+                      undefined,
+                      { year: "numeric", month: "short", day: "numeric" },
+                    )
+                  : "—"}
+                {closestSignificant.distanceMiles <= 0.5 && (
+                  <span className="ml-2 text-amber font-medium">
+                    · likely hit this property
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           {s?.maxHailInches != null && s.maxHailInches > 0 && (
             <div
               className={`rounded-xl border px-3 py-2 text-[12px] ${
@@ -225,37 +325,58 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
               onClick={() => setExpanded((v) => !v)}
               className="w-full text-[11px] font-mono uppercase tracking-[0.14em] text-slate-500 hover:text-slate-300 transition py-1.5"
             >
-              {expanded ? "Hide" : "Show"} {events.length} event{events.length === 1 ? "" : "s"}
+              {expanded ? "Hide" : "Show"} {events.length} event{events.length === 1 ? "" : "s"}{" "}
+              · sorted by proximity
             </button>
           )}
 
           {expanded && events.length > 0 && (
             <div className="space-y-1 max-h-64 overflow-auto">
-              {events.map((e, i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between gap-3 px-3 py-1.5 rounded-lg border border-white/[0.04] bg-white/[0.012] text-[12px]"
-                >
-                  <div className="flex items-center gap-2">
-                    {e.type === "Hail" && <CloudHail size={11} className="text-amber" />}
-                    {e.type === "Tornado" && <Tornado size={11} className="text-rose" />}
-                    {e.type !== "Hail" && e.type !== "Tornado" && (
-                      <Wind size={11} className="text-slate-400" />
-                    )}
-                    <span className="text-slate-200 truncate">{e.type}</span>
-                    {e.magnitude && (
-                      <span className="font-mono tabular text-slate-500 text-[11px]">
-                        {e.magnitude}
-                        {e.type === "Hail" ? "″" : e.magnitudeType ? ` ${e.magnitudeType}` : ""}
+              {events.map((e, i) => {
+                // Highlight on-property events (≤ 0.5 mi) so the rep can
+                // skim the list and immediately see what hit the actual
+                // roof vs what's neighborhood-radius noise.
+                const onProperty = (e.distanceMiles ?? Infinity) <= 0.5;
+                return (
+                  <div
+                    key={i}
+                    className={`flex items-center justify-between gap-3 px-3 py-1.5 rounded-lg border text-[12px] ${
+                      onProperty
+                        ? "border-amber/25 bg-amber/[0.04]"
+                        : "border-white/[0.04] bg-white/[0.012]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {e.type === "Hail" && <CloudHail size={11} className="text-amber" />}
+                      {e.type === "Tornado" && <Tornado size={11} className="text-rose" />}
+                      {e.type !== "Hail" && e.type !== "Tornado" && (
+                        <Wind size={11} className="text-slate-400" />
+                      )}
+                      <span className="text-slate-200 truncate">{e.type}</span>
+                      {e.magnitude && (
+                        <span className="font-mono tabular text-slate-500 text-[11px]">
+                          {e.magnitude}
+                          {e.type === "Hail" ? "″" : e.magnitudeType ? ` ${e.magnitudeType}` : ""}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 font-mono tabular text-[11px] flex-shrink-0">
+                      {e.distanceMiles != null && (
+                        <span
+                          className={
+                            onProperty ? "text-amber font-semibold" : "text-slate-300"
+                          }
+                        >
+                          {e.distanceMiles.toFixed(1)}mi
+                        </span>
+                      )}
+                      <span className="text-slate-500">
+                        · {e.date ? new Date(e.date).toLocaleDateString() : "—"}
                       </span>
-                    )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 text-slate-500 font-mono tabular text-[11px] flex-shrink-0">
-                    <span>{e.date ? new Date(e.date).toLocaleDateString() : "—"}</span>
-                    {e.distanceMiles != null && <span>· {e.distanceMiles}mi</span>}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
