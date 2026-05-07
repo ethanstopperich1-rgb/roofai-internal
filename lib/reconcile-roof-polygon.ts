@@ -79,6 +79,13 @@ const MAX_FOOTPRINT_SQFT = 20_000;
 interface ReconcileInput {
   lat: number;
   lng: number;
+  /** Optional reference point for proximity / wrong-building checks.
+   *  Defaults to (lat, lng). Pass the resolved building center when
+   *  available — e.g. when the satellite tile has been recentered on
+   *  Solar's buildingCenter or a GIS polygon centroid — so SAM3 polygons
+   *  on setback houses don't falsely fail the "wrong building" guard. */
+  referenceLat?: number;
+  referenceLng?: number;
   /** SAM3 output polygon. Pass `null` if SAM3 returned no polygon — this
    *  function will then fall through to the GIS footprint path. */
   sam3Polygon: Array<LatLng> | null;
@@ -115,6 +122,12 @@ export async function reconcileRoofPolygon(
   input: ReconcileInput,
 ): Promise<ReconciledRoof | null> {
   const { lat, lng, sam3Polygon } = input;
+  // Reference point for proximity checks. When the caller resolved a
+  // building centre and recentered the tile on it, use that as the
+  // anchor — geocoded addresses can sit on the road and falsely fail
+  // proximity checks for legitimately-traced houses.
+  const refLat = input.referenceLat ?? lat;
+  const refLng = input.referenceLng ?? lng;
 
   const gis =
     input.gisPolygonOverride !== undefined
@@ -163,7 +176,7 @@ export async function reconcileRoofPolygon(
 
   // ─── Case B: SAM3 polygon exists but no GIS to cross-check ───────────
   if (!gis || !gisSqft) {
-    const near = polygonIsNearAddress(sam3Polygon!, lat, lng, CATASTROPHIC_DRIFT_M);
+    const near = polygonIsNearAddress(sam3Polygon!, refLat, refLng, CATASTROPHIC_DRIFT_M);
     if (!near) {
       // No GIS fallback AND wrong building — caller falls through.
       return null;
@@ -189,8 +202,8 @@ export async function reconcileRoofPolygon(
   const iou = polygonIoU(sam3Polygon!, gis.polygon);
   const sam3CentroidNearAddress = polygonIsNearAddress(
     sam3Polygon!,
-    lat,
-    lng,
+    refLat,
+    refLng,
     CATASTROPHIC_DRIFT_M,
   );
 

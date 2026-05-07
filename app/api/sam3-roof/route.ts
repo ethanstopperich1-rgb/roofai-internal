@@ -8,6 +8,9 @@ import {
 import { getCached, setCached } from "@/lib/cache";
 import { polygonAreaSqft } from "@/lib/polygon";
 import type { SolarSummary } from "@/types/estimate";
+import type { SolarMaskPolygon } from "@/lib/solar-mask";
+import { fetchMicrosoftBuildingPolygon } from "@/lib/microsoft-buildings";
+import { fetchBuildingPolygon } from "@/lib/buildings";
 
 export const runtime = "nodejs";
 // 90s allows for SAM3 cold starts (which can take 30-60s on Roboflow's
@@ -299,6 +302,93 @@ function coercePolygon(input: unknown): Array<[number, number]> | null {
   return null;
 }
 
+/** Resolve the best available "actual building center" for the address.
+ *
+ *  The geocoded address often sits on the road rather than on the actual
+ *  house — particularly true for setback rural / suburban properties.
+ *  Centering the satellite tile on this resolved point puts the target
+ *  building in the centre of the image, dramatically improving SAM3's
+ *  segmentation AND making "closest to image center" trivially correct
+ *  for the picker.
+ *
+ *  Fallback chain:
+ *    1. Solar findClosest's buildingCenter (cached if /api/solar fired)
+ *    2. Solar mask polygon centroid (cached if /api/solar-mask fired)
+ *    3. Microsoft Buildings polygon centroid
+ *    4. OSM Overpass polygon centroid
+ *    5. Geocoded address (no recentering)
+ */
+async function resolveBuildingCenter(
+  lat: number,
+  lng: number,
+): Promise<{ lat: number; lng: number; source: string }> {
+  // 1. Solar findClosest's buildingCenter (cheapest — read from Redis cache)
+  const solarCached = await getCached<SolarSummary>("solar", lat, lng).catch(() => null);
+  if (solarCached?.buildingCenter) {
+    return {
+      lat: solarCached.buildingCenter.lat,
+      lng: solarCached.buildingCenter.lng,
+      source: "solar-buildingCenter",
+    };
+  }
+
+  // 2. Solar mask polygon centroid (also Redis-cached when /api/solar-mask fired)
+  const solarMask = await getCached<SolarMaskPolygon | null>(
+    "solar-mask",
+    lat,
+    lng,
+  ).catch(() => null);
+  if (solarMask?.latLng?.length) {
+    let cLat = 0;
+    let cLng = 0;
+    for (const v of solarMask.latLng) {
+      cLat += v.lat;
+      cLng += v.lng;
+    }
+    return {
+      lat: cLat / solarMask.latLng.length,
+      lng: cLng / solarMask.latLng.length,
+      source: "solar-mask-centroid",
+    };
+  }
+
+  // 3. Microsoft Buildings (precomputed local file — fast)
+  const ms = await fetchMicrosoftBuildingPolygon({ lat, lng }).catch(() => null);
+  if (ms?.polygon?.length) {
+    let cLat = 0;
+    let cLng = 0;
+    for (const v of ms.polygon) {
+      cLat += v.lat;
+      cLng += v.lng;
+    }
+    return {
+      lat: cLat / ms.polygon.length,
+      lng: cLng / ms.polygon.length,
+      source: "ms-buildings-centroid",
+    };
+  }
+
+  // 4. OSM Overpass (slower, requires network) — User-Agent fix should
+  //    have unblocked this for FL addresses
+  const osm = await fetchBuildingPolygon({ lat, lng }).catch(() => null);
+  if (osm?.latLng?.length) {
+    let cLat = 0;
+    let cLng = 0;
+    for (const v of osm.latLng) {
+      cLat += v.lat;
+      cLng += v.lng;
+    }
+    return {
+      lat: cLat / osm.latLng.length,
+      lng: cLng / osm.latLng.length,
+      source: "osm-centroid",
+    };
+  }
+
+  // 5. Last resort — use the geocoded address itself
+  return { lat, lng, source: "address" };
+}
+
 export async function GET(req: Request) {
   const __rl = await rateLimit(req, "expensive");
   if (__rl) return __rl;
@@ -356,10 +446,21 @@ export async function GET(req: Request) {
     }
   }
 
+  // ─── Resolve where the actual building is ─────────────────────────────
+  // Geocoded addresses often sit on the road, not on the house. Centre
+  // the satellite tile on the resolved building location so SAM3 sees
+  // the target building dead-centre and the picker can trivially pick it.
+  const tileCenter = await resolveBuildingCenter(lat, lng);
+  console.log(
+    `[sam3-roof] tile centered on ${tileCenter.source}: ` +
+      `(${tileCenter.lat.toFixed(6)}, ${tileCenter.lng.toFixed(6)}) ` +
+      `for address (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
+  );
+
   // ─── Fetch the satellite tile ─────────────────────────────────────────
   const img = await fetchSatelliteImage({
-    lat,
-    lng,
+    lat: tileCenter.lat,
+    lng: tileCenter.lng,
     googleApiKey: googleMapsKey,
     sizePx: 640,
     zoom: 20,
@@ -426,35 +527,16 @@ export async function GET(req: Request) {
     );
   }
 
-  // ─── Pick the best prediction using app-side context ──────────────────
-  // The /quote and internal pages call /api/solar in parallel with this
-  // route, so by the time we get here Solar's data is usually in Redis.
-  // buildingCenter (when available) is the photogrammetric centroid of
-  // the actual house — the perfect reference point for picking among
-  // multiple SAM3 detections, especially on setback rural addresses where
-  // the geocoded pin sits on the road and the house is 30m back.
+  // ─── Pick the best prediction ─────────────────────────────────────────
+  // Because we re-centred the satellite tile on the resolved building
+  // centre, the target building is at image centre. So "closest to image
+  // centre" = "closest to the actual house". No separate reference lookup
+  // needed.
   let pickedPixels: Array<[number, number]> | null = null;
-  let pickReasonForLog = "";
   if (extracted && extracted.predictions.length > 0) {
-    const solarCached = await getCached<SolarSummary>("solar", lat, lng).catch(() => null);
-    const buildingCenter = solarCached?.buildingCenter ?? null;
-    const refSource = buildingCenter ? "solar-buildingCenter" : "address";
+    const refPx = extracted.imageWidth / 2;
+    const refPy = extracted.imageHeight / 2;
 
-    // Convert the reference lat/lng to pixel coords in the workflow image.
-    // Inverse of pixelPolygonToLatLng: scale factor (imageWidth/1280) maps
-    // ground-meter offsets back into the workflow's pixel grid.
-    const refLat = buildingCenter?.lat ?? lat;
-    const refLng = buildingCenter?.lng ?? lng;
-    const mPerPx = (156_543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, 21);
-    const cosLat = Math.cos((lat * Math.PI) / 180);
-    const dLatM = (refLat - lat) * 111_320;
-    const dLngM = (refLng - lng) * 111_320 * cosLat;
-    const refPx =
-      extracted.imageWidth / 2 + (dLngM / mPerPx) * (extracted.imageWidth / 1280);
-    const refPy =
-      extracted.imageHeight / 2 - (dLatM / mPerPx) * (extracted.imageHeight / 1280);
-
-    // For each prediction, compute pixel centroid and squared distance to ref
     let bestIdx = -1;
     let bestDistSqPx = Infinity;
     const summaries: Array<{ idx: number; distPx: number; areaPx: number }> = [];
@@ -480,37 +562,38 @@ export async function GET(req: Request) {
 
     if (bestIdx >= 0) {
       const chosen = extracted.predictions[bestIdx];
-      // Apply DP simplification only to the chosen polygon — saves work
-      // since we'd otherwise simplify all candidates.
       const epsilon = Number(process.env.SAM3_SIMPLIFY_EPSILON ?? "6");
       pickedPixels =
         chosen.pixels.length > 8 && epsilon > 0
           ? douglasPeucker(chosen.pixels, epsilon)
           : chosen.pixels;
       const distPx = Math.sqrt(bestDistSqPx);
+      const mPerPx =
+        (156_543.03392 * Math.cos((tileCenter.lat * Math.PI) / 180)) /
+        Math.pow(2, 21);
       const distM = distPx * mPerPx * (1280 / extracted.imageWidth);
-      pickReasonForLog =
-        `picked prediction ${bestIdx + 1}/${extracted.predictions.length} ` +
-        `(closest to ${refSource}, ${distM.toFixed(1)}m away in image space, ` +
-        `${pickedPixels.length} verts after simplification)`;
-      // Verbose candidate summary for tuning. Useful when picker chooses
-      // wrong and we need to know what alternatives existed.
       const altSummary = summaries
         .sort((a, b) => a.distPx - b.distPx)
         .slice(0, 5)
         .map((s) => `[${s.idx}: ${s.distPx.toFixed(0)}px ${s.areaPx.toFixed(0)}area]`)
         .join(" ");
       console.log(
-        `[sam3-roof] ${pickReasonForLog} | candidates: ${altSummary}`,
+        `[sam3-roof] picked prediction ${bestIdx + 1}/${extracted.predictions.length} ` +
+          `(${distM.toFixed(1)}m from image center [${tileCenter.source}], ` +
+          `${pickedPixels.length} verts) | candidates: ${altSummary}`,
       );
     }
   }
 
+  // Convert the picked polygon to lat/lng using the SAME centre we used
+  // for the tile fetch. Polygon coords from Roboflow are in the workflow
+  // image's pixel space, which is centred on tileCenter.lat/lng — not
+  // the original geocoded address.
   const sam3LatLng = pickedPixels && extracted
     ? pixelPolygonToLatLng({
         pixels: pickedPixels,
-        centerLat: lat,
-        centerLng: lng,
+        centerLat: tileCenter.lat,
+        centerLng: tileCenter.lng,
         imageWidth: extracted.imageWidth,
         imageHeight: extracted.imageHeight,
       })
@@ -537,19 +620,19 @@ export async function GET(req: Request) {
     }
     cLat /= sam3LatLng.length;
     cLng /= sam3LatLng.length;
-    const cosLatHere = Math.cos((lat * Math.PI) / 180);
-    const dLatM = (cLat - lat) * 111_320;
-    const dLngM = (cLng - lng) * 111_320 * cosLatHere;
+    const cosLatHere = Math.cos((tileCenter.lat * Math.PI) / 180);
+    const dLatM = (cLat - tileCenter.lat) * 111_320;
+    const dLngM = (cLng - tileCenter.lng) * 111_320 * cosLatHere;
     const distM = Math.hypot(dLatM, dLngM);
     const bearingDeg = ((Math.atan2(dLngM, dLatM) * 180) / Math.PI + 360) % 360;
     console.log(
       `[sam3-roof] DIAGNOSTIC MODE: returning raw SAM3 polygon ` +
-        `(${sam3LatLng.length} verts, ${sqft} sqft) for (${lat.toFixed(5)}, ${lng.toFixed(5)}) — ` +
-        `reconciler bypassed`,
+        `(${sam3LatLng.length} verts, ${sqft} sqft) — reconciler bypassed`,
     );
     console.log(
-      `[sam3-roof] DIAGNOSTIC: polygon centroid=(${cLat.toFixed(6)}, ${cLng.toFixed(6)}), ` +
-        `distance from address=${distM.toFixed(1)}m at bearing ${bearingDeg.toFixed(0)}°, ` +
+      `[sam3-roof] DIAGNOSTIC: tile centered on ${tileCenter.source}, ` +
+        `polygon centroid=(${cLat.toFixed(6)}, ${cLng.toFixed(6)}), ` +
+        `distance from tile center=${distM.toFixed(1)}m at bearing ${bearingDeg.toFixed(0)}°, ` +
         `first point=(${sam3LatLng[0].lat.toFixed(6)}, ${sam3LatLng[0].lng.toFixed(6)})`,
     );
     return NextResponse.json({
@@ -571,9 +654,16 @@ export async function GET(req: Request) {
   }
 
   // ─── Reconcile with GIS footprint ─────────────────────────────────────
+  // Pass tileCenter as the reference point so the reconciler's proximity
+  // check (CATASTROPHIC_DRIFT_M = 15m) uses the actual building location,
+  // not the geocoded address. Without this, SAM3 polygons on setback
+  // houses would falsely fail "wrong building" because they're correctly
+  // 30m from the road-side address.
   const reconciled = await reconcileRoofPolygon({
     lat,
     lng,
+    referenceLat: tileCenter.lat,
+    referenceLng: tileCenter.lng,
     sam3Polygon: sam3LatLng,
   });
 
