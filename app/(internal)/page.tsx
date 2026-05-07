@@ -1419,21 +1419,17 @@ export default function HomePage() {
                 lat={address.lat}
                 lng={address.lng}
                 address={address.formatted}
-                // Always pass polygons so the multi-view verify effect can
-                // fire. The polygon outline stays HIDDEN until polygonReady
-                // (verified) — see `polygonsHidden` prop.
                 polygons={activePolygons}
                 polygonSource={polygonSource === "none" ? undefined : polygonSource}
                 polygonsHidden={!polygonReady}
                 expectedFootprintSqft={referenceFootprintSqft}
                 imageryDate={solar?.imageryDate ?? null}
-                onMultiViewVerified={(result) => {
-                  if (!polygonSource || polygonSource === "none") return;
-                  setClaudeVerifications((cur) => ({
-                    ...cur,
-                    [polygonSource]: result,
-                  }));
-                }}
+                // Multi-view verify (Claude vision QA) intentionally disabled.
+                // Reconciler now catches wrong-building cases via centroid
+                // drift + IoU floor — verify was redundant and cost ~$0.04
+                // per polygon load. To re-enable, restore the
+                // onMultiViewVerified callback that wired into
+                // setClaudeVerifications.
               />
             )}
           </section>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   ArrowLeft,
   ArrowRight,
@@ -23,6 +24,12 @@ import EditableRoofMap from "@/components/quote/EditableRoofMap";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
 import type { AddressInfo, Material } from "@/types/estimate";
 import { BRAND_CONFIG } from "@/lib/branding";
+
+// 3D viewer is heavy (Cesium + 3D Tiles) — lazy-load it so the initial
+// /quote bundle stays small. SSR off because Cesium is browser-only.
+const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
+  ssr: false,
+});
 
 const STEPS = ["Lead", "Roof", "Material", "Quote"] as const;
 type StepKey = (typeof STEPS)[number];
@@ -731,6 +738,25 @@ function RoofStep({
           </div>
         )}
       </div>
+
+      {/* Photorealistic 3D flyover — visual centerpiece of the customer's
+       *  roof. Loads only after the address is resolved + initial measurement
+       *  is done, so the satellite map renders first and the heavy Cesium
+       *  bundle isn't blocking. No verification — pure visual. */}
+      {!loading && address?.lat != null && address?.lng != null && (
+        <div className="rounded-2xl overflow-hidden border border-white/[0.075] bg-black/30 aspect-video relative">
+          <Roof3DViewer
+            // Hard-remount on every address change so the previous Cesium
+            // camera + tiles can't linger.
+            key={`${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
+            lat={address.lat}
+            lng={address.lng}
+            address={address.formatted}
+            polygons={roofPolygon ? [roofPolygon] : undefined}
+            polygonSource={roofPolygon ? "sam3" : undefined}
+          />
+        </div>
+      )}
 
       <div className="grid sm:grid-cols-2 gap-3">
         <div className="rounded-2xl border border-white/[0.05] bg-white/[0.015] p-4">
