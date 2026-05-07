@@ -5,6 +5,15 @@
 > footprint (FL, MN, TX). Verification against the live Microsoft
 > Planetary Computer STAC catalog says otherwise. This document records
 > what we tested, what we found, and what to do instead.
+>
+> **Update 2026-05-07:** A follow-up strategic brief reframed 3DEP as
+> "geometry truth, not photogrammetric inference" with a "free upgrade"
+> cost story. The reframe is partly right (geometry truth IS structurally
+> different; cost asymmetry vs Nearmap IS real), but a third verification
+> pass surfaced the blocker that closes the case: **the COGs require SAS-
+> token authentication on every read.** A direct curl to a real 3DEP COG
+> URL returns HTTP 409: "Public access is not permitted on this storage
+> account." See "Discovered after the strategic-reframe pass" below.
 
 ## What we verified
 
@@ -71,7 +80,80 @@ positions, eave edges, or hip lines** — the cell averaging blurs them.
 The seamless national 3DEP DEM is even worse — 10m or 30m resolution.
 Useful for storm overland flow analysis, useless for roof geometry.
 
-## What this means for the Phase 1 plan
+## Discovered after the strategic-reframe pass (2026-05-07)
+
+A follow-up reframe argued that Phase 1 was worth running anyway because
+"geometry truth" is structurally different from imagery sharpness — the
+brief was correct on that point in the abstract. So I tried a Phase 0
+probe: minimal fetcher, run against 3-5 properties with confirmed
+coverage (e.g. Brevard County FL, where the FL_Upper_Saint_Johns_2017
+project has tile coverage), quantify the actual pitch lift vs Solar
+API. That probe didn't survive the third pre-flight check.
+
+### 5. The COGs aren't publicly readable
+
+Hit a real 3DEP COG URL with a HEAD + range-byte request directly:
+
+  GET .../USGS_LPC_FL_Upper_Saint_Johns_2017_LAS_2019-dsm-2m-5-3.tif
+  Range: bytes=0-15
+
+Response:
+
+  HTTP/1.1 409 Conflict
+  <Error>
+    <Code>PublicAccessNotPermitted</Code>
+    <Message>Public access is not permitted on this storage account.</Message>
+  </Error>
+
+Microsoft Planetary Computer wraps the COGs in an Azure Blob Storage
+container that requires SAS-token signing on every read. The flow is:
+
+  1. POST /api/sas/v1/token/3dep-lidar-dsm
+       → returns a time-limited (1 hr typical) SAS token
+  2. Append the token to the COG URL: `?<sas-token>`
+  3. THEN the geotiff range read works
+
+This is a real implementation cost the strategic brief glossed over.
+The "free egress" framing is technically correct (you don't pay dollars)
+but the practical engineering cost is meaningful:
+
+  - SAS tokens expire — production code needs token-rotation logic
+  - The free tier rate-limits to ~60 token requests/min per IP
+  - The paid tier requires an Azure subscription + service principal
+  - Each subscription needs a separately maintained set of credentials
+  - Failure modes (token expired mid-stream, rate-limit hit) require
+    retry logic and error surfaces in our API routes
+
+Total realistic Phase 0 scope, including this auth layer:
+
+  - STAC search                                          0.5 hr
+  - SAS-token client + caching layer                    1.5 hr
+  - geotiff fromUrl with signed URLs (auth header sub)  1.0 hr
+  - WGS84 → UTM Zone 17N transform (no proj4 dep)       1.5 hr
+  - Pixel-window sampling + plane-fit slope             1.5 hr
+  - Compare-vs-Solar eval harness                       1.0 hr
+                                                        -----
+                                                        7.0 hr
+
+Plus production hardening for the auth flow (token retry, rate-limit
+handling, error UX) before this could land in any user-facing route.
+
+### 6. Combined risk picture
+
+Three independent blockers, any one of which would warrant pause:
+
+  1. **Coverage gap** — major FL metros have no 3DEP DSM coverage today
+  2. **Staleness** — captures we DO have are 5-12 years old in a state
+     that loses thousands of roofs per hurricane season
+  3. **Auth complexity** — production reads require SAS-token rotation,
+     rate-limit handling, and Azure service principal management
+
+The strategic brief addressed none of these. The "free upgrade" framing
+holds only after you accept ~7 hours of upfront work + ongoing auth
+maintenance, and even then the lift only applies to the ~30-40% of FL
+properties where coverage exists, with capture-staleness caveats.
+
+
 
 The brief's success criteria were:
 
@@ -115,7 +197,11 @@ imagery refreshed every 5 days. Useless for roof tracing, **excellent
 for "is this roof different than it was 6 weeks ago"** — pull
 pre-storm + post-storm imagery for the same address, flag visible
 changes. Pairs with the BigQuery NOAA storm history we already have.
-Free, no marginal cost, no new dep.
+
+NB: Sentinel-2 COGs hit the SAME SAS-auth requirement as 3DEP. The auth
+layer is shared, so building it once for Sentinel-2 (which has actual
+FL coverage and 5-day refresh) amortizes the cost across both options.
+That's the cleanest sequencing if we ever want LiDAR back on the table.
 
 ### Option C — Build our own training set + roof-pitch model
 
