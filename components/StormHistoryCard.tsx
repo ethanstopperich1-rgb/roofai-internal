@@ -45,12 +45,21 @@ interface MrmsResp {
   };
 }
 
+/** Radius options the rep can switch between. 1mi = "this exact roof
+ *  / immediate neighbour", 3mi = "one neighbourhood over", 5mi =
+ *  "carrier-typical storm exposure radius", 10mi = "wide blast pattern
+ *  / canvasser hot-zone". Default is 5mi — matches what most carriers
+ *  consider the legitimate severe-weather exposure window. */
+const RADIUS_OPTIONS = [1, 3, 5, 10] as const;
+type RadiusMi = (typeof RADIUS_OPTIONS)[number];
+
 export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: number }) {
   const [data, setData] = useState<ApiResp | null>(null);
   const [mrms, setMrms] = useState<MrmsResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [expanded, setExpanded] = useState(false);
+  const [radiusMi, setRadiusMi] = useState<RadiusMi>(5);
 
   useEffect(() => {
     if (lat == null || lng == null) return;
@@ -62,8 +71,10 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
     // Storm Reports via BigQuery) is the legal "documented event"
     // record carriers respect; MRMS is the radar-derived 1km grid that
     // catches sub-1" events SPC misses. Show both, label the source.
+    // Both honor the rep-selected `radiusMi` so widening the search
+    // updates BOTH lists, not just one.
     Promise.all([
-      fetch(`/api/storms?lat=${lat}&lng=${lng}&radiusMiles=3&yearsBack=5`)
+      fetch(`/api/storms?lat=${lat}&lng=${lng}&radiusMiles=${radiusMi}&yearsBack=5`)
         .then(async (r) => {
           const d = await r.json();
           if (!r.ok) throw new Error(d.error || `storms_${r.status}`);
@@ -74,14 +85,18 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
       // yet (no GH Actions runs) the route returns an empty events
       // array, and we just don't surface the radar section. Never
       // throws — UX degrades silently to SPC-only.
-      fetch(`/api/hail-mrms?lat=${lat}&lng=${lng}&yearsBack=2&radiusMiles=2&minInches=0.75`)
+      // MRMS hard-caps at 5mi server-side (1km cells get noisy past
+      // that); when rep picks 10mi, MRMS clamps to 5.
+      fetch(
+        `/api/hail-mrms?lat=${lat}&lng=${lng}&yearsBack=2&radiusMiles=${Math.min(5, radiusMi)}&minInches=0.75`,
+      )
         .then((r) => (r.ok ? (r.json() as Promise<MrmsResp>) : null))
         .then((d) => setMrms(d ?? null))
         .catch(() => undefined),
     ])
       .catch((e) => setError(e instanceof Error ? e.message : "failed"))
       .finally(() => setLoading(false));
-  }, [lat, lng]);
+  }, [lat, lng, radiusMi]);
 
   if (lat == null || lng == null) return null;
 
@@ -119,9 +134,27 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
           <div>
             <div className="font-display font-semibold tracking-tight text-[15px]">Storm History</div>
             <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500 -mt-0.5">
-              5-year radius · {s?.radiusMiles ?? 3} mi
+              {radiusMi} mi · 5 yr
             </div>
           </div>
+        </div>
+        {/* Rep-adjustable radius. Changes refire BOTH SPC and MRMS so
+            the lists stay in sync. MRMS clamps to 5mi server-side. */}
+        <div className="flex items-center gap-1 rounded-lg p-0.5 border border-white/[0.06] bg-white/[0.02]">
+          {RADIUS_OPTIONS.map((mi) => (
+            <button
+              key={mi}
+              onClick={() => setRadiusMi(mi)}
+              className={`px-2 py-1 rounded-md text-[10.5px] font-mono uppercase tracking-[0.12em] transition ${
+                radiusMi === mi
+                  ? "bg-cy-300 text-[#051019] font-semibold"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+              aria-pressed={radiusMi === mi}
+            >
+              {mi}mi
+            </button>
+          ))}
         </div>
         {insuranceWorthy && (
           <span
@@ -228,7 +261,8 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
 
           {events.length === 0 && (
             <div className="text-[12px] text-slate-500 italic">
-              No reported severe weather within {s?.radiusMiles ?? 3} mi over the last 5 years.
+              No reported severe weather within {s?.radiusMiles ?? radiusMi} mi over the last 5 years.
+              {radiusMi < 10 && " Try a wider radius."}
             </div>
           )}
 
@@ -245,7 +279,7 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
                   <span>Radar-detected hail</span>
                 </div>
                 <span className="text-[10px] font-mono text-slate-500">
-                  NOAA MRMS · 1km
+                  NOAA MRMS · 1km · {Math.min(5, radiusMi)} mi
                 </span>
               </div>
               <div className="space-y-1 max-h-48 overflow-auto">

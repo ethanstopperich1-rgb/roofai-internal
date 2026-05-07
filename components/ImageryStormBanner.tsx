@@ -24,7 +24,10 @@ export default function ImageryStormBanner({ imageryDate, lat, lng }: Props) {
 
   useEffect(() => {
     if (lat == null || lng == null) return;
-    fetch(`/api/storms?lat=${lat}&lng=${lng}&radiusMiles=3&yearsBack=5`)
+    // 5mi default — matches the StormHistoryCard's default radius so
+    // the imagery-vs-storm warning fires for the same severe-weather
+    // exposure window the rep is reading downstairs.
+    fetch(`/api/storms?lat=${lat}&lng=${lng}&radiusMiles=5&yearsBack=5`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => d && setEvents(d.events ?? []))
       .catch(() => setEvents([]));
