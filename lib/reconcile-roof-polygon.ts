@@ -61,12 +61,25 @@ export interface ReconciledRoof {
  *  conservative midpoint that under-quotes by <2% in most cases. */
 const EAVE_OVERHANG_FACTOR = 1.06;
 
-/** SAM3 polygon area must be within [0.85, 1.40] × footprint to be trusted.
- *  - <0.85 ⇒ partial occlusion, missing wing, or under-trace
- *  - >1.40 ⇒ over-trace into yard / neighbor / pool
- *  Tune from the production telemetry once we have a few weeks of data. */
-const SAM3_AREA_RATIO_MIN = 0.85;
-const SAM3_AREA_RATIO_MAX = 1.4;
+/** SAM3 polygon area must be within [0.65, 1.50] × footprint to be trusted
+ *  WHEN IoU is below TRUSTED_IOU_THRESHOLD. When IoU clears the threshold,
+ *  the area band is widened (high IoU proves the polygons describe the
+ *  same building, so a slightly tight or generous trace is fine).
+ *
+ *  Loosened from 0.85 (2026-05-07) after a real Orlando test produced
+ *  a SAM3 polygon at ratio=0.83 with IoU=0.71 that was clearly the
+ *  correct building — but got demoted to GIS substitute. SAM3 traces
+ *  actual roof eaves; MS Buildings traces wall footprints PLUS attached
+ *  porches/lanais/garages; the resulting ratio is often <0.85 even on
+ *  correctly-traced FL houses with covered patios. */
+const SAM3_AREA_RATIO_MIN = 0.65;
+const SAM3_AREA_RATIO_MAX = 1.5;
+
+/** When SAM3 and the GIS footprint overlap by at least this much (IoU),
+ *  we trust SAM3 over the area-ratio gate. High IoU proves the two
+ *  polygons describe the same building geometrically — area differences
+ *  reflect SAM3 tracing roof material and GIS tracing wall footprint. */
+const TRUSTED_IOU_THRESHOLD = 0.5;
 
 /** SAM3 centroid must be within this distance of the geocoded address.
  *  Beyond this, SAM3 is almost certainly tracing the wrong building. */
@@ -226,13 +239,21 @@ export async function reconcileRoofPolygon(
     };
   }
 
-  // Area-ratio check — primary occlusion / over-trace detector.
-  if (areaRatio < SAM3_AREA_RATIO_MIN) {
+  // IoU is the strongest single signal that SAM3 picked the right building.
+  // When SAM3's polygon overlaps the GIS footprint substantially, both
+  // polygons describe the same physical building — area differences just
+  // reflect SAM3 tracing roof eaves while GIS traces wall footprint plus
+  // attached structures (covered porches, lanais, garages — common in FL).
+  // Trust SAM3 in this case even if the area ratio looks off.
+  const iouTrusted = iou >= TRUSTED_IOU_THRESHOLD;
+
+  // Area-ratio gate (only when IoU isn't strong enough on its own).
+  if (!iouTrusted && areaRatio < SAM3_AREA_RATIO_MIN) {
     return {
       polygon: gis.polygon,
       footprintSqft: Math.round(gisSqft * EAVE_OVERHANG_FACTOR),
       source: "footprint-occluded",
-      reason: `SAM3 covered ${(areaRatio * 100).toFixed(0)}% of footprint (likely tree occlusion); using GIS footprint × ${EAVE_OVERHANG_FACTOR}`,
+      reason: `SAM3 covered ${(areaRatio * 100).toFixed(0)}% of footprint and IoU ${iou.toFixed(2)} (likely tree occlusion); using GIS footprint × ${EAVE_OVERHANG_FACTOR}`,
       diagnostics: {
         sam3Sqft,
         gisSqft,
@@ -243,12 +264,12 @@ export async function reconcileRoofPolygon(
       },
     };
   }
-  if (areaRatio > SAM3_AREA_RATIO_MAX) {
+  if (!iouTrusted && areaRatio > SAM3_AREA_RATIO_MAX) {
     return {
       polygon: gis.polygon,
       footprintSqft: Math.round(gisSqft * EAVE_OVERHANG_FACTOR),
       source: "footprint-occluded",
-      reason: `SAM3 was ${(areaRatio * 100).toFixed(0)}% of footprint (likely yard/neighbor over-trace); using GIS footprint × ${EAVE_OVERHANG_FACTOR}`,
+      reason: `SAM3 was ${(areaRatio * 100).toFixed(0)}% of footprint and IoU ${iou.toFixed(2)} (likely yard/neighbor over-trace); using GIS footprint × ${EAVE_OVERHANG_FACTOR}`,
       diagnostics: {
         sam3Sqft,
         gisSqft,
@@ -267,7 +288,9 @@ export async function reconcileRoofPolygon(
     polygon: sam3Polygon!,
     footprintSqft: Math.round(sam3Sqft!),
     source: "sam3",
-    reason: `SAM3 polygon (${(areaRatio * 100).toFixed(0)}% of footprint, IoU ${iou.toFixed(2)})`,
+    reason: iouTrusted
+      ? `SAM3 polygon (IoU ${iou.toFixed(2)} ≥ ${TRUSTED_IOU_THRESHOLD} — same building as GIS footprint)`
+      : `SAM3 polygon (${(areaRatio * 100).toFixed(0)}% of footprint, IoU ${iou.toFixed(2)})`,
     diagnostics: {
       sam3Sqft,
       gisSqft,
