@@ -754,6 +754,12 @@ function RoofStep({
             address={address.formatted}
             polygons={roofPolygon ? [roofPolygon] : undefined}
             polygonSource={roofPolygon ? "sam3" : undefined}
+            // Lock user input on the customer-facing flow: auto-orbit still
+            // plays (the wow factor) but pan/zoom/rotate are disabled, so
+            // the customer can't drive up Map Tiles cost by exploring the
+            // neighborhood. Caps per-session cost at ~$0.05–0.10 instead
+            // of $0.30+ on heavily-explored sessions.
+            interactive={false}
           />
         </div>
       )}

@@ -47,6 +47,13 @@ interface Props {
    *  compute predicted shadow direction and tell Claude to disregard
    *  shadow-cast regions when judging eaves. */
   imageryDate?: string | null;
+  /** When false, the user cannot pan/zoom/rotate the camera and the
+   *  Recenter / Top-Down / Orbit toggle buttons are hidden. The auto-orbit
+   *  animation still runs (purely visual), but all tile requests are
+   *  bounded by what the orbit needs — caps Map Tiles API cost on the
+   *  customer-facing /quote page. Default true (rep workflow needs full
+   *  interaction). */
+  interactive?: boolean;
 }
 
 // Multi-view capture geometry. These constants control the camera poses used
@@ -292,6 +299,7 @@ export default function Roof3DViewer({
   polygonsHidden,
   expectedFootprintSqft,
   imageryDate,
+  interactive = true,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<unknown>(null);
@@ -399,6 +407,20 @@ export default function Roof3DViewer({
       // tamed-inertia / no-look / clamped-zoom version felt worse than stock.
       // Stock controls: inertiaSpin/Translate/Zoom ≈ 0.9, free-look enabled,
       // zoom unbounded. Reverted on user request.
+
+      // For non-interactive embeds (customer-facing /quote), lock all user
+      // input. Auto-orbit animation still runs because it's programmatic,
+      // but pan / zoom / rotate from the user are blocked. This caps tile
+      // requests at what the orbit pose itself needs, since users can't
+      // navigate to new areas requiring fresh tile loads.
+      if (!interactive) {
+        const ssc = viewer.scene.screenSpaceCameraController;
+        ssc.enableRotate = false;
+        ssc.enableTranslate = false;
+        ssc.enableZoom = false;
+        ssc.enableTilt = false;
+        ssc.enableLook = false;
+      }
 
       try {
         const tileset = await Cesium.createGooglePhotorealistic3DTileset();
@@ -1006,7 +1028,7 @@ export default function Roof3DViewer({
       {/* tiles3d "extracting" pill removed alongside the mesh-data extraction.
           The full-map "Generating…" overlay is now driven from the parent
           (page.tsx) via a verifying state — see C3 commit. */}
-      {status === "ready" && (
+      {status === "ready" && interactive && (
         <div className="absolute top-2.5 right-2.5 z-10 flex gap-1.5">
           <button
             onClick={() => {
