@@ -378,6 +378,31 @@ export function deriveRoofLengthsHeuristic(opts: {
 }
 
 /**
+ * Industry-standard suggested waste % by complexity. Single source of truth
+ * shared between the EagleView-style waste table (rep-facing UI) and the
+ * line-item pricing engine (`buildDetailedEstimate` in lib/pricing.ts) so
+ * the displayed "suggested waste" is also the waste actually applied to
+ * shingle quantities. Without this, the panel said "14%" while the line
+ * items used a hardcoded 12% — under-billed complex jobs by ~2%.
+ *
+ *   simple    7%   — rectangular ranch, single pitch, minimal cuts
+ *   moderate 11%   — typical hip / cross-gable, 2-3 facets (default)
+ *   complex  14%   — heavy cut-up: dormers, valleys, multi-section
+ *
+ * Anything beyond 14% is "extreme cut-up" territory (steep + complex +
+ * many penetrations) — we let the rep manually bump the row in the
+ * waste table for those rather than auto-suggesting a 19%+ default that
+ * would silently over-bill the typical job.
+ */
+export function suggestedWastePct(complexity: Complexity = "moderate"): number {
+  return (
+    complexity === "complex" ? 14 :
+    complexity === "simple" ? 7 :
+    11
+  );
+}
+
+/**
  * EagleView-style waste calculation table.
  * Squares are rounded up to the nearest 1/3 to match how EagleView prints them.
  */
@@ -386,10 +411,7 @@ export function buildWasteTable(
   complexity: Complexity = "moderate",
 ): WasteTable {
   const PCTS = [0, 4, 7, 9, 11, 14, 19, 24, 29];
-  const suggestedPct =
-    complexity === "complex" ? 14 :
-    complexity === "simple" ? 7 :
-    11;
+  const suggestedPct = suggestedWastePct(complexity);
 
   const round3rd = (n: number) => Math.ceil(n * 3) / 3;
 

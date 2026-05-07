@@ -65,6 +65,12 @@ export default function MeasurementsPanel({ lengths, waste, defaultOpen = false 
         </div>
         <div className="flex items-center gap-3 text-[12.5px] text-slate-400">
           <span className="font-mono tabular">{waste.measuredSquares.toFixed(1)} sq</span>
+          <span
+            className="font-mono tabular text-[11px] text-cy-300/90 px-1.5 py-0.5 rounded-md border border-cy-300/25 bg-cy-300/[0.06]"
+            title={`Active shingle waste factor — ${waste.suggestedPct}% applied to line items.`}
+          >
+            +{waste.suggestedPct}% waste
+          </span>
           {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </div>
       </button>

@@ -15,6 +15,7 @@ import { BRAND_CONFIG, getMaterialPrice, type MaterialPriceKey } from "./brandin
 import {
   deriveRoofLengthsFromPolygons,
   deriveRoofLengthsHeuristic,
+  suggestedWastePct,
 } from "./roof-geometry";
 
 const PITCH_TO_DEG_LOCAL: Record<Pitch, number> = {
@@ -168,7 +169,11 @@ export function fmt(n: number): string {
 // Pricing comes from BRAND_CONFIG so it stays tunable per client.
 // -----------------------------------------------------------------------------
 
-const WASTE_FACTOR = 1.12;
+// Underlayment is rolled goods — much less per-cut waste than shingles
+// regardless of roof complexity. Keep it as a fixed 10% across the board.
+// Shingle waste is now complexity-driven via suggestedWastePct() — see
+// the call site below in `buildDetailedEstimate`. Single source of truth
+// shared with `buildWasteTable` so the panel-suggested % == billed %.
 const UNDERLAYMENT_WASTE = 1.1;
 const DEFAULT_PIPE_FLASHINGS = 3;
 
@@ -411,8 +416,13 @@ export function buildDetailedEstimate(
     }));
   }
 
-  // Primary shingle
-  const shingleQty = serviceType === "repair" ? squares * 0.15 : squares * WASTE_FACTOR;
+  // Primary shingle. Waste % is complexity-driven via suggestedWastePct
+  // (7% / 11% / 14% for simple / moderate / complex) — same number the
+  // EagleView-style waste table shows the rep, so the panel-suggested
+  // waste is also the waste we bill. Repair scope intentionally bills
+  // 15% of total squares (typical patch covers ~1-2 squares + waste).
+  const wasteFactor = 1 + suggestedWastePct(complexity) / 100;
+  const shingleQty = serviceType === "repair" ? squares * 0.15 : squares * wasteFactor;
   const sh = getMaterialPrice(SHINGLE_KEY[a.material]);
   items.push(makeItem({
     code: SHINGLE_CODE[a.material],
