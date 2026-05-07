@@ -1074,20 +1074,11 @@ export default function HomePage() {
       })
       .catch(() => null);
 
-    // Roboflow Hosted Inference (Satellite Rooftop Map v3) — fires in parallel
-    // with everything else. ~1-2s latency. Slots between Solar mask and SAM
-    // in the priority chain — beats SAM/OSM/Claude on most addresses thanks
-    // to roof-specific training, but Solar mask wins when both available
-    // because Solar is photogrammetric ground truth.
-    const roboflowPromise = fetch(`/api/roboflow?lat=${addr.lat}&lng=${addr.lng}`)
-      .then(async (r) => {
-        if (!r.ok) return null;
-        const data = (await r.json()) as {
-          polygon?: Array<{ lat: number; lng: number }>;
-        };
-        return data.polygon && data.polygon.length >= 3 ? data.polygon : null;
-      })
-      .catch(() => null);
+    // [Phase 1 cleanup 2026-05-07] Off-the-shelf Roboflow Satellite Rooftop
+    // Map call removed — custom SAM3 supersedes it. Route still exists for
+    // emergency rollback (re-add the fetch here if needed). State slot
+    // (`roboflowPolygon`) and priority chain entry kept passive; they'll
+    // never receive data from the page so the chain skips that tier.
 
     // Microsoft Building Footprints — open-data ML-extracted building outlines,
     // pre-extracted for the Nashville metro bbox (see lib/microsoft-buildings.ts).
@@ -1119,23 +1110,11 @@ export default function HomePage() {
       })
       .catch(() => null);
 
-    // Compound-pipeline SAM refinement — fires in parallel with everything
-    // else. ~5-10s latency on Replicate so the cheaper sources show first
-    // and SAM "snaps" the polygon tighter when it returns.
-    setSamRefining(true);
-    const samPromise = fetch("/api/sam-refine", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lat: addr.lat, lng: addr.lng }),
-    })
-      .then(async (r) => {
-        if (!r.ok) return null;
-        const data = (await r.json()) as {
-          polygon?: Array<{ lat: number; lng: number }>;
-        };
-        return data.polygon && data.polygon.length >= 3 ? data.polygon : null;
-      })
-      .catch(() => null);
+    // [Phase 1 cleanup 2026-05-07] Replicate SAM2 (sam-refine) call removed
+    // — custom SAM3 supersedes it. Route + lib/grounded-sam.ts still exist
+    // for emergency rollback. State slot (`samRefinedPolygon`) and
+    // `samRefining` flag stay passive; the "Refining…" badge will never
+    // light up because we no longer toggle it on.
 
     const [solarData, visionData, osmData] = await Promise.all([
       solarPromise,
@@ -1148,27 +1127,13 @@ export default function HomePage() {
     if (osmData) setOsmBuildingPolygon(osmData);
     setVisionLoading(false);
 
-    // Don't await SAM in the main critical path — it's a "snap to tighter"
-    // upgrade. Wire its result whenever it lands.
-    samPromise
-      .then((samPoly) => {
-        // Don't stomp in-progress edits: if the rep has already moved a
-        // vertex on the OSM/Claude polygon, keep their work and silently
-        // discard the SAM refinement.
-        if (samPoly && !hasUserEditedRef.current) setSamRefinedPolygon(samPoly);
-      })
-      .finally(() => setSamRefining(false));
+    // [Phase 1 cleanup] sam-refine and off-the-shelf roboflow result handlers
+    // removed — those promises are no longer fired. Custom SAM3 below
+    // covers the same role with better accuracy and lower latency.
 
     // Solar mask is one of the top-priority sources — same edit-stomp guard.
     solarMaskPromise.then((maskPoly) => {
       if (maskPoly && !hasUserEditedRef.current) setSolarMaskPolygon(maskPoly);
-    });
-
-    // Roboflow — same edit-stomp guard. When this returns, the priority
-    // chain in `polygonSource` decides whether it wins (it does when
-    // Solar mask is unavailable / 3D Tiles haven't loaded yet).
-    roboflowPromise.then((rfPoly) => {
-      if (rfPoly && !hasUserEditedRef.current) setRoboflowPolygon(rfPoly);
     });
 
     // MS Building Footprints — same edit-stomp guard.
