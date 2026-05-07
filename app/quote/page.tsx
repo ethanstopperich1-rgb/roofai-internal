@@ -141,11 +141,56 @@ export default function QuotePage() {
     setSubmitting(true);
     setSubmitError("");
     setLead(values);
+
+    // Fallback geocode — if the user typed an address and submitted
+    // without picking an autocomplete suggestion, the form values won't
+    // include lat/lng. Without coords, the page can't render a map or
+    // measure the roof. Try to resolve the typed text via Places API
+    // (autocomplete → details) before giving up.
+    let resolvedLat = values.lat;
+    let resolvedLng = values.lng;
+    let resolvedZip = values.zip;
+    let resolvedFormatted = values.address;
+    if (resolvedLat == null || resolvedLng == null) {
+      try {
+        const acRes = await fetch(
+          `/api/places/autocomplete?q=${encodeURIComponent(values.address)}`,
+        );
+        if (acRes.ok) {
+          const acData = (await acRes.json()) as {
+            suggestions?: Array<{ placeId?: string }>;
+          };
+          const firstPlaceId = acData.suggestions?.[0]?.placeId;
+          if (firstPlaceId) {
+            const detailsRes = await fetch(
+              `/api/places/details?placeId=${encodeURIComponent(firstPlaceId)}`,
+            );
+            if (detailsRes.ok) {
+              const details = (await detailsRes.json()) as {
+                lat?: number;
+                lng?: number;
+                zip?: string;
+                formatted?: string;
+              };
+              if (typeof details.lat === "number" && typeof details.lng === "number") {
+                resolvedLat = details.lat;
+                resolvedLng = details.lng;
+                resolvedZip = details.zip ?? resolvedZip;
+                resolvedFormatted = details.formatted ?? resolvedFormatted;
+              }
+            }
+          }
+        }
+      } catch {
+        /* silent — addr will lack coords; fallback UI handles it */
+      }
+    }
+
     const addr: AddressInfo = {
-      formatted: values.address,
-      zip: values.zip,
-      lat: values.lat,
-      lng: values.lng,
+      formatted: resolvedFormatted,
+      zip: resolvedZip,
+      lat: resolvedLat,
+      lng: resolvedLng,
     };
     setAddress(addr);
 
@@ -678,8 +723,11 @@ function RoofStep({
             className="w-full h-full object-cover"
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center text-slate-500 text-[12px]">
-            Satellite imagery unavailable
+          <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 text-[12px] gap-1 px-6 text-center">
+            <span>Couldn&apos;t locate that address.</span>
+            <span className="text-slate-600">
+              Go back and pick a suggestion from the dropdown to load satellite imagery.
+            </span>
           </div>
         )}
       </div>
