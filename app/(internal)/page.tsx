@@ -29,10 +29,6 @@ import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
 const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
   ssr: false,
 });
-const ParametricRoofViewer = dynamic(
-  () => import("@/components/ParametricRoofViewer"),
-  { ssr: false },
-);
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
 import { generatePdf, buildSummaryText } from "@/lib/pdf";
@@ -1434,7 +1430,7 @@ export default function HomePage() {
             )}
           </section>
 
-          {/* ═══ 02 ROOF GEOMETRY — parametric framing + blueprint ═════ */}
+          {/* ═══ 02 ROOF GEOMETRY — blueprint ═══════════════════════════ */}
           {polygonReady && activePolygons && activePolygons.length > 0 && (
             <SectionHeader
               index={2}
@@ -1443,17 +1439,20 @@ export default function HomePage() {
             />
           )}
 
-          {/* ─── Parametric 3D roof framing (gables, ridges, eaves, rakes) ─
-                Hidden until polygonReady so the framing doesn't keep
-                redrawing as the polygon flickers between sources. */}
-          {polygonReady && activePolygons && activePolygons.length > 0 && (
-            <ErrorBoundary>
-              <ParametricRoofViewer
-                polygon={activePolygons[0]}
-                pitch={assumptions.pitch}
-              />
-            </ErrorBoundary>
-          )}
+          {/* The parametric 3D roof-framing card was REMOVED — straight-
+              skeleton extrusion didn't reliably produce a recognizable
+              framing visualization across the polygon-source mix we ship,
+              and the per-edge LF readouts (hip / eaves / peak) were
+              unreliable because they were derived from a synthetic
+              skeleton rather than measured from the polygon. The
+              architectural blueprint card below carries the same
+              measurements (eaves / rakes / ridges / valleys) measured
+              directly from the polygon edges — same data, more reliable
+              math, no empty-canvas failure mode.
+
+              Roof3DViewer (Cesium photogrammetric) above already gives
+              the rep a real 3D look at the property, so the parametric
+              card was redundant on top of that. */}
 
           {/* ─── Architectural blueprint of the traced roof ─────────────── */}
           {polygonReady && activePolygons && activePolygons.length > 0 && (
