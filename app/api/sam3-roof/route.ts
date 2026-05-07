@@ -228,9 +228,16 @@ export async function GET(req: Request) {
   // ─── Call the Roboflow SAM3 workflow ──────────────────────────────────
   let workflowJson: unknown = null;
   try {
+    // Roboflow docs recommend Authorization: Bearer header over body-based
+    // api_key for serverless inference. Pass both for belt-and-suspenders —
+    // either method should authenticate; some serverless endpoints reject
+    // body-only auth despite older docs implying it works.
     const res = await fetch(ROBOFLOW_WORKFLOW_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
       body: JSON.stringify({
         api_key: apiKey,
         inputs: {
