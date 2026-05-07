@@ -47,20 +47,40 @@ function pixelsPerFoot(lat: number): number {
   return 1 / ftPerPx;
 }
 
-/** Convert pixel polygon (1280×1280 image space) to lat/lng using the
- *  same projection as the rest of the pipeline (zoom 20, scale 2). */
+/** Convert pixel polygon to lat/lng using the same projection as the rest
+ *  of the pipeline (zoom 20, scale 2 → 1280×1280 ground frame). When the
+ *  workflow returns image dimensions different from 1280 (e.g. it resized
+ *  internally), we scale pixel coords back to the 1280 frame before
+ *  applying the geo-projection. */
 function pixelPolygonToLatLng(opts: {
   pixels: Array<[number, number]>;
   centerLat: number;
   centerLng: number;
-  imagePixels?: number;
+  /** Width of the image the polygon was traced on (defaults to 1280 — our
+   *  zoom-20 scale-2 tile size). */
+  imageWidth?: number;
+  /** Height of the image the polygon was traced on (defaults to 1280). */
+  imageHeight?: number;
 }): Array<{ lat: number; lng: number }> {
-  const { pixels, centerLat, centerLng, imagePixels = 1280 } = opts;
+  const {
+    pixels,
+    centerLat,
+    centerLng,
+    imageWidth = 1280,
+    imageHeight = 1280,
+  } = opts;
   const mPerPx = (156_543.03392 * Math.cos((centerLat * Math.PI) / 180)) / Math.pow(2, 21);
   const cosLat = Math.cos((centerLat * Math.PI) / 180);
+  // Polygon coords are in `imageWidth × imageHeight` space. We project
+  // each axis independently relative to the image centre, treating the
+  // image as covering 1280px worth of ground in each axis (Google Static
+  // Maps zoom-20 scale-2 frame). When the source image isn't 1280, the
+  // ratio (1280/imageWidth) stretches the polygon back to ground frame.
+  const xScale = 1280 / imageWidth;
+  const yScale = 1280 / imageHeight;
   return pixels.map(([x, y]) => {
-    const dxM = (x - imagePixels / 2) * mPerPx;
-    const dyM = (imagePixels / 2 - y) * mPerPx;
+    const dxM = (x - imageWidth / 2) * xScale * mPerPx;
+    const dyM = (imageHeight / 2 - y) * yScale * mPerPx;
     return {
       lat: centerLat + dyM / 111_320,
       lng: centerLng + dxM / (111_320 * cosLat),
@@ -68,44 +88,112 @@ function pixelPolygonToLatLng(opts: {
   });
 }
 
-/** Best-effort polygon extractor for the Roboflow Workflow response.
- *  The response shape is workflow-specific and changes when blocks are
- *  edited in the Roboflow UI — we look in the most likely places and
- *  log the raw payload when nothing parses, so a shape change is a
- *  one-line fix instead of a debugging session.
+interface ExtractedPolygon {
+  pixels: Array<[number, number]>;
+  /** Width of the image the polygon was traced on, per the workflow
+   *  response. Used to scale pixel coords back to our 1280-px ground frame
+   *  before the geo-projection. Defaults to 1280 if the response doesn't
+   *  include image dimensions. */
+  imageWidth: number;
+  imageHeight: number;
+}
+
+/** Extract the polygon from the Roboflow Workflow response.
  *
- *  Expected shapes (any of these works):
- *    1. outputs[0].roof_polygons[].points = [{x, y}, ...] or [[x, y], ...]
- *    2. outputs[0].predictions[].points    = same
- *    3. predictions[].points               = same (top-level)
- *    4. outputs[0].polygon                 = [[x, y], ...]
+ *  Real shape, observed via local Python SDK test (2026-05-07):
+ *    [
+ *      {
+ *        "annotated_crop": "<base64>",
+ *        "roof_areas_sqft": {
+ *          "image": { "width": ..., "height": ... },
+ *          "predictions": [
+ *            {
+ *              "points": [{ "x": ..., "y": ... }, ...],
+ *              "area_px": ...,
+ *              "confidence": ...,
+ *              ...
+ *            }
+ *          ]
+ *        }
+ *      }
+ *    ]
+ *
+ *  We pick the largest prediction by `area_px` (handles multi-detection
+ *  cases where SAM3 segments multiple roofs and we want the main one).
+ *  Falls back to older parser shapes if the new path isn't present, so
+ *  the route survives future workflow restructures.
  */
-function extractPolygonPixels(data: unknown): Array<[number, number]> | null {
-  if (!data || typeof data !== "object") return null;
-  const root = data as Record<string, unknown>;
+function extractPolygonPixels(data: unknown): ExtractedPolygon | null {
+  if (!data) return null;
 
-  const candidates: unknown[] = [];
-  const outputsArr = Array.isArray(root.outputs) ? root.outputs : null;
-  const firstOutput =
-    outputsArr && outputsArr.length > 0 && typeof outputsArr[0] === "object"
-      ? (outputsArr[0] as Record<string, unknown>)
-      : null;
-
-  // Direct `outputs[0]` access
-  if (firstOutput) {
-    candidates.push(firstOutput.roof_polygons);
-    candidates.push(firstOutput.predictions);
-    candidates.push(firstOutput.polygons);
-    candidates.push(firstOutput.polygon);
+  // Response can be either a list (current shape) or an object with an
+  // `outputs` array (older shape). Normalise to a single output object.
+  let firstOutput: Record<string, unknown> | null = null;
+  if (Array.isArray(data) && data.length > 0 && typeof data[0] === "object") {
+    firstOutput = data[0] as Record<string, unknown>;
+  } else if (typeof data === "object") {
+    const root = data as Record<string, unknown>;
+    if (Array.isArray(root.outputs) && root.outputs.length > 0 && typeof root.outputs[0] === "object") {
+      firstOutput = root.outputs[0] as Record<string, unknown>;
+    } else {
+      // Top-level object might itself be the output (no outputs wrapper)
+      firstOutput = root;
+    }
   }
-  // Top-level fallbacks
-  candidates.push(root.predictions);
-  candidates.push(root.polygons);
-  candidates.push(root.polygon);
+  if (!firstOutput) return null;
 
+  // Primary path: roof_areas_sqft.predictions[].points  (current workflow)
+  const roofAreas = firstOutput.roof_areas_sqft;
+  if (roofAreas && typeof roofAreas === "object") {
+    const ra = roofAreas as Record<string, unknown>;
+    const preds = Array.isArray(ra.predictions) ? ra.predictions : null;
+    if (preds && preds.length > 0) {
+      // Pick the largest by area_px (or by point count as fallback).
+      let best: Record<string, unknown> | null = null;
+      let bestArea = -Infinity;
+      for (const p of preds) {
+        if (!p || typeof p !== "object") continue;
+        const pred = p as Record<string, unknown>;
+        const area =
+          typeof pred.area_px === "number"
+            ? pred.area_px
+            : Array.isArray(pred.points)
+              ? pred.points.length
+              : 0;
+        if (area > bestArea) {
+          bestArea = area;
+          best = pred;
+        }
+      }
+      const points = best?.points;
+      const pixels = coercePolygon(points);
+      if (pixels) {
+        const img =
+          ra.image && typeof ra.image === "object"
+            ? (ra.image as Record<string, unknown>)
+            : null;
+        const imageWidth =
+          typeof img?.width === "number" && img.width > 0 ? img.width : 1280;
+        const imageHeight =
+          typeof img?.height === "number" && img.height > 0 ? img.height : 1280;
+        return { pixels, imageWidth, imageHeight };
+      }
+    }
+  }
+
+  // Fallback paths for older / alternate workflow shapes. These don't
+  // give us image dimensions, so we assume our 1280-px ground frame.
+  const candidates: unknown[] = [
+    firstOutput.roof_polygons,
+    firstOutput.predictions,
+    firstOutput.polygons,
+    firstOutput.polygon,
+  ];
   for (const c of candidates) {
     const poly = coercePolygon(c);
-    if (poly) return poly;
+    if (poly) {
+      return { pixels: poly, imageWidth: 1280, imageHeight: 1280 };
+    }
   }
 
   return null;
@@ -267,23 +355,33 @@ export async function GET(req: Request) {
     console.warn(`[sam3-roof] workflow call failed for (${lat}, ${lng}):`, err);
   }
 
-  const polygonPixels = extractPolygonPixels(workflowJson);
-  if (!polygonPixels) {
+  const extracted = extractPolygonPixels(workflowJson);
+  if (!extracted) {
+    // Helpful shape diagnostic — works whether response is array or object.
+    let topLevelHint = "<none>";
+    if (Array.isArray(workflowJson) && workflowJson.length > 0 && typeof workflowJson[0] === "object") {
+      topLevelHint = `array, item[0] keys: ${Object.keys(workflowJson[0] as object).join(",")}`;
+    } else if (workflowJson && typeof workflowJson === "object") {
+      topLevelHint = Object.keys(workflowJson as object).join(",");
+    }
     console.warn(
       `[sam3-roof] could not extract polygon from workflow response for (${lat}, ${lng}). ` +
-        `Top-level keys: ${
-          workflowJson && typeof workflowJson === "object"
-            ? Object.keys(workflowJson as object).join(",")
-            : "<none>"
-        }`,
+        `Top-level keys: ${topLevelHint}`,
+    );
+  } else {
+    console.log(
+      `[sam3-roof] extracted polygon: ${extracted.pixels.length} verts in ` +
+        `${extracted.imageWidth}×${extracted.imageHeight} image space`,
     );
   }
 
-  const sam3LatLng = polygonPixels
+  const sam3LatLng = extracted
     ? pixelPolygonToLatLng({
-        pixels: polygonPixels,
+        pixels: extracted.pixels,
         centerLat: lat,
         centerLng: lng,
+        imageWidth: extracted.imageWidth,
+        imageHeight: extracted.imageHeight,
       })
     : null;
 
