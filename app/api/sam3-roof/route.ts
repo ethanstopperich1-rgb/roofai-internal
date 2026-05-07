@@ -219,10 +219,11 @@ function extractPolygonPixels(data: unknown): ExtractedPolygon | null {
         // Douglas-Peucker simplification — SAM3's per-pixel boundary is
         // way too dense for an editable map UI (each vertex becomes a
         // drag handle, 300+ handles makes Google Maps lag and the
-        // polygon can fail to render). epsilon=8 in pixel space keeps
-        // the polygon visually identical to <0.5m and typically yields
-        // 15-25 verts. Tunable via SAM3_SIMPLIFY_EPSILON env var.
-        const epsilon = Number(process.env.SAM3_SIMPLIFY_EPSILON ?? "8");
+        // polygon can fail to render). epsilon=6 in pixel space keeps
+        // the polygon visually identical to <0.4m and typically yields
+        // 18-30 verts — enough detail for complex roof outlines while
+        // staying snappy. Tunable via SAM3_SIMPLIFY_EPSILON env var.
+        const epsilon = Number(process.env.SAM3_SIMPLIFY_EPSILON ?? "6");
         const simplified =
           pixels.length > 8 && epsilon > 0
             ? douglasPeucker(pixels, epsilon)
