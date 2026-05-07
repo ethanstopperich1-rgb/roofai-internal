@@ -47,6 +47,46 @@ function pixelsPerFoot(lat: number): number {
   return 1 / ftPerPx;
 }
 
+/**
+ * Douglas-Peucker polyline simplification. Recursively keeps the point
+ * with the largest perpendicular distance from the chord between the
+ * endpoints; if that distance is below `epsilon`, the chord replaces
+ * everything in between.
+ *
+ * SAM3 returns dense per-pixel boundary (often 300+ verts on a single
+ * residential roof). At zoom 20 scale 2 (0.06 m/px), epsilon=8 keeps
+ * the polygon visually identical to <0.5m and typically reduces vertex
+ * count by 90%+ — restoring usable editable-map performance.
+ */
+function douglasPeucker(
+  points: Array<[number, number]>,
+  epsilon: number,
+): Array<[number, number]> {
+  if (points.length < 3) return points;
+  const perpDist = (p: [number, number], a: [number, number], b: [number, number]) => {
+    const num = Math.abs(
+      (b[1] - a[1]) * p[0] - (b[0] - a[0]) * p[1] + b[0] * a[1] - b[1] * a[0],
+    );
+    const den = Math.hypot(b[1] - a[1], b[0] - a[0]) || 1;
+    return num / den;
+  };
+  let dmax = 0;
+  let index = 0;
+  for (let i = 1; i < points.length - 1; i++) {
+    const d = perpDist(points[i], points[0], points[points.length - 1]);
+    if (d > dmax) {
+      dmax = d;
+      index = i;
+    }
+  }
+  if (dmax > epsilon) {
+    const left = douglasPeucker(points.slice(0, index + 1), epsilon);
+    const right = douglasPeucker(points.slice(index), epsilon);
+    return [...left.slice(0, -1), ...right];
+  }
+  return [points[0], points[points.length - 1]];
+}
+
 /** Convert pixel polygon to lat/lng using the same projection as the rest
  *  of the pipeline (zoom 20, scale 2 → 1280×1280 ground frame). When the
  *  workflow returns image dimensions different from 1280 (e.g. it resized
@@ -176,7 +216,18 @@ function extractPolygonPixels(data: unknown): ExtractedPolygon | null {
           typeof img?.width === "number" && img.width > 0 ? img.width : 1280;
         const imageHeight =
           typeof img?.height === "number" && img.height > 0 ? img.height : 1280;
-        return { pixels, imageWidth, imageHeight };
+        // Douglas-Peucker simplification — SAM3's per-pixel boundary is
+        // way too dense for an editable map UI (each vertex becomes a
+        // drag handle, 300+ handles makes Google Maps lag and the
+        // polygon can fail to render). epsilon=8 in pixel space keeps
+        // the polygon visually identical to <0.5m and typically yields
+        // 15-25 verts. Tunable via SAM3_SIMPLIFY_EPSILON env var.
+        const epsilon = Number(process.env.SAM3_SIMPLIFY_EPSILON ?? "8");
+        const simplified =
+          pixels.length > 8 && epsilon > 0
+            ? douglasPeucker(pixels, epsilon)
+            : pixels;
+        return { pixels: simplified, imageWidth, imageHeight };
       }
     }
   }
@@ -370,7 +421,7 @@ export async function GET(req: Request) {
     );
   } else {
     console.log(
-      `[sam3-roof] extracted polygon: ${extracted.pixels.length} verts in ` +
+      `[sam3-roof] extracted polygon: ${extracted.pixels.length} verts (after simplification) in ` +
         `${extracted.imageWidth}×${extracted.imageHeight} image space`,
     );
   }
