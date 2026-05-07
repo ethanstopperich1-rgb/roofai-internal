@@ -1061,18 +1061,11 @@ export default function HomePage() {
       })
       .catch(() => null);
 
-    // Solar mask (Project Sunroof's roof segmentation) — runs in parallel
-    // with everything else. Free tier of Solar covers most US/EU/JP/AU.
-    // When available, this is the highest-quality polygon source we have.
-    const solarMaskPromise = fetch(`/api/solar-mask?lat=${addr.lat}&lng=${addr.lng}`)
-      .then(async (r) => {
-        if (!r.ok) return null;
-        const data = (await r.json()) as {
-          latLng?: Array<{ lat: number; lng: number }>;
-        };
-        return data.latLng && data.latLng.length >= 3 ? data.latLng : null;
-      })
-      .catch(() => null);
+    // [Lazy 2026-05-07] Solar mask (Project Sunroof) is now fired only as a
+    // fallback after SAM3 returns null — see the sam3Promise.then block
+    // below. Saves the $0.075 dataLayers cost on the common path where
+    // SAM3 succeeds, and eliminates the "Solar mask renders first then
+    // SAM3 swaps in" flicker.
 
     // [Phase 1 cleanup 2026-05-07] Off-the-shelf Roboflow Satellite Rooftop
     // Map call removed — custom SAM3 supersedes it. Route still exists for
@@ -1131,22 +1124,35 @@ export default function HomePage() {
     // removed — those promises are no longer fired. Custom SAM3 below
     // covers the same role with better accuracy and lower latency.
 
-    // Solar mask is one of the top-priority sources — same edit-stomp guard.
-    solarMaskPromise.then((maskPoly) => {
-      if (maskPoly && !hasUserEditedRef.current) setSolarMaskPolygon(maskPoly);
-    });
-
     // MS Building Footprints — same edit-stomp guard.
     msBuildingPromise.then((msPoly) => {
       if (msPoly && !hasUserEditedRef.current) setMsBuildingPolygon(msPoly);
     });
 
-    // SAM3 (custom) — same edit-stomp guard. Sits at the top of the
-    // priority chain; when it lands, the chain re-evaluates and the map
-    // re-renders with the SAM3 polygon (server-side reconciliation has
-    // already substituted the GIS footprint when SAM3 itself was wrong).
+    // SAM3 (custom) primary + lazy Solar mask fallback.
+    // When SAM3 returns null, fire /api/solar-mask in serial as a fallback.
+    // This avoids paying for Solar dataLayers on the common path where
+    // SAM3 succeeds AND eliminates the visual flicker where Solar mask
+    // would render first and then SAM3 would override it.
     sam3Promise.then((sam3Poly) => {
-      if (sam3Poly && !hasUserEditedRef.current) setSam3Polygon(sam3Poly);
+      if (sam3Poly) {
+        if (!hasUserEditedRef.current) setSam3Polygon(sam3Poly);
+        return;
+      }
+      // SAM3 returned nothing — fall back to Solar mask. No need to fire
+      // it earlier since the priority chain would have used SAM3 anyway.
+      fetch(`/api/solar-mask?lat=${addr.lat}&lng=${addr.lng}`)
+        .then(async (r) => {
+          if (!r.ok) return null;
+          const data = (await r.json()) as {
+            latLng?: Array<{ lat: number; lng: number }>;
+          };
+          return data.latLng && data.latLng.length >= 3 ? data.latLng : null;
+        })
+        .catch(() => null)
+        .then((maskPoly) => {
+          if (maskPoly && !hasUserEditedRef.current) setSolarMaskPolygon(maskPoly);
+        });
     });
 
     setAssumptions((a) => {
