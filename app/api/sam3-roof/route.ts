@@ -6,6 +6,7 @@ import {
   type ReconciledRoof,
 } from "@/lib/reconcile-roof-polygon";
 import { getCached, setCached } from "@/lib/cache";
+import { polygonAreaSqft } from "@/lib/polygon";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -198,15 +199,21 @@ export async function GET(req: Request) {
     );
   }
 
-  const cached = await getCached<Sam3CachedResult | null>("sam3-roof", lat, lng);
-  if (cached !== null) {
-    if (cached === undefined) {
-      return NextResponse.json(
-        { error: "no_polygon", message: "SAM3 + GIS both failed for this address." },
-        { status: 404 },
-      );
+  // Diagnostic mode — bypass cache so toggling the flag takes effect on
+  // the next call. Set SAM3_DIAGNOSTIC_MODE=true in Vercel env to enable.
+  const diagnosticMode = process.env.SAM3_DIAGNOSTIC_MODE === "true";
+
+  if (!diagnosticMode) {
+    const cached = await getCached<Sam3CachedResult | null>("sam3-roof", lat, lng);
+    if (cached !== null) {
+      if (cached === undefined) {
+        return NextResponse.json(
+          { error: "no_polygon", message: "SAM3 + GIS both failed for this address." },
+          { status: 404 },
+        );
+      }
+      return NextResponse.json(cached);
     }
-    return NextResponse.json(cached);
   }
 
   // ─── Fetch the satellite tile ─────────────────────────────────────────
@@ -280,6 +287,37 @@ export async function GET(req: Request) {
       })
     : null;
 
+  // ─── Diagnostic mode — bypass reconciler when SAM3 returns anything ───
+  // When SAM3_DIAGNOSTIC_MODE=true, return the raw SAM3 polygon as-is with
+  // ALL reconciliation gates bypassed: no area-ratio check, no centroid
+  // drift check, no min/max sqft sanity bounds. Lets you SEE exactly what
+  // SAM3 produced (vs the GIS substitute the reconciler would normally
+  // return on failure). Use only for diagnosis — toggle off afterward.
+  if (diagnosticMode && sam3LatLng && sam3LatLng.length >= 3) {
+    const sqft = Math.round(polygonAreaSqft(sam3LatLng));
+    console.log(
+      `[sam3-roof] DIAGNOSTIC MODE: returning raw SAM3 polygon ` +
+        `(${sam3LatLng.length} verts, ${sqft} sqft) for (${lat.toFixed(5)}, ${lng.toFixed(5)}) — ` +
+        `reconciler bypassed`,
+    );
+    return NextResponse.json({
+      polygon: sam3LatLng,
+      footprintSqft: sqft,
+      source: "sam3",
+      reason: "DIAGNOSTIC MODE — raw SAM3 polygon, all reconciliation gates bypassed",
+      diagnostics: {
+        sam3Sqft: sqft,
+        gisSqft: null,
+        areaRatio: null,
+        iou: null,
+        gisSource: null,
+        sam3CentroidNearAddress: null,
+        diagnosticMode: true,
+      },
+      computedAt: new Date().toISOString(),
+    });
+  }
+
   // ─── Reconcile with GIS footprint ─────────────────────────────────────
   const reconciled = await reconcileRoofPolygon({
     lat,
@@ -290,7 +328,9 @@ export async function GET(req: Request) {
   if (!reconciled) {
     // Cache the miss as `null` so we don't re-call Roboflow on retry storms.
     // Sentinel pattern matches /api/microsoft-building, /api/solar-mask.
-    await setCached<Sam3CachedResult | null>("sam3-roof", lat, lng, null);
+    if (!diagnosticMode) {
+      await setCached<Sam3CachedResult | null>("sam3-roof", lat, lng, null);
+    }
     return NextResponse.json(
       { error: "no_polygon", message: "SAM3 + GIS both failed for this address." },
       { status: 404 },
@@ -301,7 +341,9 @@ export async function GET(req: Request) {
     ...reconciled,
     computedAt: new Date().toISOString(),
   };
-  await setCached("sam3-roof", lat, lng, result);
+  if (!diagnosticMode) {
+    await setCached("sam3-roof", lat, lng, result);
+  }
 
   console.log(
     `[sam3-roof] (${lat.toFixed(5)}, ${lng.toFixed(5)}) → source=${result.source} ` +
