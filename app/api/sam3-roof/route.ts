@@ -393,10 +393,33 @@ export async function GET(req: Request) {
   // return on failure). Use only for diagnosis — toggle off afterward.
   if (diagnosticMode && sam3LatLng && sam3LatLng.length >= 3) {
     const sqft = Math.round(polygonAreaSqft(sam3LatLng));
+    // Compute polygon centroid and distance from the geocoded address.
+    // This is the diagnostic the user actually needs — tells us whether
+    // SAM3 placed the polygon ON the building (small distance), OFFSET
+    // by a consistent amount (conversion bug), or somewhere else
+    // entirely (wrong building / model issue).
+    let cLat = 0;
+    let cLng = 0;
+    for (const v of sam3LatLng) {
+      cLat += v.lat;
+      cLng += v.lng;
+    }
+    cLat /= sam3LatLng.length;
+    cLng /= sam3LatLng.length;
+    const cosLatHere = Math.cos((lat * Math.PI) / 180);
+    const dLatM = (cLat - lat) * 111_320;
+    const dLngM = (cLng - lng) * 111_320 * cosLatHere;
+    const distM = Math.hypot(dLatM, dLngM);
+    const bearingDeg = ((Math.atan2(dLngM, dLatM) * 180) / Math.PI + 360) % 360;
     console.log(
       `[sam3-roof] DIAGNOSTIC MODE: returning raw SAM3 polygon ` +
         `(${sam3LatLng.length} verts, ${sqft} sqft) for (${lat.toFixed(5)}, ${lng.toFixed(5)}) — ` +
         `reconciler bypassed`,
+    );
+    console.log(
+      `[sam3-roof] DIAGNOSTIC: polygon centroid=(${cLat.toFixed(6)}, ${cLng.toFixed(6)}), ` +
+        `distance from address=${distM.toFixed(1)}m at bearing ${bearingDeg.toFixed(0)}°, ` +
+        `first point=(${sam3LatLng[0].lat.toFixed(6)}, ${sam3LatLng[0].lng.toFixed(6)})`,
     );
     return NextResponse.json({
       polygon: sam3LatLng,
