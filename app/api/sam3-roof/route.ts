@@ -7,6 +7,7 @@ import {
 } from "@/lib/reconcile-roof-polygon";
 import { getCached, setCached } from "@/lib/cache";
 import { polygonAreaSqft } from "@/lib/polygon";
+import type { SolarSummary } from "@/types/estimate";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -128,9 +129,16 @@ function pixelPolygonToLatLng(opts: {
   });
 }
 
-interface ExtractedPolygon {
+interface ExtractedPrediction {
   pixels: Array<[number, number]>;
-  /** Width of the image the polygon was traced on, per the workflow
+  /** Original area in pixel² as reported by Roboflow. Used for tie-breaking
+   *  and diagnostics. */
+  pixelArea: number;
+}
+
+interface ExtractedPolygons {
+  predictions: ExtractedPrediction[];
+  /** Width of the image the polygons were traced on, per the workflow
    *  response. Used to scale pixel coords back to our 1280-px ground frame
    *  before the geo-projection. Defaults to 1280 if the response doesn't
    *  include image dimensions. */
@@ -138,7 +146,7 @@ interface ExtractedPolygon {
   imageHeight: number;
 }
 
-/** Extract the polygon from the Roboflow Workflow response.
+/** Extract ALL polygons from the Roboflow Workflow response.
  *
  *  Real shape, observed via local Python SDK test (2026-05-07):
  *    [
@@ -158,12 +166,12 @@ interface ExtractedPolygon {
  *      }
  *    ]
  *
- *  We pick the largest prediction by `area_px` (handles multi-detection
- *  cases where SAM3 segments multiple roofs and we want the main one).
- *  Falls back to older parser shapes if the new path isn't present, so
- *  the route survives future workflow restructures.
+ *  Returns ALL predictions (each with their pixel polygon) so the route
+ *  can pick the right one using app-side context (Solar buildingCenter,
+ *  MS Buildings, etc.) — Roboflow's image-space heuristics aren't enough
+ *  on edge cases like setback rural houses.
  */
-function extractPolygonPixels(data: unknown): ExtractedPolygon | null {
+function extractAllPolygons(data: unknown): ExtractedPolygons | null {
   if (!data) return null;
 
   // Response can be either a list (current shape) or an object with an
@@ -188,47 +196,28 @@ function extractPolygonPixels(data: unknown): ExtractedPolygon | null {
     const ra = roofAreas as Record<string, unknown>;
     const preds = Array.isArray(ra.predictions) ? ra.predictions : null;
     if (preds && preds.length > 0) {
-      // Pick the largest by area_px (or by point count as fallback).
-      let best: Record<string, unknown> | null = null;
-      let bestArea = -Infinity;
+      const img =
+        ra.image && typeof ra.image === "object"
+          ? (ra.image as Record<string, unknown>)
+          : null;
+      const imageWidth =
+        typeof img?.width === "number" && img.width > 0 ? img.width : 1280;
+      const imageHeight =
+        typeof img?.height === "number" && img.height > 0 ? img.height : 1280;
+
+      const predictions: ExtractedPrediction[] = [];
       for (const p of preds) {
         if (!p || typeof p !== "object") continue;
         const pred = p as Record<string, unknown>;
-        const area =
-          typeof pred.area_px === "number"
-            ? pred.area_px
-            : Array.isArray(pred.points)
-              ? pred.points.length
-              : 0;
-        if (area > bestArea) {
-          bestArea = area;
-          best = pred;
-        }
+        const points = pred.points;
+        const pixels = coercePolygon(points);
+        if (!pixels || pixels.length < 3) continue;
+        const pixelArea =
+          typeof pred.area_px === "number" ? pred.area_px : pixels.length;
+        predictions.push({ pixels, pixelArea });
       }
-      const points = best?.points;
-      const pixels = coercePolygon(points);
-      if (pixels) {
-        const img =
-          ra.image && typeof ra.image === "object"
-            ? (ra.image as Record<string, unknown>)
-            : null;
-        const imageWidth =
-          typeof img?.width === "number" && img.width > 0 ? img.width : 1280;
-        const imageHeight =
-          typeof img?.height === "number" && img.height > 0 ? img.height : 1280;
-        // Douglas-Peucker simplification — SAM3's per-pixel boundary is
-        // way too dense for an editable map UI (each vertex becomes a
-        // drag handle, 300+ handles makes Google Maps lag and the
-        // polygon can fail to render). epsilon=6 in pixel space keeps
-        // the polygon visually identical to <0.4m and typically yields
-        // 18-30 verts — enough detail for complex roof outlines while
-        // staying snappy. Tunable via SAM3_SIMPLIFY_EPSILON env var.
-        const epsilon = Number(process.env.SAM3_SIMPLIFY_EPSILON ?? "6");
-        const simplified =
-          pixels.length > 8 && epsilon > 0
-            ? douglasPeucker(pixels, epsilon)
-            : pixels;
-        return { pixels: simplified, imageWidth, imageHeight };
+      if (predictions.length > 0) {
+        return { predictions, imageWidth, imageHeight };
       }
     }
   }
@@ -244,7 +233,11 @@ function extractPolygonPixels(data: unknown): ExtractedPolygon | null {
   for (const c of candidates) {
     const poly = coercePolygon(c);
     if (poly) {
-      return { pixels: poly, imageWidth: 1280, imageHeight: 1280 };
+      return {
+        predictions: [{ pixels: poly, pixelArea: poly.length }],
+        imageWidth: 1280,
+        imageHeight: 1280,
+      };
     }
   }
 
@@ -411,7 +404,7 @@ export async function GET(req: Request) {
     console.warn(`[sam3-roof] workflow call failed for (${lat}, ${lng}):`, err);
   }
 
-  const extracted = extractPolygonPixels(workflowJson);
+  const extracted = extractAllPolygons(workflowJson);
   if (!extracted) {
     // Helpful shape diagnostic — works whether response is array or object.
     let topLevelHint = "<none>";
@@ -424,16 +417,91 @@ export async function GET(req: Request) {
       `[sam3-roof] could not extract polygon from workflow response for (${lat}, ${lng}). ` +
         `Top-level keys: ${topLevelHint}`,
     );
-  } else {
-    console.log(
-      `[sam3-roof] extracted polygon: ${extracted.pixels.length} verts (after simplification) in ` +
-        `${extracted.imageWidth}×${extracted.imageHeight} image space`,
-    );
   }
 
-  const sam3LatLng = extracted
+  // ─── Pick the best prediction using app-side context ──────────────────
+  // The /quote and internal pages call /api/solar in parallel with this
+  // route, so by the time we get here Solar's data is usually in Redis.
+  // buildingCenter (when available) is the photogrammetric centroid of
+  // the actual house — the perfect reference point for picking among
+  // multiple SAM3 detections, especially on setback rural addresses where
+  // the geocoded pin sits on the road and the house is 30m back.
+  let pickedPixels: Array<[number, number]> | null = null;
+  let pickReasonForLog = "";
+  if (extracted && extracted.predictions.length > 0) {
+    const solarCached = await getCached<SolarSummary>("solar", lat, lng).catch(() => null);
+    const buildingCenter = solarCached?.buildingCenter ?? null;
+    const refSource = buildingCenter ? "solar-buildingCenter" : "address";
+
+    // Convert the reference lat/lng to pixel coords in the workflow image.
+    // Inverse of pixelPolygonToLatLng: scale factor (imageWidth/1280) maps
+    // ground-meter offsets back into the workflow's pixel grid.
+    const refLat = buildingCenter?.lat ?? lat;
+    const refLng = buildingCenter?.lng ?? lng;
+    const mPerPx = (156_543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, 21);
+    const cosLat = Math.cos((lat * Math.PI) / 180);
+    const dLatM = (refLat - lat) * 111_320;
+    const dLngM = (refLng - lng) * 111_320 * cosLat;
+    const refPx =
+      extracted.imageWidth / 2 + (dLngM / mPerPx) * (extracted.imageWidth / 1280);
+    const refPy =
+      extracted.imageHeight / 2 - (dLatM / mPerPx) * (extracted.imageHeight / 1280);
+
+    // For each prediction, compute pixel centroid and squared distance to ref
+    let bestIdx = -1;
+    let bestDistSqPx = Infinity;
+    const summaries: Array<{ idx: number; distPx: number; areaPx: number }> = [];
+    for (let i = 0; i < extracted.predictions.length; i++) {
+      const pred = extracted.predictions[i];
+      let cx = 0;
+      let cy = 0;
+      for (const [x, y] of pred.pixels) {
+        cx += x;
+        cy += y;
+      }
+      cx /= pred.pixels.length;
+      cy /= pred.pixels.length;
+      const dx = cx - refPx;
+      const dy = cy - refPy;
+      const dSq = dx * dx + dy * dy;
+      summaries.push({ idx: i, distPx: Math.sqrt(dSq), areaPx: pred.pixelArea });
+      if (dSq < bestDistSqPx) {
+        bestDistSqPx = dSq;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx >= 0) {
+      const chosen = extracted.predictions[bestIdx];
+      // Apply DP simplification only to the chosen polygon — saves work
+      // since we'd otherwise simplify all candidates.
+      const epsilon = Number(process.env.SAM3_SIMPLIFY_EPSILON ?? "6");
+      pickedPixels =
+        chosen.pixels.length > 8 && epsilon > 0
+          ? douglasPeucker(chosen.pixels, epsilon)
+          : chosen.pixels;
+      const distPx = Math.sqrt(bestDistSqPx);
+      const distM = distPx * mPerPx * (1280 / extracted.imageWidth);
+      pickReasonForLog =
+        `picked prediction ${bestIdx + 1}/${extracted.predictions.length} ` +
+        `(closest to ${refSource}, ${distM.toFixed(1)}m away in image space, ` +
+        `${pickedPixels.length} verts after simplification)`;
+      // Verbose candidate summary for tuning. Useful when picker chooses
+      // wrong and we need to know what alternatives existed.
+      const altSummary = summaries
+        .sort((a, b) => a.distPx - b.distPx)
+        .slice(0, 5)
+        .map((s) => `[${s.idx}: ${s.distPx.toFixed(0)}px ${s.areaPx.toFixed(0)}area]`)
+        .join(" ");
+      console.log(
+        `[sam3-roof] ${pickReasonForLog} | candidates: ${altSummary}`,
+      );
+    }
+  }
+
+  const sam3LatLng = pickedPixels && extracted
     ? pixelPolygonToLatLng({
-        pixels: extracted.pixels,
+        pixels: pickedPixels,
         centerLat: lat,
         centerLng: lng,
         imageWidth: extracted.imageWidth,
