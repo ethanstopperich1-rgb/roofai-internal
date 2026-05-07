@@ -342,8 +342,12 @@ export async function GET(req: Request) {
   // Diagnostic mode — bypass cache so toggling the flag takes effect on
   // the next call. Set SAM3_DIAGNOSTIC_MODE=true in Vercel env to enable.
   const diagnosticMode = process.env.SAM3_DIAGNOSTIC_MODE === "true";
+  // ?nocache=1 query param — surgical cache-bust for testing workflow
+  // changes without flipping diagnostic mode. Reconciler still runs.
+  const noCache = searchParams.get("nocache") === "1";
+  const skipCache = diagnosticMode || noCache;
 
-  if (!diagnosticMode) {
+  if (!skipCache) {
     const cached = await getCached<Sam3CachedResult | null>("sam3-roof", lat, lng);
     if (cached !== null) {
       if (cached === undefined) {
@@ -501,7 +505,7 @@ export async function GET(req: Request) {
   if (!reconciled) {
     // Cache the miss as `null` so we don't re-call Roboflow on retry storms.
     // Sentinel pattern matches /api/microsoft-building, /api/solar-mask.
-    if (!diagnosticMode) {
+    if (!skipCache) {
       await setCached<Sam3CachedResult | null>("sam3-roof", lat, lng, null);
     }
     return NextResponse.json(
@@ -514,7 +518,7 @@ export async function GET(req: Request) {
     ...reconciled,
     computedAt: new Date().toISOString(),
   };
-  if (!diagnosticMode) {
+  if (!skipCache) {
     await setCached("sam3-roof", lat, lng, result);
   }
 
