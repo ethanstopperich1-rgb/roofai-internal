@@ -10,7 +10,10 @@ import { polygonAreaSqft } from "@/lib/polygon";
 import type { SolarSummary } from "@/types/estimate";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+// 90s allows for SAM3 cold starts (which can take 30-60s on Roboflow's
+// serverless infra) plus reconciliation + GIS lookups. Vast majority of
+// calls complete in 5-10s; the headroom only matters for cold starts.
+export const maxDuration = 90;
 
 /**
  * GET /api/sam3-roof?lat=..&lng=..
@@ -390,7 +393,11 @@ export async function GET(req: Request) {
           pixels_per_unit: pixelsPerFoot(lat),
         },
       }),
-      signal: AbortSignal.timeout(45_000),
+      // 75s timeout — Roboflow serverless cold starts can take 30-60s
+      // when the model hasn't been called recently. Most warm calls
+      // complete in 5-10s. Keeps 15s headroom under our 90s maxDuration
+      // for reconciliation + GIS fetches.
+      signal: AbortSignal.timeout(75_000),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");

@@ -107,7 +107,16 @@ async function queryOverpass(
   try {
     const res = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        // Overpass mirrors block requests without a meaningful User-Agent.
+        // We were getting 406/429/403 across all three mirrors before this
+        // header, which left the GIS reconciler with no fallback for FL
+        // addresses (MS Buildings is TN-only). Per Overpass etiquette,
+        // include a contact in the UA so they can reach us if we abuse it.
+        "User-Agent":
+          "voxaris-pitch/1.0 (https://pitch.voxaris.io; contact: hello@voxaris.io)",
+      },
       body: `data=${encodeURIComponent(query)}`,
       cache: "no-store",
       signal: AbortSignal.timeout(QUERY_TIMEOUT_S * 1000 + 2000),
