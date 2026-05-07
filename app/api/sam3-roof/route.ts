@@ -322,7 +322,15 @@ async function resolveBuildingCenter(
   lat: number,
   lng: number,
 ): Promise<{ lat: number; lng: number; source: string }> {
-  // 1. Solar findClosest's buildingCenter (cheapest — read from Redis cache)
+  // 1. Solar findClosest's buildingCenter (try Redis cache first, fall
+  //    through to a direct Solar API call if the cache is empty).
+  //
+  //    Why the direct call — the page fires /api/solar AND /api/sam3-roof
+  //    in parallel. /api/sam3-roof reaches resolveBuildingCenter at the
+  //    very start of the route (before its 5-15s Roboflow workflow), so
+  //    /api/solar typically hasn't finished and written to cache yet.
+  //    Without a direct fallback we end up using the address as the
+  //    reference, which is exactly what we're trying to avoid.
   const solarCached = await getCached<SolarSummary>("solar", lat, lng).catch(() => null);
   if (solarCached?.buildingCenter) {
     return {
@@ -330,6 +338,42 @@ async function resolveBuildingCenter(
       lng: solarCached.buildingCenter.lng,
       source: "solar-buildingCenter",
     };
+  }
+  // Cache miss — call Solar findClosest directly. Just need data.center;
+  // we don't need to parse the full SolarSummary here. /api/solar will
+  // race-write the full summary into cache shortly anyway.
+  if (!solarCached) {
+    const solarKey =
+      process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
+    if (solarKey) {
+      try {
+        const url =
+          `https://solar.googleapis.com/v1/buildingInsights:findClosest` +
+          `?location.latitude=${lat}&location.longitude=${lng}` +
+          `&requiredQuality=HIGH&key=${solarKey}`;
+        const res = await fetch(url, {
+          cache: "no-store",
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as {
+            center?: { latitude?: number; longitude?: number };
+          };
+          if (
+            typeof data.center?.latitude === "number" &&
+            typeof data.center?.longitude === "number"
+          ) {
+            return {
+              lat: data.center.latitude,
+              lng: data.center.longitude,
+              source: "solar-buildingCenter-direct",
+            };
+          }
+        }
+      } catch {
+        // fall through to other sources
+      }
+    }
   }
 
   // 2. Solar mask polygon centroid (also Redis-cached when /api/solar-mask fired)
