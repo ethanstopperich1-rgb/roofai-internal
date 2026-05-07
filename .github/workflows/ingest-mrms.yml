@@ -1,0 +1,66 @@
+name: Ingest MRMS hail
+
+# Daily ingest of NOAA MRMS Maximum Estimated Size of Hail (MESH).
+#
+# Why GitHub Actions (not Vercel Cron):
+#   The MESH GRIB2 files use template 41 (PNG-compressed data section).
+#   Decoding requires the eccodes C library, which Vercel's Python
+#   serverless runtime can't `apt-get install`. GH Actions Ubuntu
+#   runners can. The decoded JSON is then uploaded to Vercel Blob,
+#   where the hot-path /api/hail-mrms route reads it without needing
+#   any GRIB2 dependency on the Vercel side.
+#
+# Schedule: 02:30 UTC daily — late enough that the previous day's
+# 23:30 UTC MESH file has been published and propagated to the AWS
+# bucket, early enough that the data is fresh for the morning rep
+# workflow (08:00 ET = 13:00 UTC).
+#
+# Cost: $0. GH Actions free tier covers 2,000 min/mo for private repos
+# and unlimited for public. This job runs ~90s/day = 45 min/mo.
+
+on:
+  schedule:
+    - cron: "30 2 * * *" # 02:30 UTC daily
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "YYYYMMDD (default: yesterday UTC)"
+        required: false
+        default: ""
+      backfill:
+        description: "Backfill range YYYY-MM-DD:YYYY-MM-DD (e.g. 2024-01-01:2024-12-31)"
+        required: false
+        default: ""
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install eccodes (system C library for GRIB2 decoding)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libeccodes-dev libeccodes-tools
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python deps
+        run: pip install pygrib numpy
+
+      - name: Run ingest
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.backfill }}" ]; then
+            python scripts/ingest_mrms.py --backfill "${{ inputs.backfill }}"
+          elif [ -n "${{ inputs.date }}" ]; then
+            python scripts/ingest_mrms.py --date "${{ inputs.date }}"
+          else
+            python scripts/ingest_mrms.py --date yesterday
+          fi

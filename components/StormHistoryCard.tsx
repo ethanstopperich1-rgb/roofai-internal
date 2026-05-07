@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CloudHail, Loader2, Tornado, Wind } from "lucide-react";
+import { CloudHail, Loader2, Radar, Tornado, Wind } from "lucide-react";
 
 interface StormEvent {
   type: string;
@@ -26,8 +26,28 @@ interface ApiResp {
   error?: string;
 }
 
+/** Radar-derived (MRMS) hail event payload from `/api/hail-mrms`. */
+interface MrmsEvent {
+  date: string; // YYYYMMDD
+  maxInches: number;
+  maxMm: number;
+  hitCount: number;
+  distanceMiles: number;
+}
+
+interface MrmsResp {
+  events: MrmsEvent[];
+  source: string;
+  coverage: {
+    yearsAvailable: number;
+    earliestDate: string | null;
+    latestDate: string | null;
+  };
+}
+
 export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: number }) {
   const [data, setData] = useState<ApiResp | null>(null);
+  const [mrms, setMrms] = useState<MrmsResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [expanded, setExpanded] = useState(false);
@@ -37,13 +57,28 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
     setLoading(true);
     setError("");
     setData(null);
-    fetch(`/api/storms?lat=${lat}&lng=${lng}&radiusMiles=3&yearsBack=5`)
-      .then(async (r) => {
-        const d = await r.json();
-        if (!r.ok) throw new Error(d.error || `storms_${r.status}`);
-        return d as ApiResp;
-      })
-      .then(setData)
+    setMrms(null);
+    // Fire both data sources in parallel — NOAA SPC (human-filed Local
+    // Storm Reports via BigQuery) is the legal "documented event"
+    // record carriers respect; MRMS is the radar-derived 1km grid that
+    // catches sub-1" events SPC misses. Show both, label the source.
+    Promise.all([
+      fetch(`/api/storms?lat=${lat}&lng=${lng}&radiusMiles=3&yearsBack=5`)
+        .then(async (r) => {
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.error || `storms_${r.status}`);
+          return d as ApiResp;
+        })
+        .then(setData),
+      // MRMS is best-effort — if the Blob index hasn't been backfilled
+      // yet (no GH Actions runs) the route returns an empty events
+      // array, and we just don't surface the radar section. Never
+      // throws — UX degrades silently to SPC-only.
+      fetch(`/api/hail-mrms?lat=${lat}&lng=${lng}&yearsBack=2&radiusMiles=2&minInches=0.75`)
+        .then((r) => (r.ok ? (r.json() as Promise<MrmsResp>) : null))
+        .then((d) => setMrms(d ?? null))
+        .catch(() => undefined),
+    ])
       .catch((e) => setError(e instanceof Error ? e.message : "failed"))
       .finally(() => setLoading(false));
   }, [lat, lng]);
@@ -194,6 +229,54 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
           {events.length === 0 && (
             <div className="text-[12px] text-slate-500 italic">
               No reported severe weather within {s?.radiusMiles ?? 3} mi over the last 5 years.
+            </div>
+          )}
+
+          {/* Radar-derived hail (NOAA MRMS — 1km radar grid). Surfaces
+              when MRMS catches an event SPC missed, OR confirms an SPC
+              report with finer resolution. The "+ N more days" copy is
+              honest about the difference: SPC = filed reports, MRMS =
+              radar-detected (catches sub-1" hail SPC's threshold misses). */}
+          {mrms && mrms.events.length > 0 && (
+            <div className="pt-3 mt-1 border-t border-white/[0.04] space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-[0.14em] text-cy-300/90">
+                  <Radar size={11} />
+                  <span>Radar-detected hail</span>
+                </div>
+                <span className="text-[10px] font-mono text-slate-500">
+                  NOAA MRMS · 1km
+                </span>
+              </div>
+              <div className="space-y-1 max-h-48 overflow-auto">
+                {mrms.events.slice(0, 6).map((e) => (
+                  <div
+                    key={e.date}
+                    className="flex items-center justify-between gap-3 px-3 py-1.5 rounded-lg border border-cy-300/[0.10] bg-cy-300/[0.025] text-[12px]"
+                  >
+                    <div className="flex items-center gap-2">
+                      <CloudHail size={11} className="text-cy-300" />
+                      <span className="font-mono tabular text-slate-100 font-medium">
+                        {e.maxInches}″
+                      </span>
+                      <span className="text-slate-500 text-[11px]">
+                        · {e.hitCount} cell{e.hitCount === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-slate-500 font-mono tabular text-[11px] flex-shrink-0">
+                      <span>
+                        {e.date.slice(4, 6)}/{e.date.slice(6, 8)}/{e.date.slice(2, 4)}
+                      </span>
+                      <span>· {e.distanceMiles}mi</span>
+                    </div>
+                  </div>
+                ))}
+                {mrms.events.length > 6 && (
+                  <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 text-center pt-1.5">
+                    + {mrms.events.length - 6} more days
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
