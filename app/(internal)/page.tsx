@@ -149,6 +149,15 @@ export default function HomePage() {
   const [msBuildingPolygon, setMsBuildingPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // Custom SAM3 (Roboflow Workflow) with server-side GIS-footprint
+  // reconciliation. Sits at the top of the priority chain when available —
+  // trained on our service-area imagery, so it consistently outperforms
+  // the off-the-shelf Roboflow Satellite Rooftop Map and Solar mask on
+  // properties where Solar's photogrammetry has gaps. The route handles
+  // tree occlusion / wrong-building substitution before returning.
+  const [sam3Polygon, setSam3Polygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
   // Claude verification of the rendered polygon. Catches polygons traced
   // on the wrong building, neighbour's roof, covered patio over-traces.
   // When Claude flags an issue with high confidence (ok=false, conf>0.7),
@@ -310,6 +319,7 @@ export default function HomePage() {
     return polygonIsNearAddress(poly, address.lat, address.lng, PROXIMITY_M) ? poly : null;
   };
 
+  const validSam3 = useMemo(() => validateAtAddress(sam3Polygon), [sam3Polygon, address?.lat, address?.lng, buildingCenter]);
   const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng, buildingCenter]);
   const validRoboflow = useMemo(() => validateAtAddress(roboflowPolygon), [roboflowPolygon, address?.lat, address?.lng, buildingCenter]);
   const validSam = useMemo(() => validateAtAddress(samRefinedPolygon), [samRefinedPolygon, address?.lat, address?.lng, buildingCenter]);
@@ -522,6 +532,7 @@ export default function HomePage() {
   const polygonSource = useMemo<
     | "edited"
     | "tiles3d"
+    | "sam3"
     | "solar-mask"
     | "roboflow"
     | "solar"
@@ -532,6 +543,13 @@ export default function HomePage() {
     | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
+    // SAM3 (custom Roboflow Workflow) — top priority when it produces a
+    // polygon. The route already runs GIS reconciliation server-side, so
+    // a polygon coming back here has passed wrong-building / occlusion /
+    // over-trace checks. Still gate against absolute size + coverage as
+    // a belt-and-suspenders defence (cheap to compute, catches anything
+    // the server-side reconciler missed).
+    if (validSam3 && passesClaude("sam3") && passesAbsoluteSize(validSam3) && passesCoverage(validSam3) && passesComplexityPrior(validSam3)) return "sam3";
     // Coverage gating policy (revised 2026-05-06):
     //
     // • Solar mask: still gated against Solar's reported footprint via
@@ -580,6 +598,7 @@ export default function HomePage() {
     return "none";
   }, [
     livePolygons,
+    validSam3,
     validSolarMask,
     validRoboflow,
     solar?.segmentPolygonsLatLng,
@@ -606,6 +625,7 @@ export default function HomePage() {
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
     // NB: must mirror polygonSource priority above. tiles3d removed.
+    if (validSam3 && passesCoverage(validSam3)) return [validSam3];
     if (validSolarMask && passesCoverage(validSolarMask)) return [validSolarMask];
     if (validRoboflow && passesCoverage(validRoboflow)) return [validRoboflow];
     if (validSam && passesCoverage(validSam)) return [validSam];
@@ -620,6 +640,7 @@ export default function HomePage() {
     if (validClaude && passesCoverage(validClaude)) return [validClaude];
     return undefined;
   }, [
+    validSam3,
     validSolarMask,
     validRoboflow,
     solar?.segmentPolygonsLatLng,
@@ -995,6 +1016,7 @@ export default function HomePage() {
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
+    setSam3Polygon(null);
     setLivePolygons(null);
     hasUserEditedRef.current = false;
 
@@ -1081,6 +1103,22 @@ export default function HomePage() {
       })
       .catch(() => null);
 
+    // Custom SAM3 (Roboflow Workflow) with server-side GIS reconciliation.
+    // Top-priority polygon source — trained on our service-area imagery.
+    // ~5-10s latency (Roboflow inference + reconciliation), so we fire it
+    // in parallel with everything else and let the priority chain pick it
+    // up when it lands. Falls through silently when the kill switch is
+    // tripped or the route 404s.
+    const sam3Promise = fetch(`/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}`)
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const data = (await r.json()) as {
+          polygon?: Array<{ lat: number; lng: number }>;
+        };
+        return data.polygon && data.polygon.length >= 3 ? data.polygon : null;
+      })
+      .catch(() => null);
+
     // Compound-pipeline SAM refinement — fires in parallel with everything
     // else. ~5-10s latency on Replicate so the cheaper sources show first
     // and SAM "snaps" the polygon tighter when it returns.
@@ -1136,6 +1174,14 @@ export default function HomePage() {
     // MS Building Footprints — same edit-stomp guard.
     msBuildingPromise.then((msPoly) => {
       if (msPoly && !hasUserEditedRef.current) setMsBuildingPolygon(msPoly);
+    });
+
+    // SAM3 (custom) — same edit-stomp guard. Sits at the top of the
+    // priority chain; when it lands, the chain re-evaluates and the map
+    // re-renders with the SAM3 polygon (server-side reconciliation has
+    // already substituted the GIS footprint when SAM3 itself was wrong).
+    sam3Promise.then((sam3Poly) => {
+      if (sam3Poly && !hasUserEditedRef.current) setSam3Polygon(sam3Poly);
     });
 
     setAssumptions((a) => {
@@ -1219,6 +1265,7 @@ export default function HomePage() {
     setOsmBuildingPolygon(null);
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
+    setSam3Polygon(null);
     setRoboflowPolygon(null);
     setMsBuildingPolygon(null);
     setClaudeVerifications({});
@@ -1231,6 +1278,7 @@ export default function HomePage() {
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
     if (polygonSource === "edited") badges.push("Edited");
     else if (polygonSource === "tiles3d") badges.push("3D mesh");
+    else if (polygonSource === "sam3") badges.push("SAM3 (custom)");
     else if (polygonSource === "solar-mask") badges.push("Solar mask");
     else if (polygonSource === "roboflow") badges.push("Roof AI");
     else if (polygonSource === "sam") badges.push("SAM 2 refined");

@@ -245,6 +245,7 @@ export interface Estimate {
   polygonSource?:
     | "edited"
     | "tiles3d"
+    | "sam3"
     | "solar-mask"
     | "roboflow"
     | "solar"

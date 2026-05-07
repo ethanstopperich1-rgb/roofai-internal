@@ -17,6 +17,7 @@ interface Props {
   polygonSource?:
     | "edited"
     | "tiles3d"
+    | "sam3"
     | "solar-mask"
     | "roboflow"
     | "solar"

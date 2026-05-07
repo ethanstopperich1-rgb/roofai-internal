@@ -186,56 +186,72 @@ export default function QuotePage() {
         let resolvedPitch: string | null = null;
         let resolvedPolygon: Array<{ lat: number; lng: number }> | null = null;
 
-        // Tier 1 / 2 — Solar API. When Solar has data, fetch /api/solar-mask
-        // in parallel for the visual polygon (Solar's findClosest doesn't
-        // return a single outline; solar-mask traces it from dataLayers).
-        const [solarRes, solarMaskRes] = await Promise.all([
+        // Solar findClosest (cheap, $0.010) fires in parallel with our SAM3
+        // model — Solar gives us pitch + facet metadata regardless of which
+        // polygon source wins. SAM3 (Tier 1) is the new primary; Solar mask
+        // (Tier 2) is now a lazy fallback fired only when SAM3 returns
+        // nothing, saving the $0.075 dataLayers cost on the common path.
+        const [solarRes, sam3Res] = await Promise.all([
           fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`),
-          fetch(`/api/solar-mask?lat=${addr.lat}&lng=${addr.lng}`).catch(() => null),
+          fetch(`/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}`).catch(() => null),
         ]);
+
+        // Pitch + footprint baseline from Solar findClosest.
+        let pitchDegrees: number | null = null;
+        let solarFootprintSqft: number | null = null;
+        let solarSegmentSqft: number | null = null;
         if (solarRes.ok) {
           const data = await solarRes.json();
-          if (data.sqft) {
-            resolvedSqft = data.sqft;
-            resolvedPitch = data.pitch ?? null;
-          } else if (data.buildingFootprintSqft) {
-            // Solar saw the building but couldn't segment it — fall back
-            // to footprint × pitch (Solar's pitchDegrees if any, else 1.118).
-            const slope =
-              data.pitchDegrees && data.pitchDegrees > 0
-                ? 1 / Math.cos((data.pitchDegrees * Math.PI) / 180)
-                : 1.118;
-            resolvedSqft = Math.round(data.buildingFootprintSqft * slope);
-            resolvedPitch = data.pitch ?? null;
-          }
+          pitchDegrees = data.pitchDegrees ?? null;
+          solarFootprintSqft = data.buildingFootprintSqft ?? null;
+          solarSegmentSqft = data.sqft ?? null;
+          resolvedPitch = data.pitch ?? null;
         }
-        // If Solar provided sqft, prefer the solar-mask polygon as the
-        // visual (it's photogrammetric, matches Solar's measurement).
-        if (resolvedSqft && solarMaskRes && solarMaskRes.ok) {
+        const slope =
+          pitchDegrees && pitchDegrees > 0
+            ? 1 / Math.cos((pitchDegrees * Math.PI) / 180)
+            : 1.118; // default 6/12
+
+        // Tier 1 — Custom SAM3 (with GIS reconciliation built-in server-side)
+        if (sam3Res?.ok) {
           try {
-            const mask = await solarMaskRes.json();
+            const sam3 = await sam3Res.json();
             const poly: Array<{ lat: number; lng: number }> | null =
-              Array.isArray(mask?.latLng) && mask.latLng.length >= 3 ? mask.latLng : null;
-            if (poly) resolvedPolygon = poly;
+              Array.isArray(sam3?.polygon) && sam3.polygon.length >= 3 ? sam3.polygon : null;
+            if (poly) {
+              const footprintSqft =
+                typeof sam3.footprintSqft === "number" && sam3.footprintSqft > 0
+                  ? sam3.footprintSqft
+                  : polygonAreaSqftLocal(poly);
+              if (footprintSqft >= 200 && footprintSqft <= 20_000) {
+                resolvedPolygon = poly;
+                resolvedSqft = Math.round(footprintSqft * slope);
+              }
+            }
           } catch {
-            /* opportunistic */
+            /* fall through to Solar mask */
           }
         }
 
-        // Tier 3 — Roboflow polygon (when no Solar data, or Solar gave us
-        // a number but solar-mask didn't return a polygon).
-        if (!resolvedSqft || !resolvedPolygon) {
+        // Tier 2 — Solar mask. LAZY fallback: only fires when SAM3 didn't
+        // return a usable polygon. Saves the $0.075 dataLayers cost on the
+        // common path where SAM3 wins.
+        if (!resolvedPolygon) {
           try {
-            const rfRes = await fetch(`/api/roboflow?lat=${addr.lat}&lng=${addr.lng}`);
-            if (rfRes.ok) {
-              const rf = await rfRes.json();
+            const maskRes = await fetch(
+              `/api/solar-mask?lat=${addr.lat}&lng=${addr.lng}`,
+            );
+            if (maskRes.ok) {
+              const mask = await maskRes.json();
               const poly: Array<{ lat: number; lng: number }> | null =
-                Array.isArray(rf?.polygon) && rf.polygon.length >= 3 ? rf.polygon : null;
+                Array.isArray(mask?.latLng) && mask.latLng.length >= 3 ? mask.latLng : null;
               if (poly) {
-                const sqft = polygonAreaSqftLocal(poly);
-                if (sqft >= 200 && sqft <= 20_000) {
-                  if (!resolvedSqft) resolvedSqft = Math.round(sqft * 1.118);
-                  if (!resolvedPolygon) resolvedPolygon = poly;
+                const footprintSqft = polygonAreaSqftLocal(poly);
+                if (footprintSqft >= 200 && footprintSqft <= 20_000) {
+                  resolvedPolygon = poly;
+                  // Solar mask traces eaves photogrammetrically — apply pitch
+                  // slope (no overhang multiplier needed; mask already includes it)
+                  resolvedSqft = Math.round(footprintSqft * slope);
                 }
               }
             }
@@ -244,8 +260,8 @@ export default function QuotePage() {
           }
         }
 
-        // Tier 4 — Microsoft Buildings footprint (last resort before manual)
-        if (!resolvedSqft || !resolvedPolygon) {
+        // Tier 3 — Microsoft Buildings footprint (last resort before manual)
+        if (!resolvedPolygon) {
           try {
             const msRes = await fetch(
               `/api/microsoft-building?lat=${addr.lat}&lng=${addr.lng}`,
@@ -255,16 +271,28 @@ export default function QuotePage() {
               const poly: Array<{ lat: number; lng: number }> | null =
                 Array.isArray(ms?.polygon) && ms.polygon.length >= 3 ? ms.polygon : null;
               if (poly) {
-                const sqft = polygonAreaSqftLocal(poly);
-                if (sqft >= 200 && sqft <= 20_000) {
-                  if (!resolvedSqft) resolvedSqft = Math.round(sqft * 1.118);
-                  if (!resolvedPolygon) resolvedPolygon = poly;
+                const footprintSqft = polygonAreaSqftLocal(poly);
+                if (footprintSqft >= 200 && footprintSqft <= 20_000) {
+                  resolvedPolygon = poly;
+                  // MS Buildings is ground-projected wall footprint — apply
+                  // 1.06 eave overhang factor before pitch.
+                  resolvedSqft = Math.round(footprintSqft * 1.06 * slope);
                 }
               }
             }
           } catch {
             /* opportunistic */
           }
+        }
+
+        // Solar segments-sum sqft (preferred if Solar gave us a real number
+        // and we don't yet have a polygon-derived measurement).
+        if (!resolvedSqft && solarSegmentSqft) {
+          resolvedSqft = solarSegmentSqft;
+        }
+        // Last-ditch: footprint × pitch from Solar findClosest, no polygon.
+        if (!resolvedSqft && solarFootprintSqft) {
+          resolvedSqft = Math.round(solarFootprintSqft * slope);
         }
 
         if (resolvedSqft) setSqft(resolvedSqft);
