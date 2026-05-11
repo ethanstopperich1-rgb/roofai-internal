@@ -14,7 +14,6 @@ import VisionPanel from "@/components/VisionPanel";
 import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
-import RoofBlueprint from "@/components/RoofBlueprint";
 import PolygonSizeWarning from "@/components/PolygonSizeWarning";
 import SectionHeader from "@/components/SectionHeader";
 import OutlineQualityWarning from "@/components/OutlineQualityWarning";
@@ -25,12 +24,7 @@ import CarrierClaimPanel from "@/components/CarrierClaimPanel";
 import SupplementAnalyzerPanel from "@/components/SupplementAnalyzerPanel";
 import type { PhotoMeta } from "@/types/photo";
 import type { ClaimContext } from "@/lib/carriers";
-import dynamic from "next/dynamic";
 import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
-
-const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
-  ssr: false,
-});
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
 import { generatePdf, buildSummaryText } from "@/lib/pdf";
@@ -1478,90 +1472,21 @@ export default function HomePage() {
               onPolygonsChanged={handlePolygonsChanged}
               pitchDegrees={solar?.pitchDegrees ?? null}
             />
-            {/* Defer mounting Cesium until generation finishes. Cesium's
-              * first-paint downloads global tiles + builds a heavy octree
-              * for raycasting; doing that while the QuantumPulseLoader is
-              * on screen starves the GPU and visibly stutters the loader
-              * animation. Mounting after loading puts the cost on a fresh
-              * frame instead of competing with it. */}
-            {address?.lat != null && address?.lng != null && !visionLoading && (
-              <Roof3DViewer
-                // key forces a hard remount on every address change so the
-                // previous house's Cesium camera/tiles can't linger.
-                key={`${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
-                lat={address.lat}
-                lng={address.lng}
-                address={address.formatted}
-                polygons={activePolygons}
-                polygonSource={polygonSource === "none" ? undefined : polygonSource}
-                polygonsHidden={!polygonReady}
-                expectedFootprintSqft={referenceFootprintSqft}
-                imageryDate={solar?.imageryDate ?? null}
-                // Multi-view verify (Claude vision QA) intentionally disabled.
-                // Reconciler now catches wrong-building cases via centroid
-                // drift + IoU floor — verify was redundant and cost ~$0.04
-                // per polygon load. To re-enable, restore the
-                // onMultiViewVerified callback that wired into
-                // setClaudeVerifications.
-              />
-            )}
+            {/* Roof3DViewer (Cesium photogrammetric 3D) was removed — it
+                was visually impressive but unreliable on rural FL
+                properties where the geocoded pin lands between
+                outbuildings and the main house, leading to the wrong
+                structure being highlighted. Reps were spending more
+                time correcting the 3D view than it saved them. The
+                top-down satellite + 2D polygon trace in MapView above
+                is the source of truth. */}
           </section>
 
-          {/* ═══ 02 ROOF GEOMETRY — blueprint ═══════════════════════════ */}
-          {polygonReady && activePolygons && activePolygons.length > 0 && (
-            <SectionHeader
-              index={2}
-              title="Roof geometry"
-              caption={`${assumptions.sqft.toLocaleString()} sf · ${assumptions.pitch}`}
-            />
-          )}
-
-          {/* The parametric 3D roof-framing card was REMOVED — straight-
-              skeleton extrusion didn't reliably produce a recognizable
-              framing visualization across the polygon-source mix we ship,
-              and the per-edge LF readouts (hip / eaves / peak) were
-              unreliable because they were derived from a synthetic
-              skeleton rather than measured from the polygon. The
-              architectural blueprint card below carries the same
-              measurements (eaves / rakes / ridges / valleys) measured
-              directly from the polygon edges — same data, more reliable
-              math, no empty-canvas failure mode.
-
-              Roof3DViewer (Cesium photogrammetric) above already gives
-              the rep a real 3D look at the property, so the parametric
-              card was redundant on top of that. */}
-
-          {/* ─── Architectural blueprint of the traced roof ─────────────── */}
-          {polygonReady && activePolygons && activePolygons.length > 0 && (
-            <RoofBlueprint
-              polygons={activePolygons}
-              editing={polygonSource === "edited"}
-              pitchDegrees={solar?.pitchDegrees ?? null}
-              address={address?.formatted}
-              pitchLabel={assumptions.pitch}
-              sourceLabel={
-                polygonSource === "tiles3d"
-                  ? "3D mesh"
-                  : polygonSource === "solar-mask"
-                    ? "Solar mask"
-                    : polygonSource === "roboflow"
-                      ? "Roof AI"
-                      : polygonSource === "solar"
-                        ? `Solar · ${activePolygons.length} ${activePolygons.length === 1 ? "facet" : "facets"}`
-                        : polygonSource === "sam"
-                          ? "SAM 2 refined"
-                          : polygonSource === "osm"
-                            ? "OSM traced"
-                            : polygonSource === "microsoft-buildings"
-                              ? "MS Footprints"
-                              : polygonSource === "ai"
-                                ? "AI traced"
-                                : polygonSource === "edited"
-                                  ? "Edited by hand"
-                                  : undefined
-              }
-            />
-          )}
+          {/* The "Roof geometry" section (parametric 3D + architectural
+              blueprint card) was removed — same reason as above. The
+              2D polygon trace + MapView already conveys the geometry
+              data the rep needs, and the blueprint was duplicating
+              measurements already shown in the Measurements panel. */}
 
           {/* ═══ 03 QUALITY & COMPLIANCE ═══════════════════════════════ */}
           {/* Section header only when there's actually something to show
