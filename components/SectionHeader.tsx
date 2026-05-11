@@ -27,21 +27,29 @@ interface Props {
  */
 export default function SectionHeader({ index, title, caption, trailing }: Props) {
   return (
-    <div className="flex items-end justify-between gap-4 pt-2 -mb-1 flex-wrap">
+    <div className="flex items-end justify-between gap-4 pt-2 pb-2 flex-wrap">
       <div className="flex items-baseline gap-3 min-w-0">
         {index != null && (
           <span
-            className="font-mono text-[10px] uppercase tracking-[0.18em] text-cy-300/90 px-2 py-0.5 rounded-full border border-cy-300/30 bg-cy-300/5"
+            className="font-mono text-[10px] uppercase tracking-[0.18em] text-cy-300/90 px-2 py-0.5 rounded-full border border-cy-300/30 bg-cy-300/5 flex-shrink-0"
             aria-hidden
           >
             {typeof index === "number" ? String(index).padStart(2, "0") : index}
           </span>
         )}
-        <h2 className="font-display text-[18px] sm:text-[20px] md:text-[22px] leading-tight tracking-tight font-semibold text-slate-100">
+        <h2 className="font-display text-[18px] sm:text-[20px] md:text-[22px] leading-tight tracking-tight font-semibold text-slate-100 whitespace-nowrap">
           {title}
         </h2>
         {caption && (
-          <span className="hidden md:inline text-[12px] text-slate-400 font-mono uppercase tracking-[0.12em] truncate">
+          // Inline `truncate` only works on block-level elements. Wrap the
+          // caption so it actually truncates rather than overflowing the
+          // header row when the caption is long (e.g. "asphalt architectural
+          // · reroof tearoff"). Hidden under md so it doesn't compete with
+          // the title at narrow widths.
+          <span
+            className="hidden md:inline-block min-w-0 flex-1 max-w-[320px] truncate text-[11.5px] text-slate-500 font-mono uppercase tracking-[0.12em]"
+            title={caption}
+          >
             · {caption}
           </span>
         )}

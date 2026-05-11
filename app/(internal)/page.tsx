@@ -1486,7 +1486,8 @@ export default function HomePage() {
             {shown && (
               <button
                 onClick={reset}
-                className="flex-shrink-0 inline-flex items-center justify-center gap-1.5 px-3.5 rounded-[0.7rem] border border-white/[0.075] bg-black/30 text-slate-200 text-[13px] font-medium tracking-tight transition hover:border-white/[0.18] hover:bg-black/40"
+                className="flex-shrink-0 inline-flex items-center justify-center gap-1.5 px-3.5 rounded-[0.7rem] border border-white/[0.10] bg-ink-800 text-slate-200 text-[13px] font-medium tracking-tight transition hover:border-white/[0.20] hover:bg-ink-700"
+                aria-label="Start new estimate"
               >
                 <RotateCcw size={13} />
                 <span className="hidden sm:inline">New</span>

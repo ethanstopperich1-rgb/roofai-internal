@@ -163,10 +163,13 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
           style={{ background: "radial-gradient(closest-side, rgba(243,177,75,0.18), transparent)" }}
         />
       )}
-      <div className="relative flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2.5">
+      {/* Header: title + radius selector. The "Insurance candidate" pill
+          moves to its own row below when present — three elements in one
+          flex line crammed the title and cropped the pill at narrow widths. */}
+      <div className="relative flex items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2.5 min-w-0">
           <div
-            className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+            className={`w-8 h-8 rounded-xl flex-shrink-0 flex items-center justify-center ${
               insuranceWorthy
                 ? "bg-amber/10 border border-amber/30 text-amber"
                 : "bg-cy-300/10 border border-cy-300/20 text-cy-300"
@@ -174,8 +177,10 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
           >
             <CloudHail size={14} />
           </div>
-          <div>
-            <div className="font-display font-semibold tracking-tight text-[15px]">Storm History</div>
+          <div className="min-w-0">
+            <div className="font-display font-semibold tracking-tight text-[15px] whitespace-nowrap">
+              Storm History
+            </div>
             <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500 -mt-0.5">
               {radiusMi} mi · 5 yr
             </div>
@@ -183,7 +188,7 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
         </div>
         {/* Rep-adjustable radius. Changes refire BOTH SPC and MRMS so
             the lists stay in sync. MRMS clamps to 5mi server-side. */}
-        <div className="flex items-center gap-1 rounded-lg p-0.5 border border-white/[0.06] bg-white/[0.02]">
+        <div className="flex-shrink-0 flex items-center gap-1 rounded-lg p-0.5 border border-white/[0.06] bg-white/[0.02]">
           {RADIUS_OPTIONS.map((mi) => (
             <button
               key={mi}
@@ -199,19 +204,21 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
             </button>
           ))}
         </div>
-        {insuranceWorthy && (
+      </div>
+      {insuranceWorthy && (
+        <div className="relative mb-3">
           <span
-            className="chip"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[10.5px] uppercase tracking-[0.12em]"
             style={{
               background: "rgba(243,177,75,0.12)",
-              borderColor: "rgba(243,177,75,0.40)",
+              border: "1px solid rgba(243,177,75,0.40)",
               color: "#f3b14b",
             }}
           >
-            Insurance candidate
+            <Crosshair size={11} /> Insurance candidate
           </span>
-        )}
-      </div>
+        </div>
+      )}
 
       {loading && (
         <div className="flex items-center gap-2 text-[12px] text-slate-400">

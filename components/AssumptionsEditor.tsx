@@ -113,20 +113,20 @@ export default function AssumptionsEditor({ value, onChange }: Props) {
       </div>
 
       {/* Pitch + age */}
-      <div className="grid grid-cols-[1fr_auto] gap-5">
-        <div>
+      <div className="grid grid-cols-[1fr_auto] gap-4">
+        <div className="min-w-0">
           <div className="label mb-2">Pitch</div>
-          <div className="flex p-1 rounded-xl bg-black/20 border border-white/[0.06]">
+          <div className="flex gap-1 p-1 rounded-xl bg-black/20 border border-white/[0.06]">
             {PITCHES.map((p) => {
               const active = value.pitch === p;
               return (
                 <button
                   key={p}
                   onClick={() => set("pitch", p)}
-                  className={`flex-1 py-1.5 rounded-lg text-[12px] font-mono tabular transition ${
+                  className={`flex-1 px-1 py-1.5 rounded-lg text-[11.5px] font-mono tabular transition whitespace-nowrap ${
                     active
                       ? "bg-white/10 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
-                      : "text-slate-400 hover:text-slate-200"
+                      : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]"
                   }`}
                 >
                   {p}
