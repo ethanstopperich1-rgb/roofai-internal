@@ -334,23 +334,23 @@ export function BoltStyleHero({
               <div className="hidden sm:grid grid-cols-3 gap-3 mt-7">
                 <Trust
                   icon={<Sparkles size={13} />}
-                  title="Voxaris in-house AI"
-                  body="Proprietary roof model. No third-party APIs."
+                  title="Voxaris In-House AI"
+                  body="Our proprietary roof model, trained exclusively on high-resolution imagery from Florida, Minnesota, and Texas. No third-party APIs."
                 />
                 <Trust
                   icon={<ShieldCheck size={13} />}
-                  title="Private"
-                  body="Your address is never sold or shared."
+                  title="Private by Design"
+                  body="Your address and information are never sold or shared with anyone."
                 />
                 <Trust
                   icon={<ShieldCheck size={13} />}
-                  title="No obligation"
-                  body="See the price before sharing more."
+                  title="See Your Price First"
+                  body="Get a real estimate range before you share anything else. Zero obligation."
                 />
               </div>
               <div className="sm:hidden mt-5 flex items-center justify-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-400 px-4">
                 <Sparkles size={11} className="text-cy-300" />
-                <span>Voxaris in-house AI · Private · No obligation</span>
+                <span>Voxaris in-house AI · Private by design · No obligation</span>
               </div>
             </>
           )}

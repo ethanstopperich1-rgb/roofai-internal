@@ -83,17 +83,17 @@ const STEPS: Step[] = [
   {
     icon: <Search size={22} />,
     title: "Enter your address",
-    body: "Just your street address — no measurements, no calls, no in-home visit. We pull your roof from satellite the moment you submit.",
+    body: "Just your street address. We instantly pull your roof from satellite imagery the moment you submit.",
   },
   {
     icon: <Satellite size={22} />,
     title: "AI measures your roof",
-    body: "Voxaris's in-house roof segmentation model identifies square footage, pitch, and complexity in seconds — trained on hundreds of thousands of FL, MN, and TX residential roofs.",
+    body: "Voxaris's proprietary segmentation model calculates square footage, pitch, and roof complexity in seconds — trained specifically on residential roofs across FL, MN, and TX.",
   },
   {
     icon: <Wrench size={22} />,
     title: "See your estimate, pick a contractor",
-    body: "Pick your preferred material; see the price range. A vetted local roofer follows up only if you ask. Zero obligation otherwise.",
+    body: "Choose your preferred material and instantly see a price range. A vetted local roofer will only follow up if you want them to. Otherwise, you're done.",
   },
 ];
 
@@ -107,7 +107,7 @@ export function HowItWorks() {
         <SectionHeading
           eyebrow="How it works"
           title="Three steps. About thirty seconds."
-          sub="No measuring tape. No salesperson at the door."
+          sub="No measuring tape. No salesperson at your door."
         />
 
         {/* Desktop: vertical timeline. Massive numeral on the left in
@@ -171,35 +171,35 @@ interface FaqItem {
 const FAQS: FaqItem[] = [
   {
     q: "How accurate is the satellite estimate?",
-    a: "Within ~10% of an in-person quote on most residential properties. Voxaris's in-house roof-segmentation model identifies your roof from high-resolution aerial imagery, measures pitch and complexity, and applies regional waste factors — all in seconds. Older imagery (>5 years) carries a wider band; we flag that explicitly when relevant.",
+    a: "On most residential properties, Voxaris estimates come within ~10% of an in-person quote. Our in-house model analyzes high-resolution aerial imagery to measure square footage, pitch, and complexity, then applies regional waste factors. On properties with imagery older than 5 years, we show a wider accuracy band and flag it clearly. In those cases, we recommend getting on-site confirmation before moving forward.",
   },
   {
     q: "How is this free? What's the catch?",
-    a: "Partner roofing contractors pay us a small fee when a homeowner becomes their customer — never the homeowner. You see the estimate, pick a contractor (or don't), and only the chosen contractor pays. There are no hidden fees, no \"premium\" upsells, and no charge for the estimate itself.",
+    a: "Voxaris is paid by the roofing contractor you choose — not by you. We only get paid if you decide to move forward with one of our vetted partners. There are no hidden fees, no markups on materials, and no obligation to hire anyone. You see your estimate first. What you do after that is entirely up to you.",
   },
   {
     q: "Will I get spam-called by a bunch of contractors?",
-    a: "No. Your information goes to one contractor — the one you pick from your estimate page — not a network. We never sell your address, email, or phone to third parties or marketing lists. The only follow-up is from the roofer you chose.",
+    a: "No. Your information is only shared with one contractor — the one you select from your estimate. We never sell or share your contact information with networks or marketing lists. The only person who will follow up is the roofer you chose (if you want them to).",
   },
   {
     q: "What materials and roof types do you cover?",
-    a: "Standard residential: 3-tab asphalt, architectural asphalt, metal standing-seam, and concrete tile. Specialty roofs (slate, cedar shake, flat membrane) require an in-person quote and may not return an instant estimate.",
+    a: "We provide instant estimates for the most common residential systems: 3-tab asphalt, architectural shingles, standing-seam metal, and concrete tile. Specialty roofs such as slate, cedar shake, and flat membrane systems typically require an on-site assessment and may not return an instant estimate.",
   },
   {
     q: "What if my roof needs repair, not replacement?",
-    a: "Partner contractors quote both repairs and replacements. The instant estimate covers full replacement; for a repair, request the contractor's follow-up — they'll provide a separate repair scope on-site at no charge.",
+    a: "Partner contractors can handle both repairs and full replacements. The instant estimate is designed for replacement scenarios. If you're looking for a repair, simply request a follow-up from the contractor — they'll provide a separate repair scope at no charge.",
   },
   {
     q: "Is there financing available?",
-    a: "Most partner contractors offer 0% APR financing for 12-18 months on roof replacements, plus 5-10 year traditional financing options. The contractor handles financing directly; the estimate page shows estimated monthly payments where available.",
+    a: "Yes. Most of our partner contractors offer 0% APR financing for 12–18 months on full roof replacements, along with longer-term traditional financing options. Financing is handled directly by the contractor. You'll see estimated monthly payment options on your estimate page when available.",
   },
   {
     q: "How long until I get a precise quote?",
-    a: "Within 1 business hour for an emailed quote, typically 1-3 business days for an in-person inspection if you request one. Storm-damage claims often qualify for same-day inspection.",
+    a: "You'll see an instant estimate range within seconds of submitting your address. If you'd like a more precise, on-site quote, a local contractor will typically respond within 1 business hour during normal business hours. Storm damage claims often qualify for same-day inspections.",
   },
   {
     q: "Does this work with insurance claims?",
-    a: "Yes. If your roof has storm damage, partner contractors document the loss with photos, drone or ladder inspection, and provide an Xactimate-compatible estimate package directly to your carrier. Most homeowners pay only their deductible.",
+    a: "Yes. If your roof was damaged in a storm, our partner contractors can document the loss with photos, drone imagery, or a ladder inspection. They'll prepare an Xactimate-compatible estimate package that you can submit directly to your insurance carrier. Most homeowners only pay their deductible.",
   },
 ];
 
