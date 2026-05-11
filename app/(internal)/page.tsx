@@ -488,6 +488,21 @@ export default function HomePage() {
     return sqft >= 200 && sqft <= 20_000;
   };
 
+  /** TIGHTER size gate for Claude vision specifically. Claude over-traces
+   *  routinely on rural / multi-building lots — it'll draw a single big
+   *  rectangle around the house + driveway + outbuildings rather than
+   *  isolate just the roof. Cap at 6,000 sqft to force fall-through to
+   *  "none" when Claude returns a clearly oversized rectangle. The rep
+   *  then gets the "Draw fresh" CTA instead of a bad auto-trace silently
+   *  driving a $200k estimate. Lower bound stays 200 (catches sheds). */
+  const passesClaudeSize = (
+    poly: Array<{ lat: number; lng: number }> | null | undefined,
+  ): boolean => {
+    if (!poly || poly.length < 3) return false;
+    const sqft = polygonAreaSqft(poly);
+    return sqft >= 200 && sqft <= 6_000;
+  };
+
   // Polygon source priority — best-quality first.
   //
   // tiles3d (3D mesh height extraction) was originally at #1 but DEMOTED
@@ -586,7 +601,13 @@ export default function HomePage() {
       );
       if (totalSqft >= 200 && totalSqft <= 20_000) return "solar";
     }
-    if (validClaude && passesClaude("ai") && passesAbsoluteSize(validClaude) && passesCoverage(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
+    // Claude vision is the LAST RESORT — gated tighter than other sources.
+    // Uses passesClaudeSize (6,000 sqft ceiling, vs 20,000 for others) to
+    // reject Claude's classic over-trace failure mode where it draws a big
+    // rectangle around the whole compound on rural / multi-building lots.
+    // When this gate fails, polygon source falls to "none" and the rep
+    // sees the "Draw fresh" CTA instead of a bad auto-trace.
+    if (validClaude && passesClaude("ai") && passesClaudeSize(validClaude) && passesCoverage(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
     return "none";
   }, [
     livePolygons,
