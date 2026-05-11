@@ -115,7 +115,11 @@ export interface SupplementFlag {
 // question each — composition is the analyzer's job.
 // ─────────────────────────────────────────────────────────────────────
 
-type Check = (ctx: SupplementContext) => SupplementFlag | null;
+/** Each rule's check receives both the eval context AND its own rule
+ *  object — eliminates the brittle `RULES[N].rule` self-reference
+ *  pattern that breaks any time a new rule is inserted in the middle
+ *  of the array. */
+type Check = (ctx: SupplementContext, rule: SupplementRule) => SupplementFlag | null;
 
 const RULES: Array<{ rule: SupplementRule; check: Check }> = [
   // ──────────────────────────────────────────────────────────────────
@@ -135,14 +139,14 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       xactimateCode: "O&P",
       severity: "required",
     },
-    check: (ctx) => {
+    check: (ctx, rule) => {
       if (ctx.carrierLineItems.length === 0) return null;
       // Already there? Done.
       if (ctx.carrierHasOP) return null;
       const subtotal = ctx.carrierSubtotal ?? 0;
       const dollars = subtotal > 0 ? Math.round(subtotal * 0.20) : null;
       return {
-        rule: RULES[0].rule,
+        rule,
         reason:
           "Scope subtotal is $" +
           (subtotal ? subtotal.toLocaleString() : "?") +
@@ -167,7 +171,7 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       xactimateCode: "RFG STEEP",
       severity: "expected",
     },
-    check: (ctx) => {
+    check: (ctx, rule) => {
       const steepPitches: Pitch[] = ["7/12", "8/12+"];
       const pitch = ctx.assumptions.pitch;
       if (!pitch || !steepPitches.includes(pitch)) return null;
@@ -177,7 +181,7 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       );
       if (hasSteep) return null;
       return {
-        rule: RULES[1].rule,
+        rule,
         reason: `Pitch measured at ${pitch}, but no steep-charge surcharge line was found in the carrier scope.`,
         estimatedDollars: null,
       };
@@ -200,11 +204,11 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       severity: "common",
       states: ["FL"],
     },
-    check: (ctx) => {
+    check: (ctx, rule) => {
       if (ctx.state !== "FL") return null;
       if ((ctx.assumptions.ageYears ?? 0) < 5) return null;
       return {
-        rule: RULES[2].rule,
+        rule,
         reason: `Property is in FL, roof age ${ctx.assumptions.ageYears}yr. Partial-slope claims at this age routinely qualify for §626.9744 matching — verify scope covers all slopes or push for matching.`,
         estimatedDollars: null,
       };
@@ -229,14 +233,14 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       severity: "required",
       states: ["FL"],
     },
-    check: (ctx) => {
+    check: (ctx, rule) => {
       if (ctx.state !== "FL") return null;
       const hasIWS = ctx.carrierLineItems.some((it) =>
         /ice.{0,3}(and|&|n).{0,3}water|i&w|\bIWS\b|\bIw\b/i.test(it.description),
       );
       if (hasIWS) return null;
       return {
-        rule: RULES[3].rule,
+        rule,
         reason:
           "FL property with no ice & water shield line found in scope. Required by FBC 7th ed. §R905.1.2 in HVHZ.",
         estimatedDollars: null,
@@ -258,14 +262,14 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       xactimateCode: "RFG DRIP",
       severity: "required",
     },
-    check: (ctx) => {
+    check: (ctx, rule) => {
       if (ctx.carrierLineItems.length === 0) return null;
       const hasDrip = ctx.carrierLineItems.some((it) =>
         /\bdrip[\s-]?edge\b|\bRFG.?DRIP\b/i.test(it.description),
       );
       if (hasDrip) return null;
       return {
-        rule: RULES[4].rule,
+        rule,
         reason: "No drip-edge line found in carrier scope. Required by IRC R905.2.8.5.",
         estimatedDollars: null,
       };
@@ -289,7 +293,7 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       xactimateCode: "MRMS-CONFIRM",
       severity: "advisory",
     },
-    check: (ctx) => {
+    check: (ctx, rule) => {
       const events = ctx.mrmsHailAroundDateOfLoss ?? [];
       if (events.length === 0 || !ctx.dateOfLoss) return null;
       const closest = events
@@ -309,7 +313,7 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       // later if we want).
       if (closest.delta < 1) return null;
       return {
-        rule: RULES[5].rule,
+        rule,
         reason: `Carrier DoL is ${ctx.dateOfLoss}, but radar shows ${closest.inches}" hail at ${closest.distanceMiles} mi away on ${closest.date} (Δ ${Math.round(closest.delta)} days).`,
         estimatedDollars: null,
       };
@@ -331,7 +335,7 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       xactimateCode: "RFG DECK",
       severity: "expected",
     },
-    check: (ctx) => {
+    check: (ctx, rule) => {
       if (ctx.carrierLineItems.length === 0) return null;
       const hasDecking = ctx.carrierLineItems.some((it) =>
         /\bdecking?\b|\bsheath(ing)?\b|\bplywood\b|\bOSB\b|\bRFG.?DECK\b/i.test(
@@ -340,9 +344,59 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       );
       if (hasDecking) return null;
       return {
-        rule: RULES[6].rule,
+        rule,
         reason: "No decking / sheathing / plywood line in carrier scope. 100 sqft allowance is standard.",
         estimatedDollars: null,
+      };
+    },
+  },
+
+  // ──────────────────────────────────────────────────────────────────
+  // Stale shingle pricing. The Q2 2026 manufacturer hikes (GAF +8%,
+  // CertainTeed +8%, Owens Corning/Atlas +5-8% effective April 2026,
+  // SRS distributor +6-10% June 2026) materially raised actual
+  // wholesale. Many carriers and Xactimate price-list updates lag by
+  // 60-90 days. If the carrier scope's per-square shingle line is
+  // below the Q2 2026 floor (~$280/SQ contractor cost or ~$5.50/sqft
+  // installed for architectural), it's using stale pricing the rep
+  // can challenge with current distributor invoices.
+  // ──────────────────────────────────────────────────────────────────
+  {
+    rule: {
+      id: "shingle-price-stale",
+      title: "Shingle pricing below Q2 2026 manufacturer hikes",
+      rationale:
+        "Major manufacturer list-price hikes effective April 2026: GAF and CertainTeed each up to 8% on architectural shingles, Owens Corning and Atlas 5-8%, with SRS distributors layering on an additional 6-10% effective June 2026. The carrier scope's per-square shingle rate sits below the post-hike contractor floor (~$280/square or ~$5.50/sqft installed for asphalt architectural). Request a price-list update or an updated unit cost backed by a current distributor invoice.",
+      xactimateCode: "RFG ARCH",
+      severity: "common",
+    },
+    check: (ctx, rule) => {
+      if (ctx.carrierLineItems.length === 0) return null;
+      // Only fires for asphalt — metal / tile pricing trajectory differs
+      if (
+        ctx.assumptions.material !== "asphalt-architectural" &&
+        ctx.assumptions.material !== "asphalt-3tab"
+      ) return null;
+      // Find the primary shingle line in the carrier scope
+      const shingleLine = ctx.carrierLineItems.find((it) =>
+        /(asphalt|architectural|shingle|RFG.?ARCH|RFG.?3T|comp)\b/i.test(
+          it.description,
+        ),
+      );
+      if (!shingleLine || shingleLine.unitCost == null) return null;
+      // Threshold: $280/SQ contractor, ~$2.80/sqft material-only.
+      // If the carrier rate is below this, they're using stale pricing.
+      // Allow Xactimate's typical 10% margin headroom over wholesale
+      // before flagging — only fire when rate is clearly below the
+      // post-hike floor.
+      const lowerBoundPerUnit = shingleLine.unit?.toUpperCase() === "SQ" ? 280 : 2.80;
+      if (shingleLine.unitCost >= lowerBoundPerUnit) return null;
+      return {
+        rule,
+        reason: `Carrier shingle unit cost is $${shingleLine.unitCost.toFixed(2)}/${shingleLine.unit ?? "?"} — below the post-April-2026 manufacturer-hike floor of ~$${lowerBoundPerUnit}/${shingleLine.unit ?? "unit"}.`,
+        estimatedDollars: shingleLine.quantity
+          ? Math.round(shingleLine.quantity * (lowerBoundPerUnit - shingleLine.unitCost))
+          : null,
       };
     },
   },
@@ -362,7 +416,7 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       xactimateCode: "RFG RDGV",
       severity: "common",
     },
-    check: (ctx) => {
+    check: (ctx, rule) => {
       if (ctx.carrierLineItems.length === 0) return null;
       const hasRidgeCap = ctx.carrierLineItems.some((it) =>
         /\bridge.?cap\b|\bRFG.?RIDG\b/i.test(it.description),
@@ -372,7 +426,7 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       );
       if (!hasRidgeCap || hasRidgeVent) return null;
       return {
-        rule: RULES[7].rule,
+        rule,
         reason: "Ridge cap is on scope but no ridge vent material — typical scope omission.",
         estimatedDollars: null,
       };
@@ -395,12 +449,12 @@ export function evaluateSupplementRules(
     advisory: 3,
   };
   const fired: SupplementFlag[] = [];
-  for (const { check } of RULES) {
+  for (const { rule, check } of RULES) {
     try {
-      const f = check(ctx);
+      const f = check(ctx, rule);
       if (f) fired.push(f);
     } catch (err) {
-      console.warn("[supplement-rules] check threw:", err);
+      console.warn(`[supplement-rules] check threw for ${rule.id}:`, err);
     }
   }
   fired.sort(

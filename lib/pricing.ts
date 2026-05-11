@@ -39,10 +39,17 @@ const PITCH_TO_DEG_LOCAL: Record<Pitch, number> = {
  * baked in (~60% of the figure per their breakdown). `removeLow/High` is
  * the tear-off + disposal range per their Table 4.
  *
- *   Asphalt 3-tab        : $3.43–$4.65/sf   tear-off $0.39–$0.53
- *   Architectural        : $4.11–$5.95/sf   (incl. premium architectural)
- *   Standing-seam metal  : $18.11–$24.50/sf no tear-off (layover allowed)
- *   Concrete tile        : $6.27–$8.49/sf   tear-off $1.45–$1.97
+ * Q2 2026 update (2026-05-11): bumped per Grok wholesale-pricing intel.
+ * GAF/CertainTeed/Owens Corning/Atlas all announced 5-8% list-price
+ * hikes effective April 2026; SRS distributors passing through +6-10%
+ * more in June. Aluminum/Galvalume materially hit by tariffs (+12-25%).
+ * Concrete tile largely unaffected (+4-8%). Conservative end of each
+ * range applied — over-correcting kills competitiveness on quoted bids.
+ *
+ *   Asphalt 3-tab        : $3.77–$5.12/sf   tear-off $0.42–$0.58 (was 3.43–4.65)
+ *   Architectural        : $4.52–$6.55/sf   (was 4.11–5.95)        +10%
+ *   Standing-seam metal  : $21.37–$28.91/sf no tear-off              +18%
+ *   Concrete tile        : $6.65–$9.00/sf   tear-off $1.45–$1.97   +6%
  */
 export const MATERIAL_RATES: Record<
   Material,
@@ -62,22 +69,22 @@ export const MATERIAL_RATES: Record<
 > = {
   "asphalt-3tab": {
     label: "Asphalt 3-Tab",
-    rate: 4.04, low: 3.43, high: 4.65,
-    removeLow: 0.39, removeHigh: 0.53,
+    rate: 4.44, low: 3.77, high: 5.12,
+    removeLow: 0.42, removeHigh: 0.58,
   },
   "asphalt-architectural": {
     label: "Architectural Shingle",
-    rate: 5.03, low: 4.11, high: 5.95,
-    removeLow: 0.39, removeHigh: 0.53,
+    rate: 5.53, low: 4.52, high: 6.55,
+    removeLow: 0.42, removeHigh: 0.58,
   },
   "metal-standing-seam": {
     label: "Standing-Seam Metal",
-    rate: 21.30, low: 18.11, high: 24.50,
+    rate: 25.13, low: 21.37, high: 28.91,
     removeLow: 0, removeHigh: 0,
   },
   "tile-concrete": {
     label: "Concrete Tile",
-    rate: 7.38, low: 6.27, high: 8.49,
+    rate: 7.82, low: 6.65, high: 9.00,
     removeLow: 1.45, removeHigh: 1.97,
   },
 };
@@ -86,22 +93,30 @@ export const MATERIAL_RATES: Record<
  * Component adders for the itemized engine — per-sqft or per-LF rates from
  * RoofingCalculator's "Additional roof replacement materials" section.
  * Used by `buildDetailedEstimate` and the white-label override in branding.ts.
+ *
+ * Q2 2026 update (2026-05-11):
+ *   - underlayment + ice & water: +8% (synthetic underlayment + IWS
+ *     part of the April 2026 manufacturer hikes, +5-10% range)
+ *   - flashing + drip edge: +15% (aluminum / steel accessories hit hard
+ *     by Section 232 tariff pressure, Grok cites +10-20% on category)
+ *   - decking: unchanged (plywood/OSB largely stable per Grok)
+ *   - fascia / soffit: +6% (aluminum-coil products, moderate tariff pass-through)
  */
 export const COMPONENT_RATES = {
   /** Sheathing replacement per sqft */
   decking:        { low: 2.20, high: 3.00 },
   /** Synthetic felt underlayment per sqft */
-  underlayment:   { low: 1.50, high: 2.10 },
+  underlayment:   { low: 1.62, high: 2.27 },
   /** Ice & water barrier per sqft */
-  iceAndWater:    { low: 1.87, high: 2.53 },
+  iceAndWater:    { low: 2.02, high: 2.73 },
   /** Galvanized steel flashing per linear foot */
-  flashing:       { low: 9.00, high: 11.00 },
+  flashing:       { low: 10.35, high: 12.65 },
   /** Rubber pipe boots, each */
   pipeBoot:       { low: 63.00, high: 85.00 },
   /** Fascia board per linear foot */
-  fascia:         { low: 4.25, high: 8.62 },
+  fascia:         { low: 4.51, high: 9.14 },
   /** Soffit per linear foot */
-  soffit:         { low: 2.80, high: 5.28 },
+  soffit:         { low: 2.97, high: 5.60 },
 } as const;
 
 /**
@@ -118,13 +133,16 @@ export const PITCH_FACTOR: Record<Pitch, number> = {
   "8/12+": 1.32,
 };
 
+// Q2 2026 update: ice-water +6%, gutters +8% (aluminum coil), skylight +5%
+// (aluminum-framed unit), drip edge upgrade +15% (tariff-heavy aluminum).
+// Ridge vent + solar-ready unchanged (plastic + labor-only respectively).
 export const DEFAULT_ADDONS: AddOn[] = [
-  { id: "ice-water", label: "Ice & Water Shield", price: 850, enabled: false },
+  { id: "ice-water", label: "Ice & Water Shield", price: 900, enabled: false },
   { id: "ridge-vent", label: "Ridge Vent", price: 425, enabled: false },
   { id: "solar-ready", label: "Solar Ready Prep", price: 1200, enabled: false },
-  { id: "gutters", label: "Seamless Gutters", price: 1850, enabled: false },
-  { id: "skylight", label: "Skylight Replacement", price: 950, enabled: false },
-  { id: "drip-edge", label: "Drip Edge Upgrade", price: 320, enabled: false },
+  { id: "gutters", label: "Seamless Gutters", price: 2000, enabled: false },
+  { id: "skylight", label: "Skylight Replacement", price: 1000, enabled: false },
+  { id: "drip-edge", label: "Drip Edge Upgrade", price: 370, enabled: false },
 ];
 
 export function computeBase(a: Assumptions): { low: number; high: number; mid: number } {
