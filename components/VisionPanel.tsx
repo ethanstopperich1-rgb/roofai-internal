@@ -99,7 +99,7 @@ export default function VisionPanel({ vision, loading, error, ageYears, zip }: P
 
       {error && !vision && (
         <div className="text-[12px] text-rose px-3 py-2 rounded-lg bg-rose/[0.08] border border-rose/20">
-          Vision unavailable: {error}
+          Couldn&apos;t analyze this roof. Estimate still works — refresh to retry.
         </div>
       )}
 

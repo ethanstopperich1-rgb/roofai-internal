@@ -42,8 +42,7 @@ export default function InternalHeader() {
 
         <div className="flex items-center gap-3 text-[12px] text-slate-400">
           <span className="hidden md:inline-flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-mint pulse-dot" />
-            <span className="font-mono uppercase tracking-[0.14em] text-[10px]">Live</span>
+            <span className="font-mono uppercase tracking-[0.14em] text-[10px] text-slate-500">Internal</span>
           </span>
         </div>
       </div>

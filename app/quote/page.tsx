@@ -454,7 +454,7 @@ export default function QuotePage() {
         <BotIdClient protect={[{ path: "/api/leads", method: "POST" }]} />
         <BoltStyleHero
           title="What will it cost to"
-          subtitle="Free, instant, no calls until you ask."
+          subtitle="Your roof, measured by satellite. A real number in thirty seconds — no calls until you ask."
           onSubmit={onLeadSubmit}
           submitting={submitting}
           nav={

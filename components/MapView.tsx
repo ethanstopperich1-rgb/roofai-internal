@@ -484,7 +484,7 @@ export default function MapView({
   if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) {
     return (
       <div className="glass rounded-3xl h-full min-h-[280px] flex items-center justify-center text-slate-400 text-[13px] p-6 text-center">
-        Set <code className="kbd mx-1">NEXT_PUBLIC_GOOGLE_MAPS_KEY</code> to enable map.
+        Satellite map unavailable in this environment.
       </div>
     );
   }

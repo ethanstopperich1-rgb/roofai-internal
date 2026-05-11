@@ -104,7 +104,7 @@ export default function ResultsPanel({
             range {fmt(baseLow)} <span className="text-slate-600">→</span> {fmt(baseHigh)}
           </div>
           <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500 lg:text-right">
-            Contract reroof · base
+            {SERVICE_LABEL[serviceType]} · base
           </div>
         </div>
       </div>

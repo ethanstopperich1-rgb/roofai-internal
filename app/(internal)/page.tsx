@@ -5,6 +5,7 @@ import AddressInput from "@/components/AddressInput";
 import AssumptionsEditor from "@/components/AssumptionsEditor";
 import AddOnsPanel from "@/components/AddOnsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
+import EstimateSticky from "@/components/EstimateSticky";
 import OutputButtons from "@/components/OutputButtons";
 import MapView from "@/components/MapView";
 import InsightsPanel from "@/components/InsightsPanel";
@@ -111,7 +112,10 @@ export default function HomePage() {
   const [samRefinedPolygon, setSamRefinedPolygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
-  const [samRefining, setSamRefining] = useState(false);
+  // `samRefining` flag removed — the legacy SAM2 (sam-refine) refining
+  // step was deprecated in favor of custom SAM3. The state slot
+  // `samRefinedPolygon` above is kept as a passive emergency-rollback
+  // hook (see Phase 1 cleanup notes below).
   // Google Solar dataLayers:get binary roof mask — Project Sunroof's own
   // ground-truth segmentation. Beats SAM/OSM/AI for any property in Solar
   // coverage. Falls back through the chain when not available.
@@ -707,11 +711,6 @@ export default function HomePage() {
   // future refactors that might re-introduce a "ready" state.
   const renderedPolygons = polygonReady ? activePolygons : undefined;
   const renderedSourcePolygons = polygonReady ? sourcePolygons : undefined;
-  // Verifying overlay state. With the new "show polygon immediately"
-  // policy, this is always false — kept as a hook for any future state
-  // where we'd want to gate display on something other than source
-  // selection.
-  const verifying = false;
 
   // Cross-source consensus. Compute IoU between the active polygon and
   // every OTHER valid source's polygon — when multiple independent
@@ -1339,7 +1338,6 @@ export default function HomePage() {
     else if (polygonSource === "osm") badges.push("OSM traced");
     else if (polygonSource === "microsoft-buildings") badges.push("MS Footprints");
     else if (polygonSource === "ai") badges.push("AI traced");
-    else if (samRefining) badges.push("Refining…");
     else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
     if (solar?.pitch) badges.push(`Pitch ${solar.pitch}`);
     // Confidence indicator — lets the rep tell at a glance whether the
@@ -1434,6 +1432,17 @@ export default function HomePage() {
           onSelect={setAddress}
           onSubmit={runEstimate}
         />
+
+        {/* Keyboard discoverability strip — surfaces the shortcuts the
+            useKeyboardShortcuts hook already binds. Hidden on mobile
+            (touch users have no keyboard) and on small screens. */}
+        <div className="hidden md:flex flex-wrap items-center gap-x-4 gap-y-2 mt-4 text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500">
+          <span className="flex items-center gap-1.5"><span className="kbd">⌘K</span> Address</span>
+          <span className="flex items-center gap-1.5"><span className="kbd">⌘N</span> New</span>
+          <span className="flex items-center gap-1.5"><span className="kbd">⌘S</span> Save</span>
+          <span className="flex items-center gap-1.5"><span className="kbd">⌘P</span> PDF</span>
+          <span className="flex items-center gap-1.5"><span className="kbd">⌘E</span> Email</span>
+        </div>
       </section>
 
       {!shown && <EmptyState />}
@@ -1470,21 +1479,6 @@ export default function HomePage() {
           />
           {/* ─── Map hero — satellite + 3D side-by-side, full width ─────── */}
           <section className="grid lg:grid-cols-2 gap-4 h-[420px] sm:h-[520px] lg:h-[640px] float-in relative">
-            {/* Generating overlay — covers BOTH viewers when verifying so
-                the rep doesn't see polygon flicker as sources race. Hidden
-                once Claude multi-view verifies the active polygon. */}
-            {verifying && (
-              <div
-                className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none"
-                aria-live="polite"
-              >
-                <div className="flex items-center gap-2.5 rounded-full border border-cy-300/40 bg-[#07090d]/90 backdrop-blur-md px-5 py-2 shadow-2xl shadow-cy-300/20">
-                  <span className="font-mono text-[12px] uppercase tracking-[0.16em] text-cy-100">
-                    Generating roof outline<span className="generating-dots" />
-                  </span>
-                </div>
-              </div>
-            )}
             <MapView
               lat={address?.lat}
               lng={address?.lng}
@@ -1583,7 +1577,7 @@ export default function HomePage() {
           {(isInsuranceClaim ||
             (polygonReady && polygonSource !== "none")) && (
             <SectionHeader
-              index={3}
+              index={2}
               title="Quality & compliance"
               caption="Auto-checks before delivery"
             />
@@ -1679,7 +1673,7 @@ export default function HomePage() {
 
           {/* ═══ 04 ESTIMATE — headline price + breakdown ═══════════════ */}
           <SectionHeader
-            index={4}
+            index={3}
             title="Estimate"
             caption={`${assumptions.material.replace(/-/g, " ")}${assumptions.serviceType ? ` · ${assumptions.serviceType.replace(/-/g, " ")}` : ""}`}
           />
@@ -1699,7 +1693,7 @@ export default function HomePage() {
 
           {/* ═══ 05 BREAKDOWN — line items, measurements, customer detail ═ */}
           <SectionHeader
-            index={5}
+            index={4}
             title="Breakdown & detail"
             caption="Internal worksheet · not shown to customer"
           />
@@ -1762,6 +1756,38 @@ export default function HomePage() {
               <InsightsPanel estimate={estimate} />
             </div>
           </div>
+          {/* Floating estimate summary — fades in once the rep scrolls past
+              the headline price card so the live total + sqft + source
+              stay visible while they work through line items below. */}
+          <EstimateSticky
+            total={total}
+            sqft={assumptions.sqft}
+            pitch={assumptions.pitch}
+            sourceLabel={
+              polygonSource === "edited"
+                ? "Edited"
+                : polygonSource === "sam3"
+                  ? "SAM3"
+                  : polygonSource === "solar-mask"
+                    ? "Solar mask"
+                    : polygonSource === "roboflow"
+                      ? "Roof AI"
+                      : polygonSource === "sam"
+                        ? "SAM 2"
+                        : polygonSource === "osm"
+                          ? "OSM"
+                          : polygonSource === "microsoft-buildings"
+                            ? "MS Footprints"
+                            : polygonSource === "solar"
+                              ? "Solar facets"
+                              : polygonSource === "ai"
+                                ? "AI traced"
+                                : null
+            }
+            confidence={
+              polygonSource !== "none" ? estimateConfidence.level : null
+            }
+          />
         </>
       )}
     </div>

@@ -35,10 +35,10 @@ export default class ErrorBoundary extends Component<
             </div>
             <div className="flex-1 min-w-0">
               <div className="font-display font-semibold tracking-tight text-[14px] text-rose">
-                A panel crashed
+                Something didn&apos;t load
               </div>
-              <div className="text-[12px] text-slate-400 mt-1 leading-relaxed font-mono break-all">
-                {this.state.error?.message ?? "Unknown error"}
+              <div className="text-[12px] text-slate-400 mt-1 leading-relaxed">
+                Refresh to retry. Your other panels are unaffected.
               </div>
               <button onClick={this.reset} className="btn btn-ghost mt-3 text-[12px] py-1.5 px-3">
                 Try again

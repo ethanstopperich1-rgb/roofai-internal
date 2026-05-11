@@ -16,7 +16,6 @@ import {
   Wrench,
   ShieldCheck,
   Clock,
-  Star,
   ChevronDown,
   CheckCircle2,
 } from "lucide-react";
@@ -31,8 +30,8 @@ interface Stat {
 
 const STATS: Stat[] = [
   { value: "30s", label: "Average estimate time", hint: "from address to price" },
-  { value: "±10%", label: "Accuracy vs final quote", hint: "vs in-person inspection" },
-  { value: "<1hr", label: "Contractor response", hint: "during business hours" },
+  { value: "Satellite", label: "Same imagery Google uses", hint: "for solar-panel sizing" },
+  { value: "1 hour", label: "Contractor response", hint: "during business hours" },
   { value: "$0", label: "Cost to homeowner", hint: "no obligation, ever" },
 ];
 
@@ -41,21 +40,26 @@ export function StatsStrip() {
   // four-stat marketing strip — they need the form. On desktop the
   // statistics back up the headline; on mobile they push the value
   // proposition below 2-3 scrolls and add nothing the form doesn't show.
+  //
+  // Visually: editorial trust trio with a hairline divider running through
+  // it. Numerals get the Bricolage display face large; labels stay tight
+  // mono. The whole strip reads as "newspaper of record" rather than
+  // four equal marketing cards.
   return (
-    <section className="relative z-10 px-4 sm:px-6 py-14 sm:py-20 hidden md:block">
-      <div className="max-w-5xl mx-auto">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+    <section className="relative z-10 px-4 sm:px-6 py-16 sm:py-24 hidden md:block">
+      <div className="max-w-6xl mx-auto">
+        <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-white/[0.06] border-y border-white/[0.06]">
           {STATS.map((s) => (
             <div
               key={s.label}
-              className="rounded-2xl border border-white/[0.06] bg-white/[0.015] p-4 sm:p-5 text-center"
+              className="px-5 sm:px-8 py-7 sm:py-9 text-center first:lg:pl-2 last:lg:pr-2"
             >
-              <div className="font-display tabular text-[28px] sm:text-[36px] leading-none font-semibold tracking-tight text-cy-300">
+              <div className="font-display tabular text-[36px] sm:text-[48px] leading-none font-semibold tracking-[-0.02em] text-slate-50">
                 {s.value}
               </div>
-              <div className="text-[12px] sm:text-[13px] text-slate-200 mt-2">{s.label}</div>
+              <div className="text-[12.5px] sm:text-[13px] text-slate-200 mt-3 font-medium">{s.label}</div>
               {s.hint && (
-                <div className="text-[10.5px] sm:text-[11px] font-mono uppercase tracking-[0.12em] text-slate-500 mt-1.5">
+                <div className="text-[10px] sm:text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-500 mt-2">
                   {s.hint}
                 </div>
               )}
@@ -97,49 +101,48 @@ export function HowItWorks() {
   return (
     <section
       id="how"
-      className="relative z-10 px-4 sm:px-6 py-10 sm:py-20 scroll-mt-20"
+      className="relative z-10 px-4 sm:px-6 py-16 sm:py-28 scroll-mt-20"
     >
-      <div className="max-w-5xl mx-auto">
+      <div className="max-w-4xl mx-auto">
         <SectionHeading
           eyebrow="How it works"
           title="Three steps. About thirty seconds."
           sub="No measuring tape. No salesperson at the door."
         />
 
-        {/* Desktop: 3-card grid with full body copy. Mobile: vertical
-            single-line list — title + icon + 1 short sentence each.
-            Customers on phones don't read 50-word body paragraphs three
-            times in a row; they need to know the shape of the flow. */}
-        <div className="hidden md:grid md:grid-cols-3 gap-4 sm:gap-6 mt-10">
-          {STEPS.map((s, i) => (
-            <div
-              key={s.title}
-              className="relative rounded-2xl border border-white/[0.06] bg-white/[0.015] p-6"
-            >
-              <div className="absolute -top-3 left-6 px-2.5 py-1 rounded-full bg-cy-300 text-[#051019] text-[11px] font-mono font-semibold tracking-wider">
-                {String(i + 1).padStart(2, "0")}
-              </div>
-              <div className="flex items-center gap-3 text-cy-300 mt-1.5">
-                {s.icon}
-                <h3 className="font-display text-[16px] sm:text-[17px] font-semibold tracking-tight text-slate-100">
-                  {s.title}
-                </h3>
-              </div>
-              <p className="text-[13.5px] text-slate-300 mt-3 leading-relaxed">{s.body}</p>
-            </div>
-          ))}
-        </div>
-
-        <ol className="md:hidden mt-8 space-y-2">
+        {/* Desktop: vertical timeline. Massive numeral on the left in
+            Bricolage, body copy on the right, a thin cyan thread tying the
+            three steps together. Reads more like a magazine feature than a
+            three-card marketing grid. Mobile: same shape, scaled down. */}
+        <ol className="mt-14 sm:mt-20 relative">
+          <span
+            aria-hidden
+            className="absolute left-[28px] sm:left-[44px] top-3 bottom-3 w-px bg-gradient-to-b from-transparent via-cy-300/30 to-transparent"
+          />
           {STEPS.map((s, i) => (
             <li
               key={s.title}
-              className="flex items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.015] px-4 py-3.5"
+              className="relative grid grid-cols-[56px_1fr] sm:grid-cols-[88px_1fr] gap-5 sm:gap-8 py-7 sm:py-10 first:pt-0 last:pb-0"
             >
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-cy-300 text-[#051019] text-[11px] font-mono font-semibold flex items-center justify-center">
-                {i + 1}
-              </span>
-              <span className="text-[13.5px] text-slate-100 font-medium">{s.title}</span>
+              <div className="relative flex items-start justify-center">
+                <span
+                  className="font-display tabular text-[44px] sm:text-[72px] leading-none font-semibold tracking-[-0.04em] text-slate-50"
+                  aria-hidden
+                >
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+              </div>
+              <div className="min-w-0 pt-1 sm:pt-3">
+                <div className="flex items-center gap-3 text-cy-300">
+                  {s.icon}
+                  <h3 className="font-display text-[17px] sm:text-[20px] font-semibold tracking-tight text-slate-100">
+                    {s.title}
+                  </h3>
+                </div>
+                <p className="text-[14px] sm:text-[15.5px] text-slate-300 mt-2.5 sm:mt-3 leading-relaxed max-w-[58ch]">
+                  {s.body}
+                </p>
+              </div>
             </li>
           ))}
         </ol>
@@ -150,87 +153,12 @@ export function HowItWorks() {
 
 /* ─── Testimonials ────────────────────────────────────────────────────── */
 
-interface Testimonial {
-  quote: string;
-  author: string;
-  role: string;
-  rating: 5;
-}
-
-// Sample placeholder testimonials. NOT real customer quotes — kept here
-// as visual scaffolding until verified reviews land. The Testimonials
-// component below renders nothing unless `NEXT_PUBLIC_REVIEWS_VERIFIED=true`
-// is set on the deploy. Asserting "Recent quotes through the platform"
-// next to fabricated names + cities + initials is FTC deceptive-
-// testimonial territory; gate kept off by default so any /quote
-// deployment that hasn't curated real reviews simply omits the section.
-const TESTIMONIALS: Testimonial[] = [
-  {
-    quote:
-      "Got my range in 30 seconds and a contractor at my door the next day. Saved me four 'let me come out and measure' appointments.",
-    author: "M. Reyes",
-    role: "Winter Park, FL",
-    rating: 5,
-  },
-  {
-    quote:
-      "I was getting bombarded by storm chasers after Hurricane Idalia. This was the only one that gave me a price before I gave them my phone.",
-    author: "D. Chen",
-    role: "Tampa, FL",
-    rating: 5,
-  },
-  {
-    quote:
-      "Estimate came in $400 under what the in-person guy quoted. We went with the in-person roofer but used the number to negotiate. Worth it.",
-    author: "K. Patel",
-    role: "Orlando, FL",
-    rating: 5,
-  },
-];
-
+/**
+ * Testimonials. Renders nothing until real, verified reviews are wired
+ * in from a review source (Google Reviews API, BirdEye, etc.).
+ */
 export function Testimonials() {
-  // Render nothing until real, verified reviews are wired in. The
-  // placeholder copy above is for design preview only.
-  if (process.env.NEXT_PUBLIC_REVIEWS_VERIFIED !== "true") return null;
-
-  return (
-    <section
-      id="reviews"
-      className="relative z-10 px-4 sm:px-6 py-14 sm:py-20 scroll-mt-20"
-    >
-      <div className="max-w-5xl mx-auto">
-        <SectionHeading
-          eyebrow="Reviews"
-          title="What homeowners say"
-          sub="Verified homeowners who used the platform to compare quotes."
-        />
-
-        <div className="grid md:grid-cols-3 gap-4 sm:gap-6 mt-10">
-          {TESTIMONIALS.map((t, i) => (
-            <figure
-              key={i}
-              className="rounded-2xl border border-white/[0.06] bg-white/[0.015] p-6 flex flex-col"
-            >
-              <div className="flex gap-0.5 text-cy-300">
-                {Array.from({ length: t.rating }).map((_, idx) => (
-                  <Star key={idx} size={14} fill="currentColor" strokeWidth={0} />
-                ))}
-              </div>
-              <blockquote className="text-[14px] text-slate-200 leading-relaxed mt-3 flex-1">
-                &ldquo;{t.quote}&rdquo;
-              </blockquote>
-              <figcaption className="mt-5 pt-4 border-t border-white/[0.05]">
-                <div className="text-[13px] font-medium text-slate-100">{t.author}</div>
-                <div className="text-[11.5px] text-slate-500 font-mono uppercase tracking-[0.1em] mt-0.5">
-                  {t.role}
-                </div>
-              </figcaption>
-            </figure>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
+  return null;
 }
 
 /* ─── FAQ ─────────────────────────────────────────────────────────────── */
@@ -295,35 +223,35 @@ export function FAQ() {
           sub="If your question isn't here, the contractor you pick will answer it directly."
         />
 
-        <div className="mt-8 sm:mt-10 space-y-2">
+        <div className="mt-10 sm:mt-14 border-t border-white/[0.06]">
           {FAQS.map((f, i) => {
             const isOpen = open === i;
             const hideOnMobile = !showAll && i >= MOBILE_PRIMARY;
             return (
               <div
                 key={i}
-                className={`rounded-2xl border border-white/[0.06] bg-white/[0.015] overflow-hidden ${
+                className={`border-b border-white/[0.06] ${
                   hideOnMobile ? "hidden md:block" : ""
                 }`}
               >
                 <button
                   onClick={() => setOpen(isOpen ? null : i)}
-                  className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left hover:bg-white/[0.02] transition-colors"
+                  className="w-full flex items-center justify-between gap-4 py-5 sm:py-6 text-left group"
                   aria-expanded={isOpen}
                 >
-                  <span className="text-[14px] sm:text-[15px] font-medium text-slate-100">
+                  <span className="text-[15px] sm:text-[17px] font-medium text-slate-100 group-hover:text-white transition-colors">
                     {f.q}
                   </span>
                   <ChevronDown
-                    size={18}
-                    className={`flex-shrink-0 text-slate-500 transition-transform ${
-                      isOpen ? "rotate-180" : ""
+                    size={20}
+                    className={`flex-shrink-0 text-slate-500 group-hover:text-cy-300 transition-all ${
+                      isOpen ? "rotate-180 text-cy-300" : ""
                     }`}
                   />
                 </button>
                 {isOpen && (
-                  <div className="px-5 pb-5 text-[13.5px] text-slate-300 leading-relaxed border-t border-white/[0.04]">
-                    <div className="pt-4">{f.a}</div>
+                  <div className="pb-6 sm:pb-7 -mt-1 text-[14px] sm:text-[15px] text-slate-300 leading-relaxed max-w-[68ch]">
+                    {f.a}
                   </div>
                 )}
               </div>
@@ -348,7 +276,7 @@ export function FAQ() {
 
 const TRUST_ITEMS = [
   { icon: <ShieldCheck size={14} />, label: "BBB-vetted roofers only" },
-  { icon: <Clock size={14} />, label: "Average 47 min reply" },
+  { icon: <Clock size={14} />, label: "Reply within 1 business hour" },
   { icon: <CheckCircle2 size={14} />, label: "License + insurance on every quote" },
   { icon: <ShieldCheck size={14} />, label: "We never sell your info" },
 ];

@@ -168,7 +168,7 @@ export default function EditableRoofMap({
   if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) {
     return (
       <div className="w-full h-full flex items-center justify-center text-slate-500 text-[12px] p-6 text-center">
-        Map unavailable — set NEXT_PUBLIC_GOOGLE_MAPS_KEY.
+        Map preview unavailable.
       </div>
     );
   }

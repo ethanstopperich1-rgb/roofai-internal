@@ -69,7 +69,7 @@ export default function InsightsPanel({ estimate }: { estimate: Estimate }) {
       </div>
       {error && (
         <div className="text-[12px] text-rose px-3 py-2 rounded-lg bg-rose/[0.08] border border-rose/20">
-          {error}
+          Insights unavailable right now. Tap Generate again in a moment.
         </div>
       )}
       {text && (

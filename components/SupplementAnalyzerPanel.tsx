@@ -75,8 +75,8 @@ const SEVERITY_STYLE: Record<
 > = {
   required: {
     label: "Required",
-    pillCls: "bg-rose-500/15 border-rose-400/40 text-rose-200",
-    rowCls: "border-rose-400/25 bg-rose-500/[0.04]",
+    pillCls: "bg-rose/15 border-rose/40 text-rose",
+    rowCls: "border-rose/25 bg-rose/[0.04]",
     icon: ShieldAlert,
   },
   expected: {
@@ -219,11 +219,11 @@ export default function SupplementAnalyzerPanel({
       )}
 
       {error && !loading && (
-        <div className="rounded-2xl border border-rose-400/30 bg-rose-500/[0.05] px-4 py-3 text-[12.5px] text-rose-200 flex items-start gap-2.5">
+        <div className="rounded-2xl border border-rose/30 bg-rose/[0.05] px-4 py-3 text-[12.5px] text-rose flex items-start gap-2.5">
           <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
           <div>
             <div className="font-medium">Couldn&apos;t analyze that PDF.</div>
-            <div className="text-rose-300/80 mt-0.5">{error}</div>
+            <div className="text-rose/80 mt-0.5">Re-upload or try a different file.</div>
           </div>
         </div>
       )}
@@ -234,7 +234,7 @@ export default function SupplementAnalyzerPanel({
           <ScopeSummary scope={result.extracted} mrmsContext={result.mrmsContext} />
           <FlagsList flags={result.flags} stats={result.stats} />
           {result.flags.length === 0 && (
-            <div className="rounded-2xl border border-emerald/30 bg-emerald/[0.05] px-4 py-3 text-[12.5px] text-emerald-200 flex items-center gap-2">
+            <div className="rounded-2xl border border-mint/30 bg-mint/[0.05] px-4 py-3 text-[12.5px] text-mint flex items-center gap-2">
               <Check size={14} /> No supplement opportunities found — scope
               looks clean against the rule catalog.
             </div>

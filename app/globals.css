@@ -324,6 +324,31 @@ textarea.input { resize: vertical; min-height: 90px; line-height: 1.5; }
   animation: generating-loader-bar-anim 2.4s ease-in-out infinite;
 }
 
+/* ─── Reduced-motion guard ────────────────────────────────────────────
+ *
+ * Honour the OS-level "Reduce motion" preference. Disables decorative
+ * animations (price flash, shimmer, float-in, pulse-dot, generating
+ * loader, animated dots) while keeping `transition-*` micro-interactions
+ * which read as instant feedback, not motion. Critical for vestibular
+ * users and also helps demo recordings stay visually calm.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .price-flash,
+  .shimmer,
+  .float-in,
+  .pulse-dot,
+  .generating-loader-letter,
+  .generating-loader-bar::before,
+  .generating-dots::after {
+    animation: none !important;
+  }
+  .float-in { opacity: 1; transform: none; }
+  .generating-loader-letter { opacity: 1; transform: none; }
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
+
 /* ─── Mobile form input zoom prevention ───────────────────────────────
  *
  * iOS Safari auto-zooms into any text input whose computed font-size is
@@ -381,6 +406,16 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
 
 /* ─── Checkbox / chip ─────────────────────────────────────────────── */
 
+/* Canonical status pills.
+ *   .chip          neutral / informational           (slate)
+ *   .chip-accent   active / currently selected       (cyan)
+ *   .chip-mint     passed / verified / clean         (mint)
+ *   .chip-amber    caution / requires review         (amber)
+ *   .chip-rose     blocked / failed / required-fix   (rose)
+ *
+ * Use these everywhere a status badge is needed instead of hand-rolling
+ * `bg-X/15 border-X/30 text-X` triplets in JSX. Keeps the rep estimator
+ * scannable: one colour means one thing across every panel. */
 .chip {
   display: inline-flex; align-items: center; gap: 0.4rem;
   padding: 0.25rem 0.55rem;
@@ -396,6 +431,21 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   background: rgba(56,197,238,0.10);
   border-color: rgba(103,220,255,0.30);
   color: #b3edff;
+}
+.chip-mint {
+  background: rgba(95,227,176,0.10);
+  border-color: rgba(95,227,176,0.32);
+  color: #5fe3b0;
+}
+.chip-amber {
+  background: rgba(243,177,75,0.10);
+  border-color: rgba(243,177,75,0.34);
+  color: #f3b14b;
+}
+.chip-rose {
+  background: rgba(255,122,138,0.10);
+  border-color: rgba(255,122,138,0.34);
+  color: #ff7a8a;
 }
 
 /* ─── Animated dots used by Roof3DViewer "Generating…" pill ─────────── */

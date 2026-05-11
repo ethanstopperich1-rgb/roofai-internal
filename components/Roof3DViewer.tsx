@@ -1017,10 +1017,10 @@ export default function Roof3DViewer({
       {status === "error" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6">
           <div className="font-display text-[13px] font-semibold tracking-tight text-slate-200">
-            3D viewer unavailable
+            3D view unavailable
           </div>
           <div className="text-[11.5px] text-slate-500 mt-1 max-w-[260px] leading-relaxed">
-            Set <code className="kbd mx-1">NEXT_PUBLIC_GOOGLE_MAPS_KEY</code> with the Map Tiles API enabled.
+            We couldn&apos;t load the 3D model for this address. The satellite view above still has everything you need.
           </div>
         </div>
       )}

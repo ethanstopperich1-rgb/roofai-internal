@@ -97,6 +97,33 @@ export function BoltStyleHero({
       }`}
     >
       <RayBackground />
+      {/* Decorative rooftop horizon — sits at the bottom of the hero,
+          fades into bg. Reads subliminally as "rooftops on a skyline"
+          without competing with the central radial ray treatment.
+          Hidden in embed mode (the widget lives inside a host site that
+          already has its own visual frame). */}
+      {!embedMode && (
+        <svg
+          aria-hidden
+          className="absolute left-0 right-0 bottom-0 w-full h-[120px] sm:h-[180px] pointer-events-none z-[1]"
+          viewBox="0 0 1600 180"
+          preserveAspectRatio="none"
+        >
+          <defs>
+            <linearGradient id="rooftop-fade" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#67dcff" stopOpacity="0" />
+              <stop offset="65%" stopColor="#67dcff" stopOpacity="0.08" />
+              <stop offset="100%" stopColor="#67dcff" stopOpacity="0.18" />
+            </linearGradient>
+          </defs>
+          <path
+            d="M0 180 L0 130 L80 80 L160 130 L240 95 L320 130 L400 70 L480 130 L560 110 L640 130 L720 60 L800 130 L880 90 L960 130 L1040 50 L1120 130 L1200 100 L1280 130 L1360 75 L1440 130 L1520 95 L1600 130 L1600 180 Z"
+            fill="url(#rooftop-fade)"
+            stroke="rgba(103,220,255,0.18)"
+            strokeWidth="1"
+          />
+        </svg>
+      )}
 
       {/* Top bar — logo big on the left, nav center, free-no-obligation right.
           Hidden in embed mode (the widget lives inside a third-party site
@@ -135,13 +162,14 @@ export function BoltStyleHero({
 
         <div className="relative z-10 w-full max-w-3xl px-4 mx-auto">
         {/* Headline */}
-        <div className={`text-center ${embedMode ? "mb-6" : "mb-8"}`}>
+        <div className={`text-center ${embedMode ? "mb-6" : "mb-10"}`}>
           <h1
-            className={`font-display leading-[1.05] tracking-[-0.025em] font-semibold text-white ${
+            className="font-display leading-[0.95] tracking-[-0.035em] font-semibold text-white"
+            style={
               embedMode
-                ? "text-[28px] sm:text-[36px] md:text-[42px]"
-                : "text-[34px] sm:text-[48px] md:text-[56px]"
-            }`}
+                ? { fontSize: "clamp(28px, 5.5vw, 44px)" }
+                : { fontSize: "clamp(38px, 8.2vw, 84px)" }
+            }
           >
             {title}{" "}
             <span
@@ -158,7 +186,13 @@ export function BoltStyleHero({
             </span>
             ?
           </h1>
-          <p className="mt-3 text-[14px] sm:text-[16px] font-medium text-slate-300">
+          <p
+            className={`font-medium text-slate-300 leading-relaxed mx-auto ${
+              embedMode
+                ? "mt-3 text-[14px] sm:text-[16px]"
+                : "mt-5 sm:mt-6 text-[16px] sm:text-[19px] max-w-[42ch]"
+            }`}
+          >
             {subtitle}
           </p>
         </div>

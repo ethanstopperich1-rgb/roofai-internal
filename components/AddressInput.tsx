@@ -209,7 +209,7 @@ export default function AddressInput({ onSelect, onSubmit, value, onChange }: Pr
 
       {!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY && (
         <div className="text-[11px] text-slate-500 mt-2 px-1">
-          Set <code className="kbd">NEXT_PUBLIC_GOOGLE_MAPS_KEY</code> in .env.local for autocomplete.
+          Address autocomplete is offline. Type the full address and continue.
         </div>
       )}
     </div>
