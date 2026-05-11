@@ -1113,7 +1113,10 @@ export default function HomePage() {
     // in parallel with everything else and let the priority chain pick it
     // up when it lands. Falls through silently when the kill switch is
     // tripped or the route 404s.
-    const sam3Promise = fetch(`/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}`)
+    const sam3Promise = fetch(
+      `/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}` +
+        `&address=${encodeURIComponent(addr.formatted)}`,
+    )
       .then(async (r) => {
         if (!r.ok) return null;
         const data = (await r.json()) as {
@@ -1506,7 +1509,8 @@ export default function HomePage() {
                 setPickingLoading(true);
                 fetch(
                   `/api/sam3-roof?lat=${address.lat}&lng=${address.lng}` +
-                    `&clickLat=${clickLat}&clickLng=${clickLng}`,
+                    `&clickLat=${clickLat}&clickLng=${clickLng}` +
+                    `&address=${encodeURIComponent(address.formatted)}`,
                 )
                   .then(async (r) => {
                     if (!r.ok) return null;

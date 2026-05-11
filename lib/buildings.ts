@@ -27,6 +27,60 @@ export interface BuildingPolygon {
   osmId?: number;
 }
 
+/** OSM `building=*` values that explicitly identify a non-dwelling.
+ *  Hard-demoted in the ranking — a building tagged this way can only win
+ *  when no house/unknown-tagged candidates are in range, which is the
+ *  correct fallback (e.g. ag parcels with only outbuildings near the pin).
+ *  Pole barns and large shops show up here even when they exceed the
+ *  80 m² residence-size floor, which is the residual failure mode the
+ *  area-weighted ranker can't catch on its own. */
+const OUTBUILDING_TAGS = new Set([
+  "garage", "garages", "carport", "shed",
+  "barn", "stable", "cowshed", "farm_auxiliary",
+  "warehouse", "industrial", "manufacture", "hangar",
+  "greenhouse", "service", "outbuilding", "storage_tank",
+  "silo", "roof",
+]);
+
+/** OSM `building=*` values that identify a dwelling. Promoted over both
+ *  outbuildings and `building=yes` / untagged candidates. */
+const HOUSE_TAGS = new Set([
+  "house", "residential", "detached", "semidetached_house",
+  "apartments", "bungalow", "cabin", "terrace", "static_caravan",
+  "dormitory", "farm",
+]);
+
+function classifyBuilding(tag?: string): "house" | "outbuilding" | "unknown" {
+  if (!tag) return "unknown";
+  const t = tag.toLowerCase();
+  if (HOUSE_TAGS.has(t)) return "house";
+  if (OUTBUILDING_TAGS.has(t)) return "outbuilding";
+  return "unknown";
+}
+
+/** Compare an OSM `addr:housenumber` tag to the input address's leading
+ *  number. Accepts exact match and ranges like `1234-1238` (numeric only).
+ *  Letter suffixes (`1234A`) match exactly. */
+function housenumberMatches(tag: string | undefined, target: string): boolean {
+  if (!tag) return false;
+  const t = tag.trim().toLowerCase();
+  const goal = target.trim().toLowerCase();
+  if (!t || !goal) return false;
+  if (t === goal) return true;
+  // Range form: "1234-1238" or "1234–1238" — accept if target falls inside.
+  const parts = t.split(/[-–—]/);
+  if (parts.length === 2) {
+    const a = parseInt(parts[0], 10);
+    const b = parseInt(parts[1], 10);
+    const g = parseInt(goal, 10);
+    if (Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(g)) {
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      if (g >= lo && g <= hi) return true;
+    }
+  }
+  return false;
+}
+
 type OverpassResponse = {
   elements?: Array<{
     type?: string;
@@ -135,8 +189,13 @@ async function queryOverpass(
 export async function fetchBuildingPolygon(opts: {
   lat: number;
   lng: number;
+  /** Optional input-address house number (leading digit run, e.g. "1234"
+   *  or "1234A"). When present, OSM ways whose `addr:housenumber` tag
+   *  matches short-circuit ranking — that's the strongest single signal
+   *  short of parcel data that we've found the right building. */
+  houseNumber?: string;
 }): Promise<BuildingPolygon | null> {
-  const { lat, lng } = opts;
+  const { lat, lng, houseNumber } = opts;
   const query = `
     [out:json][timeout:${QUERY_TIMEOUT_S}];
     (
@@ -162,6 +221,8 @@ export async function fetchBuildingPolygon(opts: {
     contains: boolean;
     distSq: number;
     area: number;
+    kind: "house" | "outbuilding" | "unknown";
+    addrMatch: boolean;
   };
   const candidates: Candidate[] = [];
   for (const el of data.elements) {
@@ -170,12 +231,17 @@ export async function fetchBuildingPolygon(opts: {
     // Skip implausibly small structures (sheds, AC pads ≤ 15 m²)
     const area = polygonAreaM2(polygon);
     if (area < 15) continue;
+    const tags = el.tags ?? {};
     candidates.push({
       polygon,
       osmId: el.id,
       contains: pointInPolygon(lat, lng, polygon),
       distSq: distSqToCentroid(lat, lng, polygon),
       area,
+      kind: classifyBuilding(tags["building"]),
+      addrMatch: houseNumber
+        ? housenumberMatches(tags["addr:housenumber"], houseNumber)
+        : false,
     });
   }
   if (candidates.length === 0) return null;
@@ -189,28 +255,50 @@ export async function fetchBuildingPolygon(opts: {
   // SAM3 traces the shop's roof.
   //
   // Heuristic, in order:
-  //   1. If any candidate CONTAINS the point, pick the smallest container
-  //      (parcel polygons sometimes wrap multiple buildings).
-  //   2. Otherwise, FILTER OUT candidates < 50 m² (sheds, carports, AC
-  //      enclosures). A real residence is rarely under 540 sqft. We keep
-  //      this filter strict because false-positives (tiny house, ADU) are
-  //      a rare edge case while false-negatives (shed picked instead of
-  //      house) are the common rural failure mode this PR fixes.
-  //   3. Among remaining candidates, score each as
-  //          score = sqrt(distSq) - 8 × ln(area)
-  //      Lower wins. The area term means a 200 m² building 50m away beats
-  //      a 50 m² building 10m away (which is exactly the rural shop-vs-
-  //      house case). The sqrt keeps distance in meters so the constants
-  //      stay interpretable.
-  //   4. If the area filter empties the list (genuinely small structures
-  //      only — tiny home, mobile home), fall back to closest-by-distance
-  //      without the filter.
-  const containers = candidates.filter((c) => c.contains);
-  let best: Candidate;
-  if (containers.length > 0) {
+  //   1. Drop OSM-tagged outbuildings (barn, garage, shed, industrial, ...)
+  //      from the candidate pool.
+  //   2. If `addr:housenumber` matches the input address, pick that
+  //      (largest if multiple) — strongest signal short of parcel data.
+  //   3. Else if any candidate CONTAINS the point, pick the smallest
+  //      container (parcel polygons sometimes wrap multiple buildings).
+  //   4. Else two-stage: drop sub-80 m² candidates (sheds, AC pads, well
+  //      houses), then prefer a meaningfully-larger building set back from
+  //      the pin if the closest is small (rural-mode switch from 9f450ca).
+  //   5. Else (filter empties the pool) fall back to closest-by-distance.
+  // Pre-filter — hard-demote OSM-tagged outbuildings (barn, garage, shed,
+  // industrial, hangar, ...). The area-weighted ranker shipped in
+  // 9f450ca handles small outbuildings via the 80 m² floor, but a pole
+  // barn or workshop can easily clear that floor and out-score the
+  // actual house on rural compounds. When OSM tells us a building isn't
+  // a dwelling, trust that over geometry.
+  //
+  // Fallback: if every candidate is tagged as an outbuilding, fall back
+  // to the full set so we return *something*. The reconciler and the
+  // rep-facing click-to-pick will catch genuinely-ambiguous cases.
+  const nonOutbuildings = candidates.filter((c) => c.kind !== "outbuilding");
+  const pool = nonOutbuildings.length > 0 ? nonOutbuildings : candidates;
+
+  let best: Candidate | undefined;
+
+  // Address-match short-circuit. When OSM has the input house number
+  // hand-tagged to a building (about 20-30% of US residential coverage),
+  // that's the strongest signal available short of parcel data. When
+  // multiple ways share the same addr:housenumber (e.g. an attached
+  // duplex traced as two polygons), prefer the largest — virtually
+  // always the principal dwelling.
+  if (houseNumber) {
+    const matches = pool.filter((c) => c.addrMatch);
+    if (matches.length > 0) {
+      matches.sort((a, b) => b.area - a.area);
+      best = matches[0];
+    }
+  }
+
+  const containers = best ? [] : pool.filter((c) => c.contains);
+  if (!best && containers.length > 0) {
     containers.sort((a, b) => a.area - b.area);
     best = containers[0];
-  } else {
+  } else if (!best) {
     // Two-stage selection:
     //
     // Stage 1 — drop obvious non-residence structures by area.
@@ -233,10 +321,10 @@ export async function fetchBuildingPolygon(opts: {
     // only reliable fix for that case is parcel data — FL has free per-
     // county parcel layers we can wire in later.
     const RESIDENTIAL_MIN_M2 = 80;
-    const sizable = candidates.filter((c) => c.area >= RESIDENTIAL_MIN_M2);
-    const pool = sizable.length > 0 ? sizable : candidates;
-    pool.sort((a, b) => a.distSq - b.distSq);
-    const closest = pool[0];
+    const sizable = pool.filter((c) => c.area >= RESIDENTIAL_MIN_M2);
+    const sizedPool = sizable.length > 0 ? sizable : pool;
+    sizedPool.sort((a, b) => a.distSq - b.distSq);
+    const closest = sizedPool[0];
     const closestDistM = Math.sqrt(closest.distSq);
     // Search the rest of the pool for a meaningfully-larger candidate
     // within 80m — that's the "main house set back behind a closer
@@ -245,7 +333,7 @@ export async function fetchBuildingPolygon(opts: {
     const SIZE_DOMINANCE = 1.6;
     let bestRural: Candidate | null = null;
     if (closestDistM < 20) {
-      for (const c of pool) {
+      for (const c of sizedPool) {
         if (c === closest) continue;
         if (Math.sqrt(c.distSq) > RURAL_PROBE_M) continue;
         if (c.area >= closest.area * SIZE_DOMINANCE) {
@@ -256,9 +344,12 @@ export async function fetchBuildingPolygon(opts: {
     best = bestRural ?? closest;
   }
 
+  // `best` is assigned in every branch above (addrMatch / containers /
+  // two-stage). The non-null assertion silences TS narrowing across the
+  // `else if` chain.
   return {
-    latLng: best.polygon,
+    latLng: best!.polygon,
     source: "osm",
-    osmId: best.osmId,
+    osmId: best!.osmId,
   };
 }

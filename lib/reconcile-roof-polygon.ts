@@ -115,11 +115,17 @@ interface ReconcileInput {
     polygon: Array<LatLng>;
     source: "microsoft-buildings" | "osm";
   } | null;
+  /** Optional input-address house number (leading digit run, e.g. "1234"
+   *  or "1234A"). Passed through to the OSM lookup, where it short-circuits
+   *  ranking against `addr:housenumber` tags. MS Buildings has no tag
+   *  data so this only affects the OSM path. */
+  houseNumber?: string;
 }
 
 async function fetchGisFootprint(
   lat: number,
   lng: number,
+  houseNumber?: string,
 ): Promise<{ polygon: Array<LatLng>; source: "microsoft-buildings" | "osm" } | null> {
   // Microsoft Buildings is a local file read — fast and free. Try first.
   const ms = await fetchMicrosoftBuildingPolygon({ lat, lng }).catch(() => null);
@@ -127,7 +133,7 @@ async function fetchGisFootprint(
 
   // OSM Overpass — slower (~1.5s fresh, 300ms cached) and patchier coverage,
   // but the only source for non-Nashville TN at the moment.
-  const osm = await fetchBuildingPolygon({ lat, lng }).catch(() => null);
+  const osm = await fetchBuildingPolygon({ lat, lng, houseNumber }).catch(() => null);
   if (osm) return { polygon: osm.latLng, source: "osm" };
 
   return null;
@@ -152,7 +158,7 @@ export async function reconcileRoofPolygon(
   const gis =
     input.gisPolygonOverride !== undefined
       ? input.gisPolygonOverride
-      : await fetchGisFootprint(lat, lng);
+      : await fetchGisFootprint(lat, lng, input.houseNumber);
 
   const sam3Sqft =
     sam3Polygon && sam3Polygon.length >= 3 ? polygonAreaSqft(sam3Polygon) : null;

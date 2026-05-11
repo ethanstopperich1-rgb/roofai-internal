@@ -444,6 +444,15 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
   }
 
+  // Optional ?address= — full formatted address from the geocoder. We only
+  // need the leading house number for OSM `addr:housenumber` matching, so
+  // extract just that (digits with an optional letter suffix, e.g.
+  // "1234A 17½"). Falls through silently when address is absent or doesn't
+  // start with a number (e.g. POI names, ranches without a street number).
+  const addressParam = searchParams.get("address") ?? "";
+  const houseNumberMatch = addressParam.trim().match(/^(\d+[A-Za-z]?)/);
+  const houseNumber = houseNumberMatch ? houseNumberMatch[1] : undefined;
+
   const apiKey = process.env.ROBOFLOW_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
@@ -752,6 +761,7 @@ export async function GET(req: Request) {
     referenceLat: tileCenter.lat,
     referenceLng: tileCenter.lng,
     sam3Polygon: sam3LatLng,
+    houseNumber,
   });
 
   if (!reconciled) {
