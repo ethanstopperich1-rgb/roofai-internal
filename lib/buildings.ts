@@ -211,15 +211,49 @@ export async function fetchBuildingPolygon(opts: {
     containers.sort((a, b) => a.area - b.area);
     best = containers[0];
   } else {
-    const RESIDENTIAL_MIN_M2 = 50;
+    // Two-stage selection:
+    //
+    // Stage 1 — drop obvious non-residence structures by area.
+    //   We use an 80 m² (≈ 860 sqft) floor. Almost no real FL residence is
+    //   under 860 sqft. AC pads, detached carports, garden sheds, well
+    //   houses, gazebos, pool equipment enclosures all sit under this.
+    //
+    // Stage 2 — rural-mode switch:
+    //   If the closest remaining candidate is < 20m away AND a substantially
+    //   larger one (≥1.6×) exists within 80m, prefer the larger one. The
+    //   "closest small structure near the geocoded pin + bigger house set
+    //   back" pattern is the classic rural FL failure mode this fixes.
+    //
+    //   Otherwise (suburban tight-spacing, single candidate, similar sizes),
+    //   fall back to closest-by-distance ranking which is correct for
+    //   subdivision lots where adjacent houses are similar size.
+    //
+    // Honest caveat: when a real pole barn (4,000+ sqft) sits on a parcel
+    // with a smaller house (1,200 sqft), this still picks the barn. The
+    // only reliable fix for that case is parcel data — FL has free per-
+    // county parcel layers we can wire in later.
+    const RESIDENTIAL_MIN_M2 = 80;
     const sizable = candidates.filter((c) => c.area >= RESIDENTIAL_MIN_M2);
     const pool = sizable.length > 0 ? sizable : candidates;
-    pool.sort((a, b) => {
-      const scoreA = Math.sqrt(a.distSq) - 8 * Math.log(Math.max(1, a.area));
-      const scoreB = Math.sqrt(b.distSq) - 8 * Math.log(Math.max(1, b.area));
-      return scoreA - scoreB;
-    });
-    best = pool[0];
+    pool.sort((a, b) => a.distSq - b.distSq);
+    const closest = pool[0];
+    const closestDistM = Math.sqrt(closest.distSq);
+    // Search the rest of the pool for a meaningfully-larger candidate
+    // within 80m — that's the "main house set back behind a closer
+    // outbuilding" case.
+    const RURAL_PROBE_M = 80;
+    const SIZE_DOMINANCE = 1.6;
+    let bestRural: Candidate | null = null;
+    if (closestDistM < 20) {
+      for (const c of pool) {
+        if (c === closest) continue;
+        if (Math.sqrt(c.distSq) > RURAL_PROBE_M) continue;
+        if (c.area >= closest.area * SIZE_DOMINANCE) {
+          if (!bestRural || c.area > bestRural.area) bestRural = c;
+        }
+      }
+    }
+    best = bestRural ?? closest;
   }
 
   return {

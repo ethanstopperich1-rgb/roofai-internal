@@ -604,33 +604,43 @@ export async function GET(req: Request) {
     }
 
     // Residence-aware picker. Used to be "closest to image center" which
-    // failed on rural parcels where the building resolution returned a
-    // shop's centroid as the tile center — SAM3 then saw the shop and a
-    // distant glimpse of the house, picked the shop (closest), and we
-    // traced the wrong building.
+    // failed on rural parcels where the building resolution returned an
+    // outbuilding's centroid as the tile center — SAM3 then saw the
+    // shop near center and the house at the edge of frame, picked the
+    // shop (closest), and we traced the wrong building.
     //
-    // New scoring: combine distance and area into a single score where
-    // larger predictions get a meaningful boost. The constants are tuned
-    // so a shop-sized prediction (~8,000 px² at zoom 20 scale 2, ≈ 350
-    // sqft) at distance 0 LOSES to a house-sized prediction (~30,000 px²
-    // ≈ 1,300 sqft) at distance 250px from center.
-    //
-    //   score = distPx - 80 × ln(areaPx)
-    //
-    // Lower wins. Verified against several rural FL test cases.
-    let bestIdx = -1;
-    let bestScore = Infinity;
-    for (const s of summaries) {
-      const score = s.distPx - 80 * Math.log(Math.max(1, s.areaPx));
-      if (score < bestScore) {
-        bestScore = score;
-        bestIdx = s.idx;
+    // Strategy (mirrors lib/buildings.ts):
+    //   - At zoom 20 scale 2, 1 px ≈ 0.066m so 1 px² ≈ 0.0044 m². An
+    //     80 m² residence floor ≈ 18,000 px².
+    //   - Filter predictions with pixelArea < 18,000 (sheds, AC pads).
+    //   - Rural-mode switch: if the closest passing prediction is small
+    //     and within 100px of image center, but a ≥1.6× larger
+    //     prediction exists within 400px of center, prefer the larger.
+    //   - Otherwise pick closest-to-center.
+    const RESIDENCE_MIN_PX2 = 18_000;
+    const sizable = summaries.filter((s) => s.areaPx >= RESIDENCE_MIN_PX2);
+    const pool = sizable.length > 0 ? sizable : summaries;
+    pool.sort((a, b) => a.distPx - b.distPx);
+    const closest = pool[0];
+    let chosenIdx = closest.idx;
+    if (closest.distPx < 100) {
+      const RURAL_PROBE_PX = 400;
+      const SIZE_DOMINANCE = 1.6;
+      let bestRural: (typeof closest) | null = null;
+      for (const s of pool) {
+        if (s.idx === closest.idx) continue;
+        if (s.distPx > RURAL_PROBE_PX) continue;
+        if (s.areaPx >= closest.areaPx * SIZE_DOMINANCE) {
+          if (!bestRural || s.areaPx > bestRural.areaPx) bestRural = s;
+        }
       }
+      if (bestRural) chosenIdx = bestRural.idx;
     }
-    const bestDistSqPx =
-      bestIdx >= 0
-        ? summaries[bestIdx].distPx * summaries[bestIdx].distPx
-        : Infinity;
+    const bestIdx = chosenIdx;
+    const bestDistSqPx = (() => {
+      const found = summaries.find((s) => s.idx === bestIdx);
+      return found ? found.distPx * found.distPx : Infinity;
+    })();
 
     if (bestIdx >= 0) {
       const chosen = extracted.predictions[bestIdx];

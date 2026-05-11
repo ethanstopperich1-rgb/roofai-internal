@@ -217,26 +217,36 @@ export async function fetchMicrosoftBuildingPolygon(opts: {
     return null;
   }
 
-  // Filter out shed-sized (< 50 m²) structures unless that empties the pool.
-  const RESIDENTIAL_MIN_M2 = 50;
+  // Two-stage selection — see lib/buildings.ts for the full rationale.
+  // Stage 1: filter < 80 m² (sheds, AC pads, carports).
+  // Stage 2: rural-mode switch — if closest candidate is < 20m AND a
+  //          ≥1.6× larger candidate exists within 80m, prefer larger.
+  const RESIDENTIAL_MIN_M2 = 80;
   const sizable = candidates.filter((c) => c.areaM2 >= RESIDENTIAL_MIN_M2);
   const pool = sizable.length > 0 ? sizable : candidates;
 
-  // Convert distSq (deg²) → distance in meters before scoring so the
-  // area-vs-distance trade-off uses interpretable units.
-  let bestPoly: number[] | null = null;
-  let bestScore = Infinity;
-  for (const c of pool) {
-    // Approximate degree² → meter² by scaling by mPerDegLng² (degrees
-    // are small enough at parcel scale that the lat/lng asymmetry is
-    // negligible for ranking purposes).
-    const distM = Math.sqrt(c.distSq) * mPerDegLng;
-    const score = distM - 8 * Math.log(Math.max(1, c.areaM2));
-    if (score < bestScore) {
-      bestScore = score;
-      bestPoly = c.poly;
+  // Convert deg² → meters for distance-based ranking.
+  type Scored = { poly: number[]; areaM2: number; distM: number };
+  const scored: Scored[] = pool.map((c) => ({
+    poly: c.poly,
+    areaM2: c.areaM2,
+    distM: Math.sqrt(c.distSq) * mPerDegLng,
+  }));
+  scored.sort((a, b) => a.distM - b.distM);
+  const closest = scored[0];
+  const RURAL_PROBE_M = 80;
+  const SIZE_DOMINANCE = 1.6;
+  let bestRural: Scored | null = null;
+  if (closest.distM < 20) {
+    for (const s of scored) {
+      if (s === closest) continue;
+      if (s.distM > RURAL_PROBE_M) continue;
+      if (s.areaM2 >= closest.areaM2 * SIZE_DOMINANCE) {
+        if (!bestRural || s.areaM2 > bestRural.areaM2) bestRural = s;
+      }
     }
   }
+  const bestPoly = (bestRural ?? closest).poly;
   if (!bestPoly) {
     debug(
       `[ms-buildings] no scorable candidate near (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
