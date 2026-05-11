@@ -4,7 +4,12 @@ import { list } from "@vercel/blob";
 import { getCached, setCached } from "@/lib/cache";
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+// 60s — backfilled archives can span 800+ days; the per-day Blob fetches
+// add up even when chunked. Default 30s left the route timing out
+// halfway through a 2-year query, returning sparse / inconsistent
+// event lists. 60s comfortably covers a 5-year window at 20-way
+// chunked concurrency.
+export const maxDuration = 60;
 
 /**
  * GET /api/hail-mrms?lat=&lng=&yearsBack=2&radiusMiles=2
@@ -215,43 +220,54 @@ export async function GET(req: Request) {
   // blob.vercel-storage.com/...`), so we MUST use the URL returned by
   // list() rather than hardcoding a base path. CDN caching is fine
   // since once a day's MESH file is written it never changes.
+  //
+  // Concurrency is CHUNKED. Naive Promise.all over 800+ days hit Node's
+  // libuv pool ceiling and the function's 30s timeout halfway through
+  // a 2-year window, returning sparse / inconsistent event lists.
+  // 20-way chunking keeps the function instance healthy and finishes a
+  // 5-year archive (1825 days) in ~15s wall-clock at typical Blob CDN
+  // latency (~50-100ms per fetch).
   const events: HailEvent[] = [];
-  await Promise.all(
-    keysInWindow.map(async ({ date, url }) => {
-      try {
-        const r = await fetch(url, {
-          signal: AbortSignal.timeout(8_000),
-          cache: "force-cache",
-        });
-        if (!r.ok) return;
-        const doc = (await r.json()) as MrmsDayDoc;
-        if (!doc.cells || doc.cells.length === 0) return;
-
-        let bestMm = 0;
-        let bestDistance = Infinity;
-        let hitCount = 0;
-        for (const cell of doc.cells) {
-          if (cell.mm < minMm) continue;
-          const d = haversineMiles(lat, lng, cell.lat, cell.lng);
-          if (d > radiusMiles) continue;
-          hitCount++;
-          if (cell.mm > bestMm) bestMm = cell.mm;
-          if (d < bestDistance) bestDistance = d;
-        }
-        if (hitCount > 0) {
-          events.push({
-            date,
-            maxInches: Math.round((bestMm / 25.4) * 100) / 100,
-            maxMm: bestMm,
-            hitCount,
-            distanceMiles: Math.round(bestDistance * 10) / 10,
+  const CHUNK_SIZE = 20;
+  for (let i = 0; i < keysInWindow.length; i += CHUNK_SIZE) {
+    const chunk = keysInWindow.slice(i, i + CHUNK_SIZE);
+    await Promise.all(
+      chunk.map(async ({ date, url }) => {
+        try {
+          const r = await fetch(url, {
+            signal: AbortSignal.timeout(8_000),
+            cache: "force-cache",
           });
+          if (!r.ok) return;
+          const doc = (await r.json()) as MrmsDayDoc;
+          if (!doc.cells || doc.cells.length === 0) return;
+
+          let bestMm = 0;
+          let bestDistance = Infinity;
+          let hitCount = 0;
+          for (const cell of doc.cells) {
+            if (cell.mm < minMm) continue;
+            const d = haversineMiles(lat, lng, cell.lat, cell.lng);
+            if (d > radiusMiles) continue;
+            hitCount++;
+            if (cell.mm > bestMm) bestMm = cell.mm;
+            if (d < bestDistance) bestDistance = d;
+          }
+          if (hitCount > 0) {
+            events.push({
+              date,
+              maxInches: Math.round((bestMm / 25.4) * 100) / 100,
+              maxMm: bestMm,
+              hitCount,
+              distanceMiles: Math.round(bestDistance * 10) / 10,
+            });
+          }
+        } catch (err) {
+          console.warn(`[hail-mrms] failed to read ${date}:`, err);
         }
-      } catch (err) {
-        console.warn(`[hail-mrms] failed to read ${date}:`, err);
-      }
-    }),
-  );
+      }),
+    );
+  }
 
   events.sort((a, b) => b.date.localeCompare(a.date));
 
