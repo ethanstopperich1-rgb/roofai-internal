@@ -53,20 +53,20 @@ const ROBOFLOW_WORKFLOW_URL =
   "https://serverless.roboflow.com/infer/workflows/bradens-workspace/sam3-roof-segmentation-test-1778124556737";
 
 /**
- * SAM3 segmentation prompt. The workflow accepts this string and uses it
- * to pick which mask to keep. "entire house roof" works well across FL /
- * MN / TX residential imagery; override per-deploy via ROBOFLOW_SAM3_PROMPT
- * if a different phrasing improves your hit rate.
+ * SAM3 segmentation prompt. Must match what the workflow expects — the
+ * Roboflow deploy panel shows the workflow's default as "main roof in
+ * the center of the image". Different phrasings change which mask SAM3
+ * picks. Override per-deploy via ROBOFLOW_SAM3_PROMPT.
  */
-const SAM3_PROMPT = process.env.ROBOFLOW_SAM3_PROMPT ?? "entire house roof";
+const SAM3_PROMPT =
+  process.env.ROBOFLOW_SAM3_PROMPT ?? "main roof in the center of the image";
 
 /**
- * Confidence floor passed into the workflow's `confidence` input. The
- * workflow's own default is 0.2 — kept here so we don't drop the field
- * silently when sending the request. Lower = more permissive mask
- * candidates; higher = stricter.
+ * Confidence floor passed into the workflow's `confidence` parameter.
+ * Workflow default is 0.3 (per the deploy panel). Lower = more permissive
+ * mask candidates; higher = stricter.
  */
-const SAM3_CONFIDENCE = Number(process.env.ROBOFLOW_SAM3_CONFIDENCE ?? "0.2");
+const SAM3_CONFIDENCE = Number(process.env.ROBOFLOW_SAM3_CONFIDENCE ?? "0.3");
 
 interface Sam3CachedResult extends ReconciledRoof {
   /** When this run actually called Roboflow (vs served from cache). */
@@ -566,6 +566,29 @@ export async function GET(req: Request) {
     // api_key for serverless inference. Pass both for belt-and-suspenders —
     // either method should authenticate; some serverless endpoints reject
     // body-only auth despite older docs implying it works.
+    // Request body matches the shape the Python SDK posts (visible in the
+    // Roboflow workflow "Deploy" panel under API → Python):
+    //
+    //   client.run_workflow(
+    //     workspace_name=..., workflow_id=...,
+    //     images={"image": <bytes/base64/url>},
+    //     parameters={"prompt": "...", "pixels_per_unit": 1, "confidence": 0.3},
+    //   )
+    //
+    // -> POST body:
+    //   {
+    //     api_key: "...",
+    //     inputs: { image: { type: "base64", value: ... }, prompt: "...",
+    //               pixels_per_unit: ..., confidence: ... }
+    //   }
+    //
+    // Roboflow's serverless workflow runtime expects EVERY input under a
+    // single `inputs` object — `image`, `prompt`, `pixels_per_unit`, and
+    // `confidence` are all sibling keys there. The SDK's `images=` and
+    // `parameters=` kwargs are a client-side ergonomic split; the wire
+    // format merges them. (We confirmed this against the Python SDK source
+    // — `inference_sdk.http.client.InferenceHTTPClient.run_workflow` builds
+    // the body as `{"api_key": ..., "inputs": {...images, ...parameters}}`.)
     const res = await fetch(ROBOFLOW_WORKFLOW_URL, {
       method: "POST",
       headers: {
@@ -578,10 +601,6 @@ export async function GET(req: Request) {
           image: { type: "base64", value: img.base64 },
           prompt: SAM3_PROMPT,
           pixels_per_unit: pixelsPerFoot(lat),
-          // Pass confidence explicitly. The workflow has its own default
-          // but supplying it removes ambiguity when a default changes
-          // upstream (Roboflow has shipped breaking input-schema updates
-          // before — defaults flipped without notice).
           confidence: SAM3_CONFIDENCE,
         },
       }),
