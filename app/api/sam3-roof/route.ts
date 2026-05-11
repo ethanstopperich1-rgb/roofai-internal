@@ -466,7 +466,19 @@ export async function GET(req: Request) {
   // ?nocache=1 query param — surgical cache-bust for testing workflow
   // changes without flipping diagnostic mode. Reconciler still runs.
   const noCache = searchParams.get("nocache") === "1";
-  const skipCache = diagnosticMode || noCache;
+
+  // ?clickLat=X&clickLng=Y override — when the rep clicks the right
+  // building on the satellite tile (after auto-detection picks wrong),
+  // we re-fetch SAM3 with the tile centered EXACTLY on that click. This
+  // bypasses resolveBuildingCenter entirely. Cache is also bypassed so
+  // the override takes effect immediately rather than serving the bad
+  // cached result.
+  const clickLat = Number(searchParams.get("clickLat"));
+  const clickLng = Number(searchParams.get("clickLng"));
+  const hasClickOverride =
+    Number.isFinite(clickLat) && Number.isFinite(clickLng);
+
+  const skipCache = diagnosticMode || noCache || hasClickOverride;
 
   if (!skipCache) {
     const cached = await getCached<Sam3CachedResult | null>("sam3-roof", lat, lng);
@@ -485,7 +497,9 @@ export async function GET(req: Request) {
   // Geocoded addresses often sit on the road, not on the house. Centre
   // the satellite tile on the resolved building location so SAM3 sees
   // the target building dead-centre and the picker can trivially pick it.
-  const tileCenter = await resolveBuildingCenter(lat, lng);
+  const tileCenter = hasClickOverride
+    ? { lat: clickLat, lng: clickLng, source: "click-override" }
+    : await resolveBuildingCenter(lat, lng);
   console.log(
     `[sam3-roof] tile centered on ${tileCenter.source}: ` +
       `(${tileCenter.lat.toFixed(6)}, ${tileCenter.lng.toFixed(6)}) ` +

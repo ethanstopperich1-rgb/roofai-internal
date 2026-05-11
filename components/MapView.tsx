@@ -37,6 +37,15 @@ interface Props {
    *  floating sqft labels project footprint → slope area using cos(pitch)
    *  instead of the hardcoded 6/12 default. */
   pitchDegrees?: number | null;
+  /** When true, the next single click on the map fires onPickBuilding
+   *  with the clicked lat/lng instead of any default behavior. Used to
+   *  let the rep override auto-detected building when SAM3 picks the
+   *  wrong structure on multi-building rural parcels. */
+  pickingBuilding?: boolean;
+  /** Fired when the rep clicks during pickingBuilding mode. Receives
+   *  the lat/lng of the click. Parent should consume by calling SAM3
+   *  with ?clickLat=X&clickLng=Y override. */
+  onPickBuilding?: (lat: number, lng: number) => void;
 }
 
 /**
@@ -71,11 +80,17 @@ export default function MapView({
   editable = false,
   onPolygonsChanged,
   pitchDegrees,
+  pickingBuilding = false,
+  onPickBuilding,
 }: Props) {
   // Stable ref to the latest callback so we don't have to re-bind polygon
   // event listeners every render.
   const onPolygonsChangedRef = useRef(onPolygonsChanged);
   onPolygonsChangedRef.current = onPolygonsChanged;
+  const onPickBuildingRef = useRef(onPickBuilding);
+  onPickBuildingRef.current = onPickBuilding;
+  const pickingBuildingRef = useRef(pickingBuilding);
+  pickingBuildingRef.current = pickingBuilding;
   const mapEl = useRef<HTMLDivElement>(null);
   const svEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
@@ -213,6 +228,17 @@ export default function MapView({
       setMapReady(true);
       if (markerRef.current) markerRef.current.setMap(null);
       markerRef.current = new g.maps.Marker({ position: pos, map: mapRef.current });
+
+      // Click listener for "Pick the right building" mode. When the rep
+      // toggles pickingBuilding=true, the next click on the map fires
+      // onPickBuilding with the lat/lng. Active polygons + drawing mode
+      // still take priority via the ref check.
+      mapRef.current.addListener("click", (e: google.maps.MapMouseEvent) => {
+        if (!pickingBuildingRef.current) return;
+        if (!e.latLng) return;
+        const cb = onPickBuildingRef.current;
+        if (cb) cb(e.latLng.lat(), e.latLng.lng());
+      });
 
       // Probe Street View coverage before we try to render — many rural
       // residential roads have no panorama at all and would otherwise

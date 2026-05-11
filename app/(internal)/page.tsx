@@ -150,6 +150,13 @@ export default function HomePage() {
   const [sam3Polygon, setSam3Polygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // "Pick the right building" mode — when the auto-detection picks the
+  // wrong building on a multi-structure rural parcel, the rep toggles
+  // this on and clicks the actual house on the satellite tile. We then
+  // re-call SAM3 with ?clickLat=&clickLng= override and update the
+  // polygon with the result.
+  const [pickingBuilding, setPickingBuilding] = useState(false);
+  const [pickingLoading, setPickingLoading] = useState(false);
   // Claude verification of the rendered polygon. Catches polygons traced
   // on the wrong building, neighbour's roof, covered patio over-traces.
   // When Claude flags an issue with high confidence (ok=false, conf>0.7),
@@ -1492,7 +1499,62 @@ export default function HomePage() {
               editable={polygonReady && polygonSource !== "none"}
               onPolygonsChanged={handlePolygonsChanged}
               pitchDegrees={solar?.pitchDegrees ?? null}
+              pickingBuilding={pickingBuilding}
+              onPickBuilding={(clickLat, clickLng) => {
+                if (!address?.lat || !address?.lng) return;
+                setPickingBuilding(false);
+                setPickingLoading(true);
+                fetch(
+                  `/api/sam3-roof?lat=${address.lat}&lng=${address.lng}` +
+                    `&clickLat=${clickLat}&clickLng=${clickLng}`,
+                )
+                  .then(async (r) => {
+                    if (!r.ok) return null;
+                    const data = (await r.json()) as {
+                      polygon?: Array<{ lat: number; lng: number }>;
+                    };
+                    return data.polygon && data.polygon.length >= 3
+                      ? data.polygon
+                      : null;
+                  })
+                  .then((poly) => {
+                    if (poly) {
+                      hasUserEditedRef.current = false;
+                      setSam3Polygon(poly);
+                    } else {
+                      console.warn("[page] click-override SAM3 returned no polygon");
+                    }
+                  })
+                  .catch((err) =>
+                    console.warn("[page] click-override SAM3 failed:", err),
+                  )
+                  .finally(() => setPickingLoading(false));
+              }}
             />
+            {/* "Pick the right building" affordance — surfaced when a
+                polygon is on-screen so the rep can quickly redirect SAM3
+                to the actual house on multi-building rural parcels. */}
+            {polygonReady && polygonSource !== "none" && (
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPickingBuilding((p) => !p)}
+                  className="rounded-md border border-cy-300/30 bg-cy-300/10 px-3 py-1.5 text-[12px] font-mono uppercase tracking-[0.14em] text-cy-100 hover:bg-cy-300/20 transition-colors"
+                  disabled={pickingLoading}
+                >
+                  {pickingLoading
+                    ? "Re-tracing…"
+                    : pickingBuilding
+                      ? "Tap the right building (Esc to cancel)"
+                      : "Wrong building? Click to pick"}
+                </button>
+                {pickingBuilding && (
+                  <span className="font-mono text-[11px] text-cy-300/70">
+                    Click anywhere on the actual house in the satellite tile.
+                  </span>
+                )}
+              </div>
+            )}
             {/* Roof3DViewer (Cesium photogrammetric 3D) was removed — it
                 was visually impressive but unreliable on rural FL
                 properties where the geocoded pin lands between
