@@ -145,6 +145,11 @@ export default function SupplementAnalyzerPanel({
       fd.append("assumptions", JSON.stringify(assumptions));
       if (state) fd.append("state", state);
       if (claim.carrier) fd.append("carrier", claim.carrier);
+      // County drives HVHZ-aware rules in lib/supplement-rules.ts. The
+      // rep enters this in CarrierClaimPanel (FL-only input). When
+      // unset, the FBC §R905.1.2 IWS rule self-suppresses rather than
+      // misfiring on non-HVHZ FL.
+      if (claim.county) fd.append("county", claim.county);
       if (propertyLat != null) fd.append("propertyLat", String(propertyLat));
       if (propertyLng != null) fd.append("propertyLng", String(propertyLng));
       const r = await fetch("/api/supplement", { method: "POST", body: fd });

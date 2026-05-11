@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { rateLimit } from "@/lib/ratelimit";
 import { checkBotId } from "botid/server";
 import { sendSms, toE164, twilioConfigured } from "@/lib/twilio";
@@ -130,16 +131,29 @@ export async function POST(req: Request) {
     }
   }
 
-  // Audit log — every successful consent gets recorded. Even if the
-  // downstream CRM/Slack webhook fails, this server log gives us a
-  // defensible trail. Format: structured single-line JSON for grep.
+  // Audit log — every successful consent gets recorded. Vercel logs are
+  // a SECONDARY destination with limited retention + access controls, so
+  // we deliberately do NOT write raw PII here. Instead we log:
+  //   - leadId (server-issued, opaque)
+  //   - submittedAt (server timestamp)
+  //   - emailHash + phoneHash (first 12 chars of SHA-256 — enough for
+  //     correlation across log lines without leaking the underlying
+  //     identifier)
+  //   - canonical consent text (constant — for proving what the user saw)
+  //
+  // The CRM/Slack webhook above (and Supabase persistence when wired)
+  // is the PRIMARY destination for raw PII — that path has proper
+  // retention + access controls. The webhook payload still carries the
+  // full email + phone unchanged.
+  const hashFragment = (v: string): string =>
+    createHash("sha256").update(v).digest("hex").slice(0, 12);
   console.log(
     JSON.stringify({
       tag: "tcpa-consent",
       leadId,
       submittedAt,
-      email: body.email,
-      phone: body.phone ?? null,
+      emailHash: hashFragment(body.email.toLowerCase()),
+      phoneHash: body.phone ? hashFragment(body.phone.replace(/\D/g, "")) : null,
       consentText: TCPA_CONSENT_TEXT,
     }),
   );

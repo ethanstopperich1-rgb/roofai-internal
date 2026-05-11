@@ -1679,7 +1679,16 @@ export default function HomePage() {
 
           {/* ─── Carrier-specific claim metadata (insurance mode only) ─── */}
           {isInsuranceClaim && (
-            <CarrierClaimPanel context={claim} onChange={setClaim} />
+            <CarrierClaimPanel
+              context={claim}
+              onChange={setClaim}
+              state={
+                /\bFL\b/.test(address?.formatted ?? "") ? "FL"
+                : /\bMN\b/.test(address?.formatted ?? "") ? "MN"
+                : /\bTX\b/.test(address?.formatted ?? "") ? "TX"
+                : null
+              }
+            />
           )}
 
           {/* ─── Supplement Analyzer (insurance mode only) ───────────────

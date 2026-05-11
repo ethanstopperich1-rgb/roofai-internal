@@ -186,4 +186,10 @@ export interface ClaimContext {
   adjusterPhone?: string;
   dateOfLoss?: string;
   peril?: string;
+  /** County name (no "County" suffix). Drives FL HVHZ-aware rules in
+   *  the supplement analyzer — Miami-Dade / Broward unlocks the strict
+   *  FBC §R905.1.2 full-deck IWS requirement; rest of FL falls back to
+   *  the IRC §R905.1.2 eave-strip advisory. Without this field, the
+   *  HVHZ rule suppresses entirely rather than misfiring. */
+  county?: string;
 }

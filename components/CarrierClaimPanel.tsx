@@ -6,6 +6,10 @@ import { CARRIER_LIST, CARRIERS, type ClaimContext } from "@/lib/carriers";
 interface Props {
   context: ClaimContext;
   onChange: (c: ClaimContext) => void;
+  /** 2-letter property state. When "FL", we surface a County input so
+   *  the supplement analyzer's HVHZ-aware rules can distinguish
+   *  Miami-Dade / Broward from the rest of Florida. */
+  state?: string | null;
 }
 
 /**
@@ -14,7 +18,7 @@ interface Props {
  * first-page layout, accent color, scope-section header, and photo-
  * section title via lib/carriers.ts.
  */
-export default function CarrierClaimPanel({ context, onChange }: Props) {
+export default function CarrierClaimPanel({ context, onChange, state }: Props) {
   const carrier = CARRIERS[context.carrier] ?? CARRIERS.other;
   const fields = new Set(carrier.claimFields);
 
@@ -135,10 +139,48 @@ export default function CarrierClaimPanel({ context, onChange }: Props) {
             </select>
           </Field>
         )}
+        {/* County — FL only. Drives HVHZ-aware supplement rules. Without
+            this field set on FL claims, the FBC §R905.1.2 IWS rule
+            suppresses (it can't tell HVHZ from non-HVHZ). Pre-populated
+            with a datalist of the 67 FL counties for fast typing. */}
+        {state === "FL" && (
+          <Field label="County">
+            <input
+              className="glass-input"
+              type="text"
+              list="fl-counties"
+              placeholder="e.g., Miami-Dade"
+              value={context.county ?? ""}
+              onChange={(e) => onChange({ ...context, county: e.target.value })}
+            />
+            <datalist id="fl-counties">
+              {FL_COUNTIES.map((c) => (
+                <option key={c} value={c} />
+              ))}
+            </datalist>
+          </Field>
+        )}
       </div>
     </div>
   );
 }
+
+/** Florida counties, alphabetical. Used to populate the County datalist
+ *  on the FL claim form so the rep can autocomplete. Miami-Dade and
+ *  Broward unlock the HVHZ supplement rule tier. */
+const FL_COUNTIES = [
+  "Alachua", "Baker", "Bay", "Bradford", "Brevard", "Broward", "Calhoun",
+  "Charlotte", "Citrus", "Clay", "Collier", "Columbia", "DeSoto", "Dixie",
+  "Duval", "Escambia", "Flagler", "Franklin", "Gadsden", "Gilchrist",
+  "Glades", "Gulf", "Hamilton", "Hardee", "Hendry", "Hernando", "Highlands",
+  "Hillsborough", "Holmes", "Indian River", "Jackson", "Jefferson",
+  "Lafayette", "Lake", "Lee", "Leon", "Levy", "Liberty", "Madison",
+  "Manatee", "Marion", "Martin", "Miami-Dade", "Monroe", "Nassau",
+  "Okaloosa", "Okeechobee", "Orange", "Osceola", "Palm Beach", "Pasco",
+  "Pinellas", "Polk", "Putnam", "St. Johns", "St. Lucie", "Santa Rosa",
+  "Sarasota", "Seminole", "Sumter", "Suwannee", "Taylor", "Union",
+  "Volusia", "Wakulla", "Walton", "Washington",
+];
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

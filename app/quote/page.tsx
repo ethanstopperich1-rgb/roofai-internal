@@ -207,7 +207,14 @@ export default function QuotePage() {
     setAddress(addr);
 
     // Fire-and-forget early lead post (so the contractor gets the lead even
-    // if the homeowner abandons the wizard before the final step)
+    // if the homeowner abandons the wizard before the final step).
+    //
+    // Use the RESOLVED address fields (addr.*) — not the raw form values.
+    // When the customer typed an address without picking from autocomplete,
+    // we resolved lat/lng via Places fallback above; the raw values.lat/lng
+    // are undefined in that path. Previously the early lead posted the
+    // unresolved coords, so CRM rows for typed-address submissions were
+    // missing geo data even though the app had already resolved it.
     fetch("/api/leads", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -215,10 +222,10 @@ export default function QuotePage() {
         name: values.name,
         email: values.email,
         phone: values.phone,
-        address: values.address,
-        zip: values.zip,
-        lat: values.lat,
-        lng: values.lng,
+        address: addr.formatted,
+        zip: addr.zip,
+        lat: addr.lat,
+        lng: addr.lng,
         source: "quote-wizard-step-1",
         // TCPA consent — captured at hero form. Server REQUIRES this
         // to be true before firing automated SMS / webhook / CRM

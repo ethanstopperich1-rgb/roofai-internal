@@ -35,7 +35,6 @@ import { NextResponse, type NextRequest } from "next/server";
  *   /api/sam3-roof          primary polygon source (used by /quote)
  *   /api/solar-mask         fallback polygon (used by /quote)
  *   /api/microsoft-building fallback polygon (used by /quote)
- *   /api/aerial             aerial imagery proxy (used by /quote)
  *   /api/building           OSM building lookup (used by /quote)
  *   /api/storms             storm history (used by /quote)
  *   /api/hail-mrms          radar hail (used by /quote)
@@ -57,6 +56,8 @@ import { NextResponse, type NextRequest } from "next/server";
  *   /api/roboflow           Roboflow inference (rep tool, $$$ abuse risk)
  *   /api/sam-refine         Replicate SAM2 (rep tool, $$$ abuse risk)
  *   /api/estimates          rep proposal persistence
+ *   /api/aerial             currently unused by any caller — gated until
+ *                           an intentional customer call site exists
  */
 
 const PROTECTED_API_PREFIXES = [
