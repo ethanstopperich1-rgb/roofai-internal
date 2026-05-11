@@ -22,12 +22,16 @@ from livekit.agents import (
     Agent,
     AgentSession,
     JobContext,
+    JobProcess,
     RoomInputOptions,
     WorkerOptions,
     cli,
     inference,
 )
-from livekit.plugins import noise_cancellation, silero
+from livekit.agents.llm import FallbackAdapter as FallbackLLM
+from livekit.agents.stt import FallbackAdapter as FallbackSTT
+from livekit.agents.tts import FallbackAdapter as FallbackTTS
+from livekit.plugins import ai_coustics, silero  # noqa: F401  (noise_cancellation kept available)
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from tools import ALL_TOOLS
@@ -82,6 +86,18 @@ class SydneyAgent(Agent):
         super().__init__(instructions=SYSTEM_PROMPT, tools=ALL_TOOLS)
 
 
+def prewarm(proc: JobProcess) -> None:
+    """Prewarm hook — runs ONCE per worker process at startup.
+
+    Loads silero VAD into JobProcess.userdata so every subsequent call
+    on this process can reuse it. Without this, the entrypoint pays a
+    200-500ms ONNX load tax on EVERY incoming call. Matches Cassie +
+    Deedy + Andie's pattern.
+    """
+    proc.userdata["vad"] = silero.VAD.load()
+    logger.info("sydney worker prewarmed: silero VAD loaded")
+
+
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
 
@@ -96,27 +112,71 @@ async def entrypoint(ctx: JobContext) -> None:
         ctx.shutdown()
         return
 
-    session = AgentSession(
-        llm=inference.LLM(
+    # ─── STT — Deepgram Nova-3 multilingual primary, Nova-2 fallback ─────────
+    # Single-provider Sydney was a SPOF — Deepgram outage = no STT, dead call.
+    stt = FallbackSTT([
+        inference.STT(model="deepgram/nova-3", language="multi"),
+        inference.STT(model="deepgram/nova-2"),
+    ])
+
+    # ─── LLM — gpt-4o-mini primary, gpt-4.1-mini fallback ────────────────────
+    # Temp 0.7 preserved — Sydney's "warm receptionist" persona wants natural
+    # variation. (Cassie/Deedy run at 0.3 for OPC-script compliance — different
+    # use case.) max_tokens=180 caps responses to ~2-3 sentences per turn.
+    llm = FallbackLLM([
+        inference.LLM(
             model="openai/gpt-4o-mini",
-            extra_kwargs={"temperature": 0.7},
+            extra_kwargs={"temperature": 0.7, "max_tokens": 180},
         ),
-        stt=inference.STT(model="deepgram/nova-3", language="multi"),
-        tts=inference.TTS(
+        inference.LLM(
+            model="openai/gpt-4.1-mini",
+            extra_kwargs={"temperature": 0.7, "max_tokens": 180},
+        ),
+    ])
+
+    # ─── TTS — Cartesia Sonic-3 "Southern Woman" primary (CLIENT-LOCKED) ─────
+    # Voice ID f9836c6e + speed 1.15 are confirmed by client — do NOT change.
+    # Fallback 1: Cartesia Sonic-2 with the SAME voice ID — degraded model,
+    #             same voice, no audible drift if Sonic-3 5xx's.
+    # Fallback 2: Rime Arcana luna — different vendor, last-resort fallback.
+    #             Slight voice drift but ensures the call doesn't go silent.
+    tts = FallbackTTS([
+        inference.TTS(
             model="cartesia/sonic-3",
             voice=CARTESIA_VOICE_ID,
-            # Cartesia speed is a MULTIPLIER, not a delta. 1.0 = natural
-            # pace; 1.15 = ~15% faster. Anything below 1.0 slows speech;
-            # anything above speeds it up. The "Southern Woman" voice is
-            # on the slower end by design, so we nudge it up to feel
-            # like a working receptionist, not a sleepy storyteller.
             extra_kwargs={"speed": 1.15},
         ),
-        vad=silero.VAD.load(),
+        inference.TTS(
+            model="cartesia/sonic-2",
+            voice=CARTESIA_VOICE_ID,
+            extra_kwargs={"speed": 1.15},
+        ),
+        inference.TTS(model="rime/arcana", voice="luna"),
+    ])
+
+    session = AgentSession(
+        stt=stt,
+        llm=llm,
+        tts=tts,
+        # VAD prewarmed once per JobProcess via prewarm() — saves ~200-500ms
+        # ONNX load per call. Inline silero.VAD.load() was hot-loading the
+        # model on every dispatch.
+        vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
-        # IVR detection: if the caller is actually a phone tree (not a
-        # human), the model recognizes it and won't try to book an
-        # inspection with a robot. Same flag Andie uses.
+        # ─── Latency optimizations aligned with Cassie + Deedy + Andie ───────
+        # preemptive_generation: LLM starts generating BEFORE the caller's
+        # turn-end fires. Response is mostly ready by the time turn-detection
+        # confirms. Bigger perceived-latency win than any single STT/TTS tweak.
+        preemptive_generation=True,
+        # Barge-in: caller can interrupt Sydney mid-sentence. 2+ words OR 400ms
+        # of speech before it triggers — backchannels ("uh-huh") don't cut her off.
+        allow_interruptions=True,
+        min_interruption_words=2,
+        min_interruption_duration=0.4,
+        # Word-aligned transcript for live dashboard view — zero latency cost.
+        use_tts_aligned_transcript=True,
+        # IVR detection: if the caller is actually a phone tree (not a human),
+        # exit cleanly instead of trying to book an inspection with a robot.
         ivr_detection=True,
     )
 
@@ -147,10 +207,15 @@ async def entrypoint(ctx: JobContext) -> None:
         agent=SydneyAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
-            # BVCTelephony is the SIP/PSTN-tuned NC variant. The plain
-            # BVC() is for WebRTC calls and breaks the audio negotiation
-            # on phone calls.
-            noise_cancellation=noise_cancellation.BVCTelephony(),
+            # Upgraded from Krisp BVCTelephony() to ai-coustics QUAIL_VF_L.
+            # Per LK docs (transport/media/noise-cancellation), QUAIL_VF_L
+            # lands at 11.8% WER vs Krisp BVC's 23.5% on agent-pipeline
+            # workloads — explicitly optimized for STT accuracy + turn
+            # detection in noisy environments (convention floors, busy
+            # showrooms, callers in noisy backyards inspecting damage).
+            noise_cancellation=ai_coustics.audio_enhancement(
+                model=ai_coustics.EnhancerModel.QUAIL_VF_L,
+            ),
         ),
     )
 
@@ -171,6 +236,7 @@ if __name__ == "__main__":
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
+            prewarm_fnc=prewarm,
             agent_name="sydney",
             initialize_process_timeout=60.0,
             num_idle_processes=1,
