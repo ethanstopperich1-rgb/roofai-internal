@@ -53,13 +53,14 @@ const ROBOFLOW_WORKFLOW_URL =
   "https://serverless.roboflow.com/infer/workflows/bradens-workspace/sam3-roof-segmentation-test-1778124556737";
 
 /**
- * SAM3 segmentation prompt. Must match what the workflow expects — the
- * Roboflow deploy panel shows the workflow's default as "main roof in
- * the center of the image". Different phrasings change which mask SAM3
- * picks. Override per-deploy via ROBOFLOW_SAM3_PROMPT.
+ * SAM3 segmentation prompt. Must match what the workflow expects — we
+ * set both ends to "entire house roof" because that phrasing tells SAM3
+ * to capture the full roof envelope including wings / additions / covered
+ * porches, rather than just the central main section. The workflow's own
+ * default ("main roof in the center of the image") was tuned for a
+ * different use case. Override per-deploy via ROBOFLOW_SAM3_PROMPT.
  */
-const SAM3_PROMPT =
-  process.env.ROBOFLOW_SAM3_PROMPT ?? "main roof in the center of the image";
+const SAM3_PROMPT = process.env.ROBOFLOW_SAM3_PROMPT ?? "entire house roof";
 
 /**
  * Confidence floor passed into the workflow's `confidence` parameter.
