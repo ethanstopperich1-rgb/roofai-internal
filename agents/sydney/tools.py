@@ -2,17 +2,33 @@
 
 `transfer_to_human` is REAL when the routing env vars are set — it dials the
 appropriate on-call human via the LiveKit outbound SIP trunk and bridges them
-into the caller's room. If the env vars are missing it falls back to a stdout
-banner so the demo still works without escalation numbers configured.
+into the caller's room. If the env vars are missing it falls back to a redacted
+log line so the demo still works without escalation numbers configured.
 
-`book_inspection` and `log_lead` are still mocked stdout banners. Production
-work is to replace them with JobNimbus API calls + Sendblue/Twilio SMS
-confirmation. Both leave clearly marked TODO PRODUCTION blocks below.
+`book_inspection` and `log_lead` are still mocked. Production work is to
+replace them with JobNimbus API calls + Sendblue/Twilio SMS confirmation.
+Both:
+  - Return `status: "mock_*"` (e.g. mock_booked) — never plain `"booked"` —
+    so the calling LLM can detect demo mode and tailor its next utterance
+    rather than telling a real caller "you're confirmed."
+  - Use confirmation/lead identifiers explicitly prefixed `MOCK-` so any
+    downstream logs make it obvious these are not real CRM records.
+
+Logging policy (post-review):
+  - The previous `_banner` printed full PII (name/phone/email/address/notes)
+    to stdout. Cloud logs are NOT a safe PII store. We now log a redacted
+    line via the `sydney.tools` logger with:
+      - first 12 chars of SHA-256 of any contact identifier (correlation
+        without the underlying value)
+      - structural metadata (lead_type, service_type, time_window, office)
+      - lengths of free-text fields rather than the text itself
+  - Full PII still flows to CRM downstreams when those are wired up; that's
+    the only place it should land in production.
 """
 
 from __future__ import annotations
 
-import json
+import hashlib
 import logging
 import os
 from typing import Annotated
@@ -23,12 +39,23 @@ from livekit.agents import function_tool
 logger = logging.getLogger("sydney.tools")
 
 
-def _banner(title: str, payload: dict) -> None:
-    print("\n" + "=" * 60)
-    print(f"  TOOL FIRED: {title}")
-    print("=" * 60)
-    print(json.dumps(payload, indent=2))
-    print("=" * 60 + "\n", flush=True)
+def _hash_fragment(value: str | None) -> str | None:
+    """SHA-256 first 12 chars — enough to correlate log lines, opaque
+    enough that the underlying value can't be recovered from the log.
+    Empty / None passes through as None."""
+    if not value:
+        return None
+    return hashlib.sha256(value.strip().lower().encode("utf-8")).hexdigest()[:12]
+
+
+def _log_tool_call(title: str, redacted_summary: dict) -> None:
+    """Structured single-line log of a tool invocation.
+
+    `redacted_summary` MUST be already redacted by the caller — this
+    helper does not strip PII itself. Designed for cloud log retention
+    where any PII written is effectively persistent.
+    """
+    logger.info("tool_fired tool=%s summary=%s", title, redacted_summary)
 
 
 # Routing — set in LK Cloud Agent secrets.
@@ -65,14 +92,17 @@ async def transfer_to_human(
     """
     target = ESCALATION_NUMBERS.get(reason, "") or ESCALATION_NUMBERS.get("general", "")
 
-    payload = {
+    # Redacted log — caller_summary may contain incidental PII (the caller
+    # describing their situation). We log a length + hash for correlation,
+    # not the contents. `target` is hashed too because cloud logs aren't a
+    # safe place to keep on-call humans' personal numbers either.
+    _log_tool_call("transfer_to_human", {
         "reason": reason,
         "priority": priority,
-        "caller_summary": caller_summary,
-        "target": target or "<unset>",
-        "trunk": SIP_OUTBOUND_TRUNK_ID or "<unset>",
-    }
-    _banner("transfer_to_human", payload)
+        "caller_summary_len": len(caller_summary or ""),
+        "target_hash": _hash_fragment(target),
+        "trunk_configured": bool(SIP_OUTBOUND_TRUNK_ID),
+    })
 
     # Mock fallback — keeps the demo working without real numbers.
     if not target or not SIP_OUTBOUND_TRUNK_ID:
@@ -154,16 +184,30 @@ async def book_inspection(
     Only call this AFTER you have read the appointment back to the caller and
     they confirmed it is correct. Do not call speculatively.
     """
-    payload = {
-        "name": name, "phone": phone, "email": email, "address": address,
-        "date": date, "time_window": time_window, "office": office,
-        "service_type": service_type, "notes": notes,
-    }
-    _banner("book_inspection", payload)
-    return {
-        "status": "booked",
-        "confirmation_number": "NL-DEMO-12345",
+    # Redacted log — full PII (name/phone/email/address/notes) is sent
+    # straight to CRM when wired; cloud logs only get structural metadata
+    # plus hashes for correlation.
+    _log_tool_call("book_inspection", {
+        "mode": "mock",
+        "name_hash": _hash_fragment(name),
+        "phone_hash": _hash_fragment(phone),
+        "email_hash": _hash_fragment(email),
+        "address_hash": _hash_fragment(address),
+        "date": date,
+        "time_window": time_window,
         "office": office,
+        "service_type": service_type,
+        "notes_len": len(notes or ""),
+    })
+    # status: "mock_booked" — NOT "booked" — so the LLM can detect demo
+    # mode and avoid telling a real caller they're confirmed when no
+    # JobNimbus record exists. Confirmation prefixed MOCK- for the same
+    # reason on any downstream logging.
+    return {
+        "status": "mock_booked",
+        "confirmation_number": "MOCK-NL-DEMO-12345",
+        "office": office,
+        "demo_mode": True,
     }
 
 
@@ -183,12 +227,21 @@ async def log_lead(
     you collected contact info but did not book an appointment (outside service
     area, warranty handoff, vendor / wrong number, DNC request, etc.).
     """
-    payload = {
-        "name": name, "phone": phone, "email": email, "address": address,
-        "notes": notes, "lead_type": lead_type,
+    _log_tool_call("log_lead", {
+        "mode": "mock",
+        "name_hash": _hash_fragment(name),
+        "phone_hash": _hash_fragment(phone),
+        "email_hash": _hash_fragment(email),
+        "address_hash": _hash_fragment(address),
+        "notes_len": len(notes or ""),
+        "lead_type": lead_type,
+    })
+    # status: "mock_logged" — NOT "logged" — see book_inspection comment.
+    return {
+        "status": "mock_logged",
+        "lead_id": "MOCK-LEAD-DEMO-98765",
+        "demo_mode": True,
     }
-    _banner("log_lead", payload)
-    return {"status": "logged", "lead_id": "LEAD-DEMO-98765"}
 
 
 ALL_TOOLS = [transfer_to_human, book_inspection, log_lead]
