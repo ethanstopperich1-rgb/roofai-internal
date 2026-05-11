@@ -295,22 +295,30 @@ export function BoltStyleHero({
           {embedMode ? (
             <div className="mt-5 flex items-center justify-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-400">
               <Sparkles size={11} className="text-cy-300" />
-              <span>Satellite-measured · No spam · Powered by Voxaris Pitch</span>
+              <span>Voxaris in-house AI · Private · Powered by Voxaris Pitch</span>
             </div>
           ) : (
             <>
               <div className="hidden sm:grid grid-cols-3 gap-3 mt-7">
-                <Trust icon={<Sparkles size={13} />} title="Satellite-measured" body="No tape measure visit needed" />
-                <Trust icon={<ShieldCheck size={13} />} title="Private" body="Your address is never sold" />
+                <Trust
+                  icon={<Sparkles size={13} />}
+                  title="Voxaris in-house AI"
+                  body="Proprietary roof model. No third-party APIs."
+                />
+                <Trust
+                  icon={<ShieldCheck size={13} />}
+                  title="Private"
+                  body="Your address is never sold or shared."
+                />
                 <Trust
                   icon={<ShieldCheck size={13} />}
                   title="No obligation"
-                  body="See the price before sharing more"
+                  body="See the price before sharing more."
                 />
               </div>
               <div className="sm:hidden mt-5 flex items-center justify-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-400 px-4">
                 <Sparkles size={11} className="text-cy-300" />
-                <span>Satellite-measured · Private · No obligation</span>
+                <span>Voxaris in-house AI · Private · No obligation</span>
               </div>
             </>
           )}

@@ -453,7 +453,7 @@ export default function QuotePage() {
         <BotIdClient protect={[{ path: "/api/leads", method: "POST" }]} />
         <BoltStyleHero
           title="What will it cost to"
-          subtitle="Your roof, measured by satellite. A real number in thirty seconds — no calls until you ask."
+          subtitle="Voxaris's in-house AI measures your roof from satellite imagery and prices it in thirty seconds. Proprietary model, real number, no calls until you ask."
           onSubmit={onLeadSubmit}
           submitting={submitting}
           nav={

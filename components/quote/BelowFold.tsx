@@ -30,7 +30,7 @@ interface Stat {
 
 const STATS: Stat[] = [
   { value: "30s", label: "Average estimate time", hint: "from address to price" },
-  { value: "Satellite", label: "Same imagery Google uses", hint: "for solar-panel sizing" },
+  { value: "AI", label: "Voxaris in-house roof model", hint: "trained on FL/MN/TX imagery" },
   { value: "1 hour", label: "Contractor response", hint: "during business hours" },
   { value: "$0", label: "Cost to homeowner", hint: "no obligation, ever" },
 ];
@@ -88,7 +88,7 @@ const STEPS: Step[] = [
   {
     icon: <Satellite size={22} />,
     title: "AI measures your roof",
-    body: "Photogrammetric segmentation determines square footage, pitch, and complexity in seconds. Same data Google uses for solar panel sizing.",
+    body: "Voxaris's in-house roof segmentation model identifies square footage, pitch, and complexity in seconds — trained on hundreds of thousands of FL, MN, and TX residential roofs.",
   },
   {
     icon: <Wrench size={22} />,
@@ -171,7 +171,7 @@ interface FaqItem {
 const FAQS: FaqItem[] = [
   {
     q: "How accurate is the satellite estimate?",
-    a: "Within ~10% of an in-person quote on most residential properties. We measure from Google's photogrammetric satellite imagery — the same source Google uses for solar-panel sizing — and apply standard pitch and waste factors. Older imagery (>5 years) carries a wider band; we flag that explicitly when relevant.",
+    a: "Within ~10% of an in-person quote on most residential properties. Voxaris's in-house roof-segmentation model identifies your roof from high-resolution aerial imagery, measures pitch and complexity, and applies regional waste factors — all in seconds. Older imagery (>5 years) carries a wider band; we flag that explicitly when relevant.",
   },
   {
     q: "How is this free? What's the catch?",
