@@ -70,6 +70,12 @@ const PROTECTED_API_PREFIXES = [
   "/api/roboflow",
   "/api/sam-refine",
   "/api/estimates",
+  // /api/aerial moved to protected — was previously in the public-OK
+  // list because middleware.ts assumed /quote used it, but a repo grep
+  // (Cursor review) confirmed no callers. Gating it eliminates a free
+  // cost-abuse surface (Google Aerial View render quota) until / if
+  // we wire an actual customer-facing caller.
+  "/api/aerial",
 ];
 
 const PROTECTED_PAGE_PATHS = new Set<string>(["/"]);

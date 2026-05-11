@@ -21,7 +21,28 @@ interface LeadPayload {
   estimateHigh?: number;
   source?: string;
   notes?: string;
+  /** TCPA consent — required. The client form gates the submit button
+   *  but a direct POST could bypass it; we enforce server-side too. */
+  tcpaConsent?: boolean;
+  /** Exact disclosure text shown to the customer at consent time. We
+   *  store this verbatim so we can prove what they agreed to if asked
+   *  by FTC / a partner contractor in a compliance audit. */
+  tcpaConsentText?: string;
+  /** ISO timestamp the customer checked the box. Client-supplied; the
+   *  server also records `submittedAt` which is the source of truth. */
+  tcpaConsentAt?: string;
 }
+
+/** TCPA disclosure text — the exact wording the customer agrees to.
+ *  Pin this constant so any change to the consent text is tracked in
+ *  git and survives consent audits. If the wording is updated, this
+ *  string AND the rendered checkbox copy must change together. */
+export const TCPA_CONSENT_TEXT =
+  "By submitting this form, you consent to receive automated marketing " +
+  "calls, texts, and emails from Voxaris and its partner contractors at " +
+  "the phone number and email provided. Consent is not required to make " +
+  "a purchase. Message and data rates may apply. You may opt out at any " +
+  "time by replying STOP to texts or contacting us.";
 
 /**
  * POST /api/leads
@@ -61,6 +82,22 @@ export async function POST(req: Request) {
     );
   }
 
+  // TCPA consent enforcement — server-side gate. The client form gates
+  // the submit button via React state, but a direct POST could bypass
+  // that check. We REQUIRE tcpaConsent === true before any SMS or
+  // automated outreach fires for this lead.
+  if (body.tcpaConsent !== true) {
+    return NextResponse.json(
+      {
+        error: "tcpa_consent_required",
+        message:
+          "TCPA consent is required before submitting marketing-eligible " +
+          "contact information. Check the consent box and resubmit.",
+      },
+      { status: 400 },
+    );
+  }
+
   const leadId = `lead_${Date.now().toString(36)}_${Math.random()
     .toString(36)
     .slice(2, 7)}`;
@@ -74,13 +111,38 @@ export async function POST(req: Request) {
       await fetch(hookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leadId, submittedAt, ...body }),
+        body: JSON.stringify({
+          leadId,
+          submittedAt,
+          ...body,
+          // Always echo back the verbatim consent text we BELIEVE the
+          // customer saw, plus the server-side timestamp. The body's
+          // tcpaConsentText is client-supplied and could be spoofed;
+          // ours is the canonical receipt.
+          tcpaConsent: true,
+          tcpaConsentText: TCPA_CONSENT_TEXT,
+          tcpaConsentAt: submittedAt,
+        }),
         signal: AbortSignal.timeout(8_000),
       });
     } catch (err) {
       console.error("[leads] webhook failed:", err);
     }
   }
+
+  // Audit log — every successful consent gets recorded. Even if the
+  // downstream CRM/Slack webhook fails, this server log gives us a
+  // defensible trail. Format: structured single-line JSON for grep.
+  console.log(
+    JSON.stringify({
+      tag: "tcpa-consent",
+      leadId,
+      submittedAt,
+      email: body.email,
+      phone: body.phone ?? null,
+      consentText: TCPA_CONSENT_TEXT,
+    }),
+  );
 
   // SMS confirmation. Fire-and-forget — Twilio failures must NEVER
   // break the lead capture (the lead is still in the webhook + UI

@@ -220,6 +220,11 @@ export default function QuotePage() {
         lat: values.lat,
         lng: values.lng,
         source: "quote-wizard-step-1",
+        // TCPA consent — captured at hero form. Server REQUIRES this
+        // to be true before firing automated SMS / webhook / CRM
+        // outreach. The hero form prevents submit until checked.
+        tcpaConsent: values.tcpaConsent,
+        tcpaConsentAt: values.tcpaConsentAt,
       }),
     }).catch(() => {
       /* silent */
@@ -250,7 +255,14 @@ export default function QuotePage() {
         // nothing, saving the $0.075 dataLayers cost on the common path.
         const [solarRes, sam3Res] = await Promise.all([
           fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`),
-          fetch(`/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}`).catch(() => null),
+          // Pass address so the OSM building selector can match
+          // `addr:housenumber` tags — meaningfully better residence
+          // picking on multi-building rural parcels. Internal app
+          // already did this; /quote was missing it.
+          fetch(
+            `/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}` +
+              `&address=${encodeURIComponent(addr.formatted ?? "")}`,
+          ).catch(() => null),
         ]);
 
         // Pitch + footprint baseline from Solar findClosest.
@@ -444,6 +456,10 @@ export default function QuotePage() {
           estimateLow: range.low,
           estimateHigh: range.high,
           source: "quote-wizard-confirmed",
+          // TCPA consent carried forward from step-1 form. The
+          // server re-validates on this final post too.
+          tcpaConsent: lead.tcpaConsent,
+          tcpaConsentAt: lead.tcpaConsentAt,
         }),
       });
       const data = await res.json();

@@ -284,6 +284,10 @@ export async function POST(req: Request) {
 
   const state = (form.get("state") as string | null)?.slice(0, 2).toUpperCase() ?? null;
   const carrier = (form.get("carrier") as string | null) ?? null;
+  // County passed in by the rep when known. Used by HVHZ-aware rules
+  // (FL Miami-Dade / Broward vs. rest of FL). Optional — supplement
+  // rules fall back to advisory/suppress when null.
+  const county = (form.get("county") as string | null)?.trim() || null;
   const latStr = form.get("propertyLat") as string | null;
   const lngStr = form.get("propertyLng") as string | null;
   const propertyLat = latStr ? Number(latStr) : null;
@@ -322,6 +326,7 @@ export async function POST(req: Request) {
     assumptions,
     state,
     carrier,
+    county,
     carrierLineItems: extracted.lineItems,
     carrierSubtotal: extracted.carrierSubtotal,
     carrierHasOP: extracted.carrierHasOP,

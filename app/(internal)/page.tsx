@@ -668,37 +668,51 @@ export default function HomePage() {
   // Source polygons — what MapView draws initially. Edited polygons don't
   // come back through this prop (would cause a redraw loop / cancel the
   // user's drag). They flow back via onPolygonsChanged → livePolygons.
-  // Mirrors the priority/coverage logic from `polygonSource` above so the
-  // map shows the polygon we'll actually use for sqft + lengths + PDF.
+  //
+  // Derived DIRECTLY from `polygonSource` so it can't diverge — previous
+  // version applied only `passesCoverage` here, missing `passesAbsoluteSize`
+  // / `passesClaude` / `passesComplexityPrior` / `passesMsHallucinationCheck`
+  // / `passesClaudeSize`. That gap let the displayed/priced polygon be one
+  // that the source-priority logic had REJECTED — a real correctness bug
+  // (wrong roof sqft → wrong PDF → wrong estimate). One source of truth now.
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    // NB: must mirror polygonSource priority above. tiles3d removed.
-    if (validSam3 && passesCoverage(validSam3)) return [validSam3];
-    if (validSolarMask && passesCoverage(validSolarMask)) return [validSolarMask];
-    if (validRoboflow && passesCoverage(validRoboflow)) return [validRoboflow];
-    if (validSam && passesCoverage(validSam)) return [validSam];
-    if (validOsm && passesCoverage(validOsm)) return [validOsm];
-    if (validMsBuilding && passesCoverage(validMsBuilding)) return [validMsBuilding];
-    if (
-      solar?.segmentPolygonsLatLng?.length &&
-      solar.segmentCount > 1 &&
-      passesCoverageMulti(solar.segmentPolygonsLatLng)
-    )
-      return solar.segmentPolygonsLatLng;
-    if (validClaude && passesCoverage(validClaude)) return [validClaude];
-    return undefined;
+    switch (polygonSource) {
+      case "edited":
+        return livePolygons ?? undefined;
+      case "sam3":
+        return validSam3 ? [validSam3] : undefined;
+      case "solar-mask":
+        return validSolarMask ? [validSolarMask] : undefined;
+      case "roboflow":
+        return validRoboflow ? [validRoboflow] : undefined;
+      case "sam":
+        return validSam ? [validSam] : undefined;
+      case "osm":
+        return validOsm ? [validOsm] : undefined;
+      case "microsoft-buildings":
+        return validMsBuilding ? [validMsBuilding] : undefined;
+      case "solar":
+        return solar?.segmentPolygonsLatLng ?? undefined;
+      case "ai":
+        return validClaude ? [validClaude] : undefined;
+      case "tiles3d":
+      case "none":
+      default:
+        return undefined;
+    }
   }, [
+    polygonSource,
     validSam3,
     validSolarMask,
     validRoboflow,
-    solar?.segmentPolygonsLatLng,
-    solar?.segmentCount,
-    referenceFootprintSqft,
     validSam,
     validOsm,
     validMsBuilding,
     validClaude,
+    solar?.segmentPolygonsLatLng,
+    livePolygons,
   ]);
 
   // Active polygons — what we use for sqft, lengths, blueprint, PDF.

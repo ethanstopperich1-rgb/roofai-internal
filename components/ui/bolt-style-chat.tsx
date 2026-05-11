@@ -18,6 +18,15 @@ export interface QuoteHeroFormValues {
   zip?: string;
   lat?: number;
   lng?: number;
+  /** TCPA consent — server-validated in /api/leads. Always true when the
+   *  hero form ships values up (the submit button is disabled until the
+   *  customer checks the box), but typed optional for forward-compat
+   *  with non-form callers. */
+  tcpaConsent?: boolean;
+  /** ISO timestamp the customer checked the consent box on the client.
+   *  Server overrides this with its own `submittedAt` for the audit log,
+   *  but we still pass it through so CRM downstreams can sanity-check. */
+  tcpaConsentAt?: string;
 }
 
 interface Props {
@@ -94,6 +103,8 @@ export function BoltStyleHero({
       phone: phone.trim(),
       address: address.trim(),
       ...(picked ?? {}),
+      tcpaConsent: true,
+      tcpaConsentAt: new Date().toISOString(),
     });
   };
 

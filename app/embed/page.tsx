@@ -90,6 +90,9 @@ function EmbedWidget() {
           lat: values.lat,
           lng: values.lng,
           source: `embed-${brand}`,
+          // TCPA consent — required server-side. Hero form gates submit.
+          tcpaConsent: values.tcpaConsent,
+          tcpaConsentAt: values.tcpaConsentAt,
         }),
       });
       if (!res.ok) throw new Error(`status ${res.status}`);

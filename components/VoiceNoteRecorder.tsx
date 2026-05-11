@@ -93,6 +93,11 @@ export default function VoiceNoteRecorder({
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const rafRef = useRef<number | null>(null);
+  /** Forward-ref to `stop()`. Set in a useEffect below after `stop`
+   *  is declared. The recording tick needs to call stop() but stop()
+   *  is declared further down — using a ref breaks the cycle without
+   *  needing useCallback + deps gymnastics. */
+  const stopRef = useRef<(() => void) | null>(null);
 
   /** Tear down all the AudioContext / MediaStream / RAF plumbing on
    *  unmount or stop. Without this, the browser keeps the mic indicator
@@ -126,7 +131,7 @@ export default function VoiceNoteRecorder({
       setLevel(Math.min(1, rms * 6));
       setElapsed((Date.now() - state.startedAt) / 1000);
       if ((Date.now() - state.startedAt) / 1000 >= MAX_DURATION_SEC) {
-        stop();
+        stopRef.current?.();
         return;
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -202,6 +207,12 @@ export default function VoiceNoteRecorder({
       mediaRecorderRef.current.stop();
     }
   };
+
+  // Keep stopRef in sync so the recording-tick effect (declared above)
+  // can call stop() without violating "no use before declaration."
+  useEffect(() => {
+    stopRef.current = stop;
+  });
 
   const handleStopped = async (mime: string) => {
     setState({ kind: "processing" });

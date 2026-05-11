@@ -71,6 +71,11 @@ export interface SupplementContext {
   assumptions: Assumptions;
   state: string | null; // 2-letter
   carrier: string | null; // matches lib/carriers.ts CarrierKey
+  /** County name (no "County" suffix), used by HVHZ-aware rules to
+   *  distinguish Miami-Dade / Broward (HVHZ) from the rest of FL. When
+   *  null, HVHZ rules fall back to "advisory" rather than "required"
+   *  so we don't falsely cite a code section in a non-HVHZ scope. */
+  county?: string | null;
   /** Extracted line items from the carrier scope (after Qwen parse).
    *  Empty array means the analyzer hasn't seen the scope yet — only
    *  rules that fire unconditionally (matching law, FL ice & water)
@@ -90,6 +95,18 @@ export interface SupplementContext {
   }>;
   /** Date of loss from the carrier scope, parsed to ISO YYYY-MM-DD. */
   dateOfLoss?: string | null;
+}
+
+/** Florida HVHZ counties — High Velocity Hurricane Zones as defined by
+ *  Florida Building Code §202. Only these counties trigger the
+ *  "required" tier on §R905.1.2 ice & water shield. Outside HVHZ, IWS
+ *  is recommended but not code-mandated for the whole deck. */
+const FL_HVHZ_COUNTIES = new Set(["miami-dade", "dade", "broward"]);
+
+function isFlHvhz(county: string | null | undefined): boolean {
+  if (!county) return false;
+  const normalized = county.toLowerCase().replace(/\s+county$/i, "").trim();
+  return FL_HVHZ_COUNTIES.has(normalized);
 }
 
 /** Minimal shape we expect Qwen to extract from a carrier PDF. The
@@ -351,10 +368,29 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
         /ice.{0,3}(and|&|n).{0,3}water|i&w|\bIWS\b|\bIw\b/i.test(it.description),
       );
       if (hasIWS) return null;
+      // County gating: §R905.1.2 only mandates full-deck IWS in HVHZ
+      // (Miami-Dade + Broward). Outside HVHZ, IWS at eaves is the IRC
+      // minimum, not a "required" code item — citing FBC §R905.1.2 on a
+      // non-HVHZ FL claim invites adjuster pushback and damages
+      // credibility. So: fire as "required" only in HVHZ; downgrade to
+      // "advisory" (and rephrase) in non-HVHZ FL; suppress entirely
+      // when county is unknown but state is FL (rep should set it).
+      const hvhz = isFlHvhz(ctx.county);
+      if (hvhz) {
+        return {
+          rule,
+          reason: `FL HVHZ property (${ctx.county}) with no ice & water shield line found in scope. Required by FBC 7th ed. §R905.1.2 over the entire roof deck.`,
+          estimatedDollars: null,
+        };
+      }
+      if (!ctx.county) {
+        // Don't fire — we can't confirm HVHZ without a county. Better
+        // to under-flag than to falsely cite a code section.
+        return null;
+      }
       return {
-        rule,
-        reason:
-          "FL property with no ice & water shield line found in scope. Required by FBC 7th ed. §R905.1.2 in HVHZ.",
+        rule: { ...rule, severity: "advisory" },
+        reason: `${ctx.county} County is not HVHZ — FBC §R905.1.2 full-deck IWS doesn't apply. IRC §R905.1.2 still requires IWS at eaves (24" past wall line); verify the scope has at least the eave strip.`,
         estimatedDollars: null,
       };
     },
@@ -795,8 +831,11 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       );
       // Only fire if step flashing IS present (otherwise the bigger
       // step-flashing flag will fire and this is duplicative).
+      // Match BOTH narrative ("step flashing") AND Xactimate code form
+      // ("RFG STPF"); the original asymmetry let code-style scopes
+      // slip through this check.
       const hasStep = ctx.carrierLineItems.some((it) =>
-        /\bstep.?flash\b/i.test(it.description),
+        /\bstep.?flash\b|\bRFG.?STPF/i.test(it.description),
       );
       if (hasKickout || !hasStep) return null;
       return {

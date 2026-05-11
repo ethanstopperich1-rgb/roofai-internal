@@ -170,6 +170,26 @@ interface ExtractedPrediction {
   pixelArea: number;
 }
 
+/** Shoelace area for a pixel polygon. Used as a fallback when Roboflow's
+ *  workflow response is missing `area_px` — without this fallback we'd
+ *  use `pixels.length` (vertex count), which fundamentally breaks the
+ *  area-vs-vertex distinction the residence picker depends on. Returns
+ *  the absolute area in square pixels.
+ *
+ *  Per code review: a Roboflow workflow schema change that drops
+ *  `area_px` should NOT silently switch the residence picker from
+ *  "prefer larger building" to "prefer more-jagged building." */
+function pixelPolygonArea(pixels: Array<[number, number]>): number {
+  if (pixels.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0; i < pixels.length; i++) {
+    const [ax, ay] = pixels[i];
+    const [bx, by] = pixels[(i + 1) % pixels.length];
+    sum += ax * by - bx * ay;
+  }
+  return Math.abs(sum) / 2;
+}
+
 interface ExtractedPolygons {
   predictions: ExtractedPrediction[];
   /** Width of the image the polygons were traced on, per the workflow
@@ -247,7 +267,9 @@ function extractAllPolygons(data: unknown): ExtractedPolygons | null {
         const pixels = coercePolygon(points);
         if (!pixels || pixels.length < 3) continue;
         const pixelArea =
-          typeof pred.area_px === "number" ? pred.area_px : pixels.length;
+          typeof pred.area_px === "number" && pred.area_px > 0
+            ? pred.area_px
+            : pixelPolygonArea(pixels);
         predictions.push({ pixels, pixelArea });
       }
       if (predictions.length > 0) {
@@ -268,7 +290,7 @@ function extractAllPolygons(data: unknown): ExtractedPolygons | null {
     const poly = coercePolygon(c);
     if (poly) {
       return {
-        predictions: [{ pixels: poly, pixelArea: poly.length }],
+        predictions: [{ pixels: poly, pixelArea: pixelPolygonArea(poly) }],
         imageWidth: 1280,
         imageHeight: 1280,
       };
@@ -507,10 +529,63 @@ export async function GET(req: Request) {
   // bypasses resolveBuildingCenter entirely. Cache is also bypassed so
   // the override takes effect immediately rather than serving the bad
   // cached result.
-  const clickLat = Number(searchParams.get("clickLat"));
-  const clickLng = Number(searchParams.get("clickLng"));
-  const hasClickOverride =
-    Number.isFinite(clickLat) && Number.isFinite(clickLng);
+  //
+  // Hardening (per code review):
+  //   1. Require BOTH params present + non-empty (don't let "" → 0)
+  //   2. Validate coordinate ranges (lat ∈ [-90, 90], lng ∈ [-180, 180])
+  //   3. Cap distance from geocoded address at 150 m — prevents a
+  //      hostile caller from forcing Google Static Maps + Roboflow
+  //      calls at arbitrary coordinates (cost-abuse vector). 150m is
+  //      generous for rural parcels with deep setbacks while still
+  //      tight enough that any click outside the property is rejected.
+  const clickLatRaw = searchParams.get("clickLat");
+  const clickLngRaw = searchParams.get("clickLng");
+  let clickLat = NaN;
+  let clickLng = NaN;
+  let hasClickOverride = false;
+  if (
+    clickLatRaw != null &&
+    clickLatRaw.trim() !== "" &&
+    clickLngRaw != null &&
+    clickLngRaw.trim() !== ""
+  ) {
+    const parsedLat = Number(clickLatRaw);
+    const parsedLng = Number(clickLngRaw);
+    if (
+      !Number.isFinite(parsedLat) ||
+      !Number.isFinite(parsedLng) ||
+      parsedLat < -90 ||
+      parsedLat > 90 ||
+      parsedLng < -180 ||
+      parsedLng > 180
+    ) {
+      return NextResponse.json(
+        { error: "invalid_click_coords", message: "Click coords out of range." },
+        { status: 400 },
+      );
+    }
+    // Distance from geocoded address. 150m cap.
+    const dLatM = (parsedLat - lat) * 111_320;
+    const dLngM =
+      (parsedLng - lng) * 111_320 * Math.cos((lat * Math.PI) / 180);
+    const distM = Math.hypot(dLatM, dLngM);
+    if (distM > 150) {
+      console.warn(
+        `[sam3-roof] click override rejected — ${distM.toFixed(0)}m from ` +
+          `address (${lat.toFixed(5)}, ${lng.toFixed(5)}), max 150m`,
+      );
+      return NextResponse.json(
+        {
+          error: "click_too_far",
+          message: `Click is ${distM.toFixed(0)}m from address; max 150m.`,
+        },
+        { status: 400 },
+      );
+    }
+    clickLat = parsedLat;
+    clickLng = parsedLng;
+    hasClickOverride = true;
+  }
 
   const skipCache = diagnosticMode || noCache || hasClickOverride;
 
