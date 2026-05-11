@@ -39,10 +39,34 @@ export const maxDuration = 90;
  * Cached server-side per lat/lng for 6h.
  */
 
+/**
+ * Roboflow workflow URL. Defaults to the original `bradens-workspace`
+ * test workflow. Override per-deploy with the env var
+ *   ROBOFLOW_SAM3_WORKFLOW_URL=https://serverless.roboflow.com/infer/workflows/<workspace>/<workflow_id>
+ * Required when:
+ *   - You publish a new version of the workflow (Roboflow assigns a new ID)
+ *   - You run on a different workspace
+ *   - You move from `serverless.roboflow.com` to a dedicated endpoint
+ */
 const ROBOFLOW_WORKFLOW_URL =
+  process.env.ROBOFLOW_SAM3_WORKFLOW_URL ??
   "https://serverless.roboflow.com/infer/workflows/bradens-workspace/sam3-roof-segmentation-test-1778124556737";
 
-const SAM3_PROMPT = "entire house roof";
+/**
+ * SAM3 segmentation prompt. The workflow accepts this string and uses it
+ * to pick which mask to keep. "entire house roof" works well across FL /
+ * MN / TX residential imagery; override per-deploy via ROBOFLOW_SAM3_PROMPT
+ * if a different phrasing improves your hit rate.
+ */
+const SAM3_PROMPT = process.env.ROBOFLOW_SAM3_PROMPT ?? "entire house roof";
+
+/**
+ * Confidence floor passed into the workflow's `confidence` input. The
+ * workflow's own default is 0.2 — kept here so we don't drop the field
+ * silently when sending the request. Lower = more permissive mask
+ * candidates; higher = stricter.
+ */
+const SAM3_CONFIDENCE = Number(process.env.ROBOFLOW_SAM3_CONFIDENCE ?? "0.2");
 
 interface Sam3CachedResult extends ReconciledRoof {
   /** When this run actually called Roboflow (vs served from cache). */
@@ -533,6 +557,10 @@ export async function GET(req: Request) {
 
   // ─── Call the Roboflow SAM3 workflow ──────────────────────────────────
   let workflowJson: unknown = null;
+  // Captured failure reason — surfaced in the JSON response when the
+  // workflow call doesn't return a usable polygon, so the rep / developer
+  // can see *why* in DevTools without digging through Vercel logs.
+  let workflowError: string | null = null;
   try {
     // Roboflow docs recommend Authorization: Bearer header over body-based
     // api_key for serverless inference. Pass both for belt-and-suspenders —
@@ -550,6 +578,11 @@ export async function GET(req: Request) {
           image: { type: "base64", value: img.base64 },
           prompt: SAM3_PROMPT,
           pixels_per_unit: pixelsPerFoot(lat),
+          // Pass confidence explicitly. The workflow has its own default
+          // but supplying it removes ambiguity when a default changes
+          // upstream (Roboflow has shipped breaking input-schema updates
+          // before — defaults flipped without notice).
+          confidence: SAM3_CONFIDENCE,
         },
       }),
       // 75s timeout — Roboflow serverless cold starts can take 30-60s
@@ -560,13 +593,19 @@ export async function GET(req: Request) {
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      workflowError = `workflow_http_${res.status}: ${text.slice(0, 200)}`;
       console.warn(
-        `[sam3-roof] Roboflow returned ${res.status} for (${lat}, ${lng}): ${text.slice(0, 300)}`,
+        `[sam3-roof] Roboflow returned ${res.status} for (${lat}, ${lng}) ` +
+          `at ${ROBOFLOW_WORKFLOW_URL}: ${text.slice(0, 300)}`,
       );
     } else {
       workflowJson = await res.json().catch(() => null);
+      if (workflowJson === null) {
+        workflowError = "workflow_response_not_json";
+      }
     }
   } catch (err) {
+    workflowError = `workflow_fetch_error: ${err instanceof Error ? err.message : "unknown"}`;
     console.warn(`[sam3-roof] workflow call failed for (${lat}, ${lng}):`, err);
   }
 
@@ -583,6 +622,9 @@ export async function GET(req: Request) {
       `[sam3-roof] could not extract polygon from workflow response for (${lat}, ${lng}). ` +
         `Top-level keys: ${topLevelHint}`,
     );
+    if (!workflowError) {
+      workflowError = `workflow_no_polygon (top-level keys: ${topLevelHint})`;
+    }
   }
 
   // ─── Pick the best prediction ─────────────────────────────────────────
@@ -771,7 +813,16 @@ export async function GET(req: Request) {
       await setCached<Sam3CachedResult | null>("sam3-roof", lat, lng, null);
     }
     return NextResponse.json(
-      { error: "no_polygon", message: "SAM3 + GIS both failed for this address." },
+      {
+        error: "no_polygon",
+        message: "SAM3 + GIS both failed for this address.",
+        // Surface the workflow failure reason in the response so the rep
+        // can diagnose without checking Vercel logs. Wrong workspace name,
+        // expired workflow ID, missing inputs, and API-key permission
+        // problems all land here as a short identifying string.
+        workflowError,
+        workflowUrl: ROBOFLOW_WORKFLOW_URL,
+      },
       { status: 404 },
     );
   }
