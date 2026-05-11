@@ -155,10 +155,9 @@ export function BoltStyleHero({
           embedMode ? "" : "flex-1 pb-12"
         }`}
       >
-        {/* Announcement chip */}
-        <div className={`relative z-10 ${embedMode ? "mb-5" : "mb-8"}`}>
-          <AnnouncementBadge text={announcementText} />
-        </div>
+        {/* Announcement chip removed per design — the page identity is
+            carried by the top-of-page logo + nav, and the chip was
+            redundant noise above the headline in the visionOS treatment. */}
 
         <div className="relative z-10 w-full max-w-3xl px-4 mx-auto">
         {/* Headline */}
