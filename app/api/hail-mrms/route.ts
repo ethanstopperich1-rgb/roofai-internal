@@ -95,14 +95,27 @@ function haversineMiles(
 /**
  * List the per-day MRMS Blob keys we have, oldest → newest. The
  * Vercel Blob `list()` API is paginated; we walk the cursor until
- * exhausted. Result is cached for 1 hour because daily ingest runs
- * once a day — listing more often is wasted Blob API calls.
+ * exhausted.
+ *
+ * UNCACHED on purpose. The shared cache layer has a 6-hour TTL, which
+ * is fine for stable data but wrong for an actively-backfilling Blob
+ * store — during initial setup new files land every few seconds and a
+ * 6-hour-stale list makes the hot-path API return "no events" even
+ * though hundreds of new days have been ingested. The Blob list() call
+ * is a single round-trip, sub-second per page, and we typically have
+ * <2 pages of 1000 entries. Not worth the staleness cost.
+ *
+ * The per-query result cache (lower in this file) still caches the
+ * lat/lng → events result for 6 hours, which is the cache that
+ * actually matters for cost.
  */
-async function listMrmsKeys(): Promise<string[]> {
-  const cached = await getCached<string[]>("mrms", 0, 0);
-  if (cached) return cached;
+interface MrmsKey {
+  date: string;
+  url: string;
+}
 
-  const dates: string[] = [];
+async function listMrmsKeys(): Promise<MrmsKey[]> {
+  const out: MrmsKey[] = [];
   let cursor: string | undefined = undefined;
   for (let i = 0; i < 50; i++) {
     const page: Awaited<ReturnType<typeof list>> = await list({
@@ -112,14 +125,13 @@ async function listMrmsKeys(): Promise<string[]> {
     });
     for (const b of page.blobs) {
       const m = b.pathname.match(/^mrms-hail\/(\d{8})\.json$/);
-      if (m) dates.push(m[1]);
+      if (m) out.push({ date: m[1], url: b.url });
     }
     if (!page.hasMore) break;
     cursor = page.cursor;
   }
-  dates.sort();
-  await setCached("mrms", 0, 0, dates);
-  return dates;
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
 }
 
 /** Filenames are YYYYMMDD; lex-sort = chrono-sort. */
@@ -160,15 +172,15 @@ export async function GET(req: Request) {
   // so different rep queries stay isolated.
   const cacheKey = `${radiusMiles.toFixed(2)}:${minInches.toFixed(2)}:${yearsBack}`;
   const cached = await getCached<HailMrmsResponse>(
-    `mrms:${cacheKey}`,
+    `mrms-v2:${cacheKey}`,
     lat,
     lng,
   );
   if (cached) return NextResponse.json(cached);
 
-  let allDates: string[];
+  let allKeys: MrmsKey[];
   try {
-    allDates = await listMrmsKeys();
+    allKeys = await listMrmsKeys();
   } catch (err) {
     console.warn("[hail-mrms] blob list failed:", err);
     return NextResponse.json(
@@ -176,6 +188,7 @@ export async function GET(req: Request) {
       { status: 503 },
     );
   }
+  const allDates = allKeys.map((k) => k.date);
 
   if (allDates.length === 0) {
     // Backfill hasn't run yet — return empty cleanly so the UI knows
@@ -185,7 +198,7 @@ export async function GET(req: Request) {
       source: "noaa-mrms-mesh-1km",
       coverage: { yearsAvailable: 0, earliestDate: null, latestDate: null },
     };
-    await setCached(`mrms:${cacheKey}`, lat, lng, empty);
+    await setCached(`mrms-v2:${cacheKey}`, lat, lng, empty);
     return NextResponse.json(empty);
   }
 
@@ -193,28 +206,21 @@ export async function GET(req: Request) {
   const start = new Date(now);
   start.setUTCFullYear(start.getUTCFullYear() - yearsBack);
 
-  const datesInWindow = allDates.filter((d) =>
-    dateInRangeYYYYMMDD(d, start, now),
+  const keysInWindow = allKeys.filter((k) =>
+    dateInRangeYYYYMMDD(k.date, start, now),
   );
 
-  // Coarse pre-filter: per-cell distance check is cheap, but skipping
-  // entire days where the bbox center can't possibly be within radius
-  // would be cheaper. The MRMS bbox is huge (24N→50N, -107→-79W) so
-  // the bbox check would skip almost no days. We just iterate.
+  // Per-day Blob URLs come from the list() call above — every Vercel
+  // Blob store has its own subdomain (e.g. `cg9vbpqjjvfgqtlf.public.
+  // blob.vercel-storage.com/...`), so we MUST use the URL returned by
+  // list() rather than hardcoding a base path. CDN caching is fine
+  // since once a day's MESH file is written it never changes.
   const events: HailEvent[] = [];
   await Promise.all(
-    datesInWindow.map(async (date) => {
+    keysInWindow.map(async ({ date, url }) => {
       try {
-        const url = `https://blob.vercel-storage.com/mrms-hail/${date}.json`;
-        // Fall back to public Blob URL pattern. If our deploy stores
-        // under a different store ID we override via env.
-        const customBase = process.env.MRMS_BLOB_BASE;
-        const fetchUrl = customBase
-          ? `${customBase.replace(/\/$/, "")}/mrms-hail/${date}.json`
-          : url;
-        const r = await fetch(fetchUrl, {
+        const r = await fetch(url, {
           signal: AbortSignal.timeout(8_000),
-          // Per-day Blob is immutable once written; let CDN cache forever
           cache: "force-cache",
         });
         if (!r.ok) return;
@@ -262,6 +268,6 @@ export async function GET(req: Request) {
     },
   };
 
-  await setCached(`mrms:${cacheKey}`, lat, lng, result);
+  await setCached(`mrms-v2:${cacheKey}`, lat, lng, result);
   return NextResponse.json(result);
 }
