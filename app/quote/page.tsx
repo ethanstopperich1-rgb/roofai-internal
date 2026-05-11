@@ -899,53 +899,12 @@ function MaterialStep({
         })}
       </div>
 
-      <div>
-        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55 mb-3">
-          Optional upgrades
-        </div>
-        <div className="space-y-2.5">
-          {addOns.map((a) => (
-            <div
-              key={a.id}
-              onClick={() =>
-                onAddOnsChange(
-                  addOns.map((x) => (x.id === a.id ? { ...x, enabled: !x.enabled } : x)),
-                )
-              }
-              className={`glass-panel is-interactive flex items-center gap-3 p-3.5 cursor-pointer ${
-                a.enabled ? "glass-panel-selected" : ""
-              }`}
-              style={{ borderRadius: 18 }}
-            >
-              <div
-                className={`w-[20px] h-[20px] rounded-md flex items-center justify-center ${
-                  a.enabled ? "text-[#051019]" : ""
-                }`}
-                style={
-                  a.enabled
-                    ? {
-                        background:
-                          "linear-gradient(180deg, rgba(224,242,254,0.98) 0%, rgba(125,211,252,0.94) 100%)",
-                        boxShadow:
-                          "inset 0 1px 0 rgba(255,255,255,0.7), 0 4px 12px -3px rgba(125,211,252,0.5)",
-                      }
-                    : {
-                        background: "rgba(255,255,255,0.04)",
-                        border: "1px solid rgba(255,255,255,0.18)",
-                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
-                      }
-                }
-              >
-                {a.enabled && <Check size={12} strokeWidth={3} />}
-              </div>
-              <div className="flex-1 text-[14px] text-white/90">{a.label}</div>
-              <div className="font-mono tabular text-[12px] text-white/55">
-                +${a.price.toLocaleString()}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      {/* "Optional upgrades" section removed per design — the upgrade
+          add-on list felt like noise on the customer-side estimator and
+          inflated the estimate cognitive load without commensurate
+          conversion lift. The rep-facing internal estimator still has
+          full add-on controls; the public /quote flow now shows base
+          tear-off + material price only. */}
 
       <NavButtons onBack={onBack} onNext={onNext} />
     </div>
@@ -1058,11 +1017,14 @@ function QuoteStep({
               </li>
             ))}
           </ul>
-          <div className="text-[11.5px] text-white/45 pt-1">
-            {enabledAddonCount === 0
-              ? "No optional upgrades selected. You can add ice & water shield, ridge ventilation, or skylight work in the previous step."
-              : `${enabledAddonCount} upgrade${enabledAddonCount === 1 ? "" : "s"} selected.`}
-          </div>
+          {/* Empty-upgrades helper text removed alongside the Optional
+              Upgrades section. When upgrades ARE selected (via the rep
+              tool / future re-enable), the count line still surfaces. */}
+          {enabledAddonCount > 0 && (
+            <div className="text-[11.5px] text-white/45 pt-1">
+              {`${enabledAddonCount} upgrade${enabledAddonCount === 1 ? "" : "s"} selected.`}
+            </div>
+          )}
         </div>
       )}
 

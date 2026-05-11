@@ -72,12 +72,19 @@ export function BoltStyleHero({
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [picked, setPicked] = useState<Pick<QuoteHeroFormValues, "zip" | "lat" | "lng"> | null>(null);
+  /** TCPA consent for automated marketing communications. Required to
+   *  submit. Even though "consent is not required to make a purchase"
+   *  per the disclosure language, FTC + TCPA case law makes affirmative
+   *  written consent the safest legal posture before any auto-call /
+   *  auto-text follow-up. Default false → user must affirmatively check. */
+  const [tcpaConsent, setTcpaConsent] = useState(false);
 
   const valid =
     name.trim().length > 1 &&
     /\S+@\S+\.\S+/.test(email) &&
     phone.replace(/\D/g, "").length >= 7 &&
-    address.trim().length > 4;
+    address.trim().length > 4 &&
+    tcpaConsent;
 
   const submit = () => {
     if (!valid || submitting) return;
@@ -245,6 +252,31 @@ export function BoltStyleHero({
                 onChange={setPhone}
                 autoComplete="tel"
               />
+            </div>
+
+            {/* TCPA consent — explicit affirmative checkbox required
+                before submit. Disclosure language is the standard
+                "consent is not required to make a purchase" form that
+                FTC/FCC accept as compliant under the 2024 TCPA rules
+                (one-to-one consent + clear-and-conspicuous disclosure). */}
+            <div className="px-4 py-3 border-t border-white/[0.06]">
+              <label className="flex items-start gap-2.5 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={tcpaConsent}
+                  onChange={(e) => setTcpaConsent(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 flex-shrink-0 cursor-pointer rounded border border-white/20 bg-white/5 accent-cy-300"
+                  aria-label="Consent to receive marketing communications"
+                />
+                <span className="text-[11px] leading-[1.55] text-slate-400 group-hover:text-slate-300 transition-colors">
+                  By submitting this form, you consent to receive automated
+                  marketing calls, texts, and emails from Voxaris and its
+                  partner contractors at the phone number and email provided.
+                  Consent is not required to make a purchase. Message and
+                  data rates may apply. You may opt out at any time by
+                  replying STOP to texts or contacting us.
+                </span>
+              </label>
             </div>
 
             {/* Footer — submit button */}
