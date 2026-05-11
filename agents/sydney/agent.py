@@ -58,15 +58,35 @@ CARTESIA_VOICE_ID = "f9836c6e-a0bd-460e-9d3c-f7299fa60f94"
 # Verbatim openers — fed straight to TTS via session.say() so we skip the
 # LLM round-trip on the first response. Matches the pattern in Noland's
 # system prompt and saves ~1-2s of first-response latency.
+# Recording-disclosure opener — gated on SYDNEY_RECORDING_ENABLED.
+#
+# Florida is a TWO-PARTY consent state (Fla. Stat. §934.03). Several
+# other Voxaris-target states are also two-party (CA, IL, MD, MA, MT,
+# NV, NH, PA, WA). Saying "this call may be recorded" when we are NOT
+# actually recording is misleading; saying it without two-party consent
+# while we ARE recording is illegal in those states.
+#
+# Safe defaults:
+#   - SYDNEY_RECORDING_ENABLED unset → no recording, no disclosure
+#   - SYDNEY_RECORDING_ENABLED=true → opener carries disclosure, and the
+#     entrypoint MUST also start a LiveKit room egress (not implemented
+#     in this commit — wiring TBD). Setting this flag without wiring
+#     egress just lies to the caller, so the flag is OFF by default.
+_RECORDING_ENABLED = os.environ.get("SYDNEY_RECORDING_ENABLED", "false").lower() == "true"
+
+_RECORDING_DISCLOSURE = (
+    "This call may be recorded for quality. " if _RECORDING_ENABLED else ""
+)
+
 OPENER_BUSINESS_HOURS = (
     "Thanks for calling Noland's Roofing, this is Sydney, your virtual "
-    "booking assistant. This call may be recorded for quality. "
+    "booking assistant. " + _RECORDING_DISCLOSURE +
     "How can I help you today?"
 )
 
 OPENER_AFTER_HOURS = (
     "Thanks for calling Noland's Roofing, this is Sydney, your virtual "
-    "booking assistant. This call may be recorded for quality. "
+    "booking assistant. " + _RECORDING_DISCLOSURE +
     "Our offices are closed right now, but I can get you on the schedule "
     "or take down your info and have someone reach out first thing. "
     "What's going on?"
@@ -180,9 +200,43 @@ async def entrypoint(ctx: JobContext) -> None:
         ivr_detection=True,
     )
 
-    # Per-call usage telemetry. Logs token counts, TTS chars, STT seconds
-    # for every turn so we can attribute cost + latency per call. Hooks for
-    # a future dashboard: pipe into a /api/agent/events POST when ready.
+    # ─── Hard call limits (defense-in-depth against runaway calls) ──────────
+    # max_tokens=180 caps EACH LLM turn but doesn't bound the call. A stuck
+    # caller (drunk, confused, malicious) can keep Sydney engaged indefinitely
+    # — at LK Cloud Inference rates, a 30-minute loop can burn $5+ per call.
+    # Two ceilings: wall-clock duration + total user turn count.
+    import asyncio as _asyncio
+    import time as _time
+
+    MAX_CALL_DURATION_SEC = int(os.environ.get("SYDNEY_MAX_CALL_DURATION_SEC", "900"))
+    MAX_TURNS = int(os.environ.get("SYDNEY_MAX_TURNS", "80"))
+    _call_start = _time.monotonic()
+    _user_turns = 0
+
+    async def _enforce_call_duration_cap() -> None:
+        """Sleep until the max-duration ceiling, then end the call cleanly.
+
+        Runs as a background task off entrypoint(). Cancelled in the
+        shutdown handler if the call ends naturally first."""
+        await _asyncio.sleep(MAX_CALL_DURATION_SEC)
+        logger.warning(
+            "sydney hit MAX_CALL_DURATION_SEC=%d on room=%s — ending call",
+            MAX_CALL_DURATION_SEC, ctx.room.name,
+        )
+        try:
+            await session.say(
+                "I want to make sure we get you to the right person — let me "
+                "have a teammate call you back so we can take care of this "
+                "properly. Thanks so much for calling Noland's.",
+                allow_interruptions=False,
+            )
+        except Exception:
+            pass
+        ctx.shutdown()
+
+    duration_task = _asyncio.create_task(_enforce_call_duration_cap())
+
+    # Per-call usage telemetry + turn count enforcement.
     @session.on("session_usage_updated")
     def _on_usage(ev) -> None:  # type: ignore[no-untyped-def]
         u = getattr(ev, "usage", ev)
@@ -195,11 +249,50 @@ async def entrypoint(ctx: JobContext) -> None:
             getattr(u, "stt_audio_duration", None),
         )
 
+    @session.on("user_input_transcribed")
+    def _on_user_turn(ev) -> None:  # type: ignore[no-untyped-def]
+        """Count user turns. End the call when MAX_TURNS exceeded.
+
+        Used in conjunction with the wall-clock cap above so a fast looper
+        can't blow the budget by jamming turns faster than the duration cap
+        catches them.
+        """
+        nonlocal _user_turns
+        # Only count COMPLETE user turns (not interim transcripts).
+        if not getattr(ev, "is_final", True):
+            return
+        _user_turns += 1
+        if _user_turns >= MAX_TURNS:
+            logger.warning(
+                "sydney hit MAX_TURNS=%d on room=%s after %.0fs — ending call",
+                MAX_TURNS, ctx.room.name, _time.monotonic() - _call_start,
+            )
+            _asyncio.create_task(_say_and_shutdown())
+
+    async def _say_and_shutdown() -> None:
+        try:
+            await session.say(
+                "Sounds like we've got a lot to cover — let me have a teammate "
+                "call you back so they can give you their full attention. Thanks "
+                "for calling Noland's.",
+                allow_interruptions=False,
+            )
+        except Exception:
+            pass
+        ctx.shutdown()
+
     # Shutdown summary — runs whether the call ended cleanly or not. Logs
-    # the disconnect reason for every call so we can audit drop patterns.
+    # the disconnect reason + cost-ceiling state for every call.
     async def _on_shutdown() -> None:
         reason = str(getattr(ctx, "shutdown_reason", "unknown"))
-        logger.info("shutdown room=%s reason=%s", ctx.room.name, reason)
+        elapsed = _time.monotonic() - _call_start
+        logger.info(
+            "shutdown room=%s reason=%s elapsed=%.1fs turns=%d",
+            ctx.room.name, reason, elapsed, _user_turns,
+        )
+        # Cancel the wall-clock timer if the call ended for any other reason.
+        if not duration_task.done():
+            duration_task.cancel()
 
     ctx.add_shutdown_callback(_on_shutdown)
 

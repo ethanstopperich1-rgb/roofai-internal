@@ -33,7 +33,11 @@ LIVEKIT_API_SECRET = os.environ["LIVEKIT_API_SECRET"]
 AGENT_NAME = "sydney"
 RULE_NAME = "nolands-sydney"
 ROOM_PREFIX = "nolands-call-"
-INBOUND_NUMBER = "+13219851104"
+# Inbound number — overridable via env so this script ports cleanly to other
+# clients (each gets a different LiveKit Telephony number, dispatch rule,
+# and agent). Defaults to Noland's existing Twilio number for the original
+# Sydney deploy. Format: E.164.
+INBOUND_NUMBER = os.environ.get("INBOUND_NUMBER", "+13219851104")
 
 
 async def main() -> None:

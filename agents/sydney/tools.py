@@ -72,6 +72,22 @@ ESCALATION_NUMBERS = {
 # project owns is the safest default — the human sees Noland's calling.
 TRANSFER_CALLER_ID = os.environ.get("TRANSFER_CALLER_ID", "+13219851104")
 
+# Allowlists — the LLM is schema-guided to send only these values, but a
+# malicious / drifted model could pass anything. We hard-validate before
+# any external dial, so a creative `reason` like "+15551234567" can't
+# route the call to an attacker-controlled number.
+VALID_REASONS = {"emergency", "warranty", "sales", "general"}
+VALID_PRIORITIES = {"low", "normal", "urgent"}
+
+# E.164 — leading "+", country code, up to 15 digits. Used to validate
+# every routing number we read from env before we hand it to SIP.
+import re as _re
+_E164_RE = _re.compile(r"^\+[1-9]\d{1,14}$")
+
+
+def _is_valid_e164(number: str | None) -> bool:
+    return bool(number) and bool(_E164_RE.match(number or ""))
+
 
 @function_tool
 async def transfer_to_human(
@@ -90,7 +106,40 @@ async def transfer_to_human(
     Always tell the caller "let me get you to someone who can help, one moment"
     BEFORE invoking this tool.
     """
+    # Hard-validate the LLM-supplied `reason` / `priority` against allowlists.
+    # The schema annotation is a guideline — a malicious or drifted model
+    # could pass arbitrary strings. Rejecting unknown values prevents:
+    #   - routing to an attacker-controlled number via a creative `reason`
+    #     that happens to match an env var
+    #   - escalation-tier confusion ("urgent" vs "URGENT" vs "high")
+    if reason not in VALID_REASONS:
+        logger.warning("transfer_to_human rejected reason=%r (not in allowlist)", reason)
+        reason = "general"
+    if priority not in VALID_PRIORITIES:
+        logger.warning("transfer_to_human normalized priority=%r → normal", priority)
+        priority = "normal"
+
     target = ESCALATION_NUMBERS.get(reason, "") or ESCALATION_NUMBERS.get("general", "")
+
+    # Validate the target number is E.164 before we hand it to SIP. A bad
+    # env value (or operator typo) shouldn't result in a malformed dial.
+    if target and not _is_valid_e164(target):
+        logger.error(
+            "transfer_to_human refusing to dial — ESCALATION_%s_PHONE is not "
+            "E.164 (value rejected). Set a number like +15551234567.",
+            reason.upper(),
+        )
+        target = ""
+
+    # Validate caller-ID — must be E.164 AND an owned number. We can't
+    # check ownership at runtime, but we CAN enforce the format.
+    if not _is_valid_e164(TRANSFER_CALLER_ID):
+        logger.error(
+            "transfer_to_human refusing to dial — TRANSFER_CALLER_ID is not "
+            "E.164 (got %r). Set a project-owned number like +13219851104.",
+            TRANSFER_CALLER_ID,
+        )
+        target = ""
 
     # Redacted log — caller_summary may contain incidental PII (the caller
     # describing their situation). We log a length + hash for correlation,
