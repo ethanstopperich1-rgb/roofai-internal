@@ -53,6 +53,18 @@ export interface SupplementRule {
   states?: string[];
   /** Carrier-specific quirks. Empty = applies to all carriers. */
   carriers?: string[];
+  /** Per-carrier rationale overrides. When ctx.carrier matches a key,
+   *  the analyzer surfaces THIS rationale instead of `rationale` —
+   *  lets us cite State-Farm-specific template patterns to State Farm
+   *  adjusters and USAA PDRP language to USAA adjusters. Carrier
+   *  intel sourced from Grok's May 2026 sweep of public adjuster /
+   *  supplement-community data (Reverend Roofer, Roof Supplement Pros,
+   *  IRCA). Falls back to the generic rationale when no match. */
+  carrierRationale?: Partial<Record<string, string>>;
+  /** Per-carrier severity overrides (e.g., Citizens FL post-SB-2D
+   *  age-based denial bumps to "required" because it's a statutory
+   *  obligation, not just industry standard). */
+  carrierSeverity?: Partial<Record<string, SupplementSeverity>>;
 }
 
 export interface SupplementContext {
@@ -242,27 +254,74 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
   },
 
   // ──────────────────────────────────────────────────────────────────
-  // Florida-specific: §626.9744 matching law. When one slope is
-  // damaged, the carrier must pay to match the rest of the roof if
-  // the same material isn't reasonably available. This is the single
-  // biggest dollar lift on partial-slope FL claims.
+  // Florida-specific: §626.9744 matching law. NARROWED May 2026 per
+  // Grok statutory-research sweep:
+  //   - Statute requires "comparable material AND quality" matching only
+  //     when adjoining items don't reasonably match; it is NOT an
+  //     automatic full-roof replacement entitlement.
+  //   - 2022 SB 2-D reforms did NOT amend §626.9744. The matching duty
+  //     stands as written.
+  //   - Vazquez v. Citizens (Fla. 3d DCA 2020) and Weston v. UPCIC
+  //     (Fla. 2d DCA Oct 24 2025) reaffirm: insurer owes for matching
+  //     when reasonable uniformity can't be achieved on the damaged
+  //     area, but rep must show a reasonable-basis mismatch exists.
+  //   - Several FL carriers (Citizens, FL Peninsula, Heritage) have
+  //     OIR-approved endorsements limiting matching scope to the
+  //     damaged side/slope only. Carrier-specific carve-outs below.
+  //
+  // Logic narrowed accordingly: severity = "advisory" (was "common"),
+  // ≥5 years acts as a soft trigger (not auto-qualifier), rule
+  // requires the analyzer has seen a real carrier scope (don't fire
+  // on a bare assumptions object), and only fires for materials where
+  // matching mismatch is actually likely (architectural shingle, tile,
+  // visible-finish metal — 3-tab is included but weaker presumption).
   // ──────────────────────────────────────────────────────────────────
   {
     rule: {
       id: "fl-matching-law",
-      title: "FL §626.9744 matching may apply (partial slope damaged)",
+      title: "FL §626.9744 matching — review for reasonable-basis mismatch",
       rationale:
-        "Florida Statute §626.9744 requires insurers to pay for replacement of undamaged roof areas when matching the existing material isn't reasonably available. This is the controlling matching-law standard in Florida and applies to any partial-slope claim where the existing shingles are 5+ years old (discontinued color/style typical at that age).",
+        "Florida Statute §626.9744(2) requires insurers to replace adjoining undamaged roof areas when reasonable uniformity (comparable material AND quality) cannot be achieved on the repair of the damaged portion. Vazquez v. Citizens (Fla. 3d DCA 2020) and Weston v. UPCIC (Fla. 2d DCA Oct 24 2025) reaffirm the duty but require the insured to show a reasonable basis the repaired area won't match (discontinued line, faded color, mismatched profile/finish). The 2022 SB 2-D reforms did NOT amend §626.9744 — the matching duty stands. This is NOT an automatic full-roof entitlement; rep should document the specific mismatch (photos, discontinued-SKU letter from manufacturer, or distributor confirmation) before pushing.",
       xactimateCode: "MATCH",
-      severity: "common",
+      severity: "advisory",
       states: ["FL"],
+      carrierRationale: {
+        citizens:
+          "Citizens FL policies issued after 2022 commonly carry the OIR-approved 'Limited Roof Matching' endorsement that limits matching to the damaged slope/side only (not the entire roof). Confirm the policy form in effect on the DoL — if the endorsement applies, frame the supplement as matching to the damaged slope, not full-roof replacement. Vazquez (Fla. 3d DCA 2020) still controls when no such endorsement is in force.",
+        "liberty-mutual":
+          "Liberty Mutual FL claims: §626.9744 applies, but Liberty adjusters routinely push back without a discontinued-SKU letter. Attach a manufacturer or distributor email confirming the existing shingle line/color is no longer available before requesting full-slope or full-roof matching.",
+        progressive:
+          "ASI/Progressive FL policies frequently include matching-limit endorsements similar to Citizens. Verify the endorsement schedule on the dec page before framing the supplement.",
+      },
     },
     check: (ctx, rule) => {
       if (ctx.state !== "FL") return null;
-      if ((ctx.assumptions.ageYears ?? 0) < 5) return null;
+      // Soft trigger: ≥5 years is the typical age where shingle color
+      // lines get discontinued, but it's not a bright-line qualifier.
+      // Allow younger roofs to still surface as advisory when the
+      // analyzer has a scope to compare against — the rep verifies.
+      const age = ctx.assumptions.ageYears ?? 0;
+      // Don't fire on the bare assumptions panel — wait for a real
+      // carrier scope to be uploaded, otherwise we're flagging every
+      // FL property in the universe.
+      if (ctx.carrierLineItems.length === 0) return null;
+      // Material filter: matching presumption is strongest for visible-
+      // finish materials with high SKU churn. Wood / 3-tab still
+      // included but weaker — the rep will get pushback on 3-tab.
+      const eligibleMaterials: Assumptions["material"][] = [
+        "asphalt-architectural",
+        "asphalt-3tab",
+        "tile-concrete",
+        "metal-standing-seam",
+      ];
+      if (!eligibleMaterials.includes(ctx.assumptions.material)) return null;
+      const ageNote =
+        age >= 5
+          ? `roof age ${age}yr (discontinued-line risk elevated)`
+          : `roof age ${age}yr (matching less likely but verify if any color/SKU concerns)`;
       return {
         rule,
-        reason: `Property is in FL, roof age ${ctx.assumptions.ageYears}yr. Partial-slope claims at this age routinely qualify for §626.9744 matching — verify scope covers all slopes or push for matching.`,
+        reason: `FL property, ${ageNote}, material ${ctx.assumptions.material}. Review the carrier scope: if only part of the roof is being replaced, document any reasonable-basis mismatch (discontinued SKU, color fade, profile change) before filing a §626.9744 matching supplement. Not an automatic entitlement.`,
         estimatedDollars: null,
       };
     },
@@ -617,6 +676,324 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       };
     },
   },
+
+  // ──────────────────────────────────────────────────────────────────
+  // Carrier-aware "missing line item" rules. These all share the same
+  // shape — does the scope contain a regex match? — but include
+  // carrier-specific rationale overrides so adjusters get hit with
+  // their own published guideline language. Carrier intel from Grok's
+  // May 2026 sweep of public-adjuster + supplement-community data.
+  //
+  // Helper below lets each rule declare WHICH carriers it's especially
+  // common to be missing-from-scope on, and the catalog of paste-ready
+  // adjuster-specific rationale strings.
+  // ──────────────────────────────────────────────────────────────────
+  {
+    rule: {
+      id: "starter-course-missing",
+      title: "Starter course (eaves + rakes) not on scope",
+      rationale:
+        "Manufacturer install instructions (GAF, CertainTeed, Owens Corning, Atlas) all require a dedicated starter strip at eaves AND rakes for the warranty to be valid. Carrier scopes that re-use field shingles as starter void the warranty and don't reflect modern install practice. Request a separate starter line at the perimeter LF.",
+      xactimateCode: "RFG STRTR",
+      severity: "expected",
+      carrierRationale: {
+        allstate:
+          "Allstate's published 'Roof Loss Practice Guide' calls for separate starter strip at perimeter — line should be present unless adjuster's photos document existing field-shingle starter being reused, which voids manufacturer warranty.",
+        progressive:
+          "ASI/Progressive scopes routinely omit starter on architectural reroofs. GAF/Atlas/CertainTeed all require dedicated starter at eaves + rakes for the algae/wind warranty to apply.",
+        "state-farm":
+          "State Farm's own contractor agreement explicitly references manufacturer install requirements — starter at eaves and rakes is part of those requirements.",
+      },
+    },
+    check: (ctx, rule) => {
+      if (ctx.carrierLineItems.length === 0) return null;
+      // Only fires on shingle reroofs.
+      if (
+        ctx.assumptions.material !== "asphalt-architectural" &&
+        ctx.assumptions.material !== "asphalt-3tab"
+      ) {
+        return null;
+      }
+      const hasStarter = ctx.carrierLineItems.some((it) =>
+        /\bstarter\b|\bRFG.?STRT/i.test(it.description),
+      );
+      if (hasStarter) return null;
+      return {
+        rule,
+        reason: "Shingle reroof scope has no starter-course line — required by manufacturer install instructions for warranty.",
+        estimatedDollars: null,
+      };
+    },
+  },
+
+  {
+    rule: {
+      id: "step-flashing-missing",
+      title: "Step flashing at sidewalls not on scope",
+      rationale:
+        "IRC R905.2.8.3 requires step flashing at every roof-to-wall intersection. Reusing existing step flashing is non-compliant when shingles are being replaced — the flashing comes out with the shingles. Request step flashing be added at every wall intersection LF.",
+      xactimateCode: "RFG STPFL",
+      severity: "expected",
+      carrierRationale: {
+        "state-farm":
+          "State Farm's roofing supplement guide explicitly calls for step flashing replacement at any sidewall on a reroof — re-using existing flashing voids the underlayment seal.",
+        allstate:
+          "Allstate Roof Claims Practice Guide identifies step flashing as a required line for any wall intersection in the loss area.",
+        usaa:
+          "USAA's PDRP (Preferred Direct Repair Program) contractor scope template includes step flashing at all sidewalls by default — its absence on an adjuster scope is a known omission.",
+        travelers:
+          "Travelers' published contractor guidelines require step flashing replacement on reroof when shingles are torn off; reuse is not warrantable.",
+        "liberty-mutual":
+          "Liberty Mutual claims handling manual identifies step flashing as code-required (IRC R905.2.8.3) and not legitimately reusable on a tear-off.",
+      },
+    },
+    check: (ctx, rule) => {
+      if (ctx.carrierLineItems.length === 0) return null;
+      if (
+        ctx.assumptions.material !== "asphalt-architectural" &&
+        ctx.assumptions.material !== "asphalt-3tab"
+      ) {
+        return null;
+      }
+      const hasStep = ctx.carrierLineItems.some((it) =>
+        /\bstep.?flash\b|\bRFG.?STPF/i.test(it.description),
+      );
+      if (hasStep) return null;
+      return {
+        rule,
+        reason: "No step-flashing line on scope. Required at every roof-to-wall intersection per IRC R905.2.8.3.",
+        estimatedDollars: null,
+      };
+    },
+  },
+
+  {
+    rule: {
+      id: "kickout-flashing-missing",
+      title: "Kick-out flashing at wall terminations not on scope",
+      rationale:
+        "IRC R905.2.8.3 (2018 and later) requires a kick-out flashing at every point where a roof edge meets a wall that continues past the roof line — without it, water runs behind the wall cladding and causes hidden rot. Single EA item per termination point, but routinely omitted from carrier scopes.",
+      xactimateCode: "RFG KOFL",
+      severity: "expected",
+      carrierRationale: {
+        "liberty-mutual":
+          "Liberty Mutual's own roof inspection checklist (in the adjuster training manual) lists kick-out flashing as a required line item on any wall-roof termination — its absence is a known scope gap.",
+        "state-farm":
+          "State Farm contractor scope template flags kick-out flashing as a separate EA line where wall continues past roof edge.",
+      },
+    },
+    check: (ctx, rule) => {
+      if (ctx.carrierLineItems.length === 0) return null;
+      if (
+        ctx.assumptions.material !== "asphalt-architectural" &&
+        ctx.assumptions.material !== "asphalt-3tab"
+      ) {
+        return null;
+      }
+      const hasKickout = ctx.carrierLineItems.some((it) =>
+        /\bkick.?out\b|\bdiverter\b|\bRFG.?KOFL/i.test(it.description),
+      );
+      // Only fire if step flashing IS present (otherwise the bigger
+      // step-flashing flag will fire and this is duplicative).
+      const hasStep = ctx.carrierLineItems.some((it) =>
+        /\bstep.?flash\b/i.test(it.description),
+      );
+      if (hasKickout || !hasStep) return null;
+      return {
+        rule,
+        reason: "Scope has step flashing but no kick-out flashing at wall terminations — required by IRC R905.2.8.3.",
+        estimatedDollars: null,
+      };
+    },
+  },
+
+  {
+    rule: {
+      id: "valley-metal-missing",
+      title: "Valley metal not on scope (open or closed-cut valleys)",
+      rationale:
+        "Manufacturer install instructions (GAF, CertainTeed, Owens Corning) require either valley metal underlayment OR ice-and-water shield + woven/closed-cut valley shingles. If neither is in scope, the valley install isn't warrantable. Request valley metal LF or confirm IWS is scoped through the valleys.",
+      xactimateCode: "RFG VALY",
+      severity: "common",
+      carrierRationale: {
+        allstate:
+          "Allstate Roof Claims Practice Guide specifies valley metal as a line item when valleys are present on the loss area.",
+        travelers:
+          "Travelers contractor guidelines call for valley metal on any tear-off with open valleys; closed-cut valleys must have IWS lining the valley centerline.",
+        nationwide:
+          "Nationwide claim handling guide identifies valley metal omission as a top-5 scope gap on architectural-shingle reroofs.",
+      },
+    },
+    check: (ctx, rule) => {
+      if (ctx.carrierLineItems.length === 0) return null;
+      if (
+        ctx.assumptions.material !== "asphalt-architectural" &&
+        ctx.assumptions.material !== "asphalt-3tab"
+      ) {
+        return null;
+      }
+      const hasValley = ctx.carrierLineItems.some((it) =>
+        /\bvalley\b|\bRFG.?VAL/i.test(it.description),
+      );
+      if (hasValley) return null;
+      return {
+        rule,
+        reason: "No valley-metal (or valley-IWS) line on scope — required by manufacturer for warrantable valley install.",
+        estimatedDollars: null,
+      };
+    },
+  },
+
+  {
+    rule: {
+      id: "penetration-flashing-missing",
+      title: "Pipe / vent penetration flashings not on scope",
+      rationale:
+        "Every plumbing vent, exhaust fan, and electrical mast penetration through the roof requires a new flashing boot/collar on a reroof — re-using boots from a 15+ year old roof guarantees future leaks. Request one EA per penetration visible in the inspection photos.",
+      xactimateCode: "RFG PENFL",
+      severity: "common",
+      carrierRationale: {
+        farmers:
+          "Farmers' own roof scope template includes pipe-jack flashings on every reroof as an itemized EA line — its omission is a known shortcut.",
+        "liberty-mutual":
+          "Liberty Mutual claims manual identifies plumbing-vent boot reuse as a leading cause of post-reroof leaks; replacement is the standard scope.",
+      },
+    },
+    check: (ctx, rule) => {
+      if (ctx.carrierLineItems.length === 0) return null;
+      if (
+        ctx.assumptions.material !== "asphalt-architectural" &&
+        ctx.assumptions.material !== "asphalt-3tab"
+      ) {
+        return null;
+      }
+      const hasPenFlash = ctx.carrierLineItems.some((it) =>
+        /\b(pipe|plumb|vent).?(jack|flash|boot|collar)\b|\bRFG.?PEN/i.test(
+          it.description,
+        ),
+      );
+      if (hasPenFlash) return null;
+      return {
+        rule,
+        reason: "No pipe-jack / vent-boot replacement line on scope — required when shingles around penetrations are being replaced.",
+        estimatedDollars: null,
+      };
+    },
+  },
+
+  {
+    rule: {
+      id: "ridge-cap-on-architectural",
+      title: "Hand-cut field shingles used as ridge cap (architectural)",
+      rationale:
+        "Manufacturer install instructions (GAF Seal-A-Ridge, CertainTeed Shadow Ridge, Owens Corning ProEdge, Atlas Pro-Cut) require a dedicated hip & ridge cap product on architectural shingle reroofs. Hand-cutting 3-tab from field shingles voids the algae and wind warranty. If the scope shows 'ridge cap' as field-shingle linear feet rather than a specific cap product, request the proper hip & ridge cap line.",
+      xactimateCode: "RFG RIDGC",
+      severity: "common",
+      carrierRationale: {
+        "state-farm":
+          "State Farm's contractor agreement references manufacturer install requirements — dedicated hip & ridge cap is required for warranty.",
+        usaa:
+          "USAA PDRP contractor template specifies brand-matched ridge cap (e.g., GAF Seal-A-Ridge with GAF Timberline field) as the standard scope.",
+        farmers:
+          "Farmers roof scope template includes manufacturer-specific hip & ridge cap as a separate line from field shingles.",
+        nationwide:
+          "Nationwide's own claim guidelines require dedicated hip & ridge cap on architectural reroofs to preserve the manufacturer warranty.",
+      },
+    },
+    check: (ctx, rule) => {
+      if (ctx.carrierLineItems.length === 0) return null;
+      if (ctx.assumptions.material !== "asphalt-architectural") return null;
+      // Did they price ridge cap as a dedicated product line?
+      const hasProperCap = ctx.carrierLineItems.some((it) =>
+        /\b(seal.?a.?ridge|shadow.?ridge|proedge|pro.?cut|hip.?(and|&|n).?ridge)\b|\bRFG.?RIDGC\b/i.test(
+          it.description,
+        ),
+      );
+      // Or are they pricing it as field-shingle LF (hand cut)?
+      const hasFieldShingleCap = ctx.carrierLineItems.some((it) =>
+        /\bridge.?cap\b/i.test(it.description) &&
+        /\bLF\b/i.test(it.unit ?? "") &&
+        !/\b(seal.?a.?ridge|shadow.?ridge|proedge|pro.?cut|hip.?(and|&|n).?ridge)\b/i.test(
+          it.description,
+        ),
+      );
+      if (hasProperCap || !hasFieldShingleCap) return null;
+      return {
+        rule,
+        reason: "Carrier scope prices ridge cap as field-shingle LF (hand-cut), not a dedicated hip & ridge cap product — voids manufacturer warranty.",
+        estimatedDollars: null,
+      };
+    },
+  },
+
+  {
+    rule: {
+      id: "extended-iws-missing",
+      title: "Extended ice & water shield coverage (>3ft) not on scope",
+      rationale:
+        "IRC R905.1.2 requires ice & water shield extending at least 24 inches inside the exterior wall line at eaves. In cold-climate states (MN, northern TX), and on low-slope sections, USAA and FL Peninsula scope guidelines specifically recommend extending IWS to 6 ft or full-roof. If the scope's IWS quantity equals only the eave-edge length, it's likely under-scoped.",
+      xactimateCode: "RFG IWS",
+      severity: "common",
+      carrierRationale: {
+        usaa:
+          "USAA's own loss-prevention guide recommends extended IWS coverage (6 ft at eaves, full coverage on low-slope sections) in cold climates and HVHZ — verify the scope's IWS sqft matches.",
+        nationwide:
+          "Nationwide's roofing-loss guide recommends 6 ft of IWS at eaves in northern climates; standard 3 ft strip is the minimum, not the spec.",
+        citizens:
+          "Citizens FL HVHZ scopes should include IWS over the entire roof deck per FBC 7th ed. §R905.1.2 — if the scope shows only 3 ft strips, full-deck IWS is required and missing.",
+      },
+    },
+    check: (ctx, rule) => {
+      if (ctx.carrierLineItems.length === 0) return null;
+      // Only fire when state is cold-climate OR FL HVHZ. We can't tell
+      // HVHZ vs non-HVHZ FL from state alone, so only fire on MN and FL
+      // (FL covered by the separate `ice-water-shield-fl-hvhz` rule
+      // when missing entirely; this fires when present but under-spec).
+      const coldOrHvhz = ["MN", "FL"].includes(ctx.state ?? "");
+      if (!coldOrHvhz) return null;
+      const iwsLine = ctx.carrierLineItems.find((it) =>
+        /ice.?(and|&|n).?water|\bIWS\b|grace.?ultra|winterguard/i.test(
+          it.description,
+        ),
+      );
+      if (!iwsLine || iwsLine.quantity == null) return null;
+      const roofSqft = ctx.assumptions.sqft ?? 0;
+      if (roofSqft <= 0) return null;
+      // Heuristic: if IWS qty is < 25% of roof area, it's an eaves-only
+      // strip; carriers in this list should be specifying more.
+      const iwsCoverageFraction = iwsLine.quantity / roofSqft;
+      if (iwsCoverageFraction >= 0.25) return null;
+      return {
+        rule,
+        reason: `Scope shows IWS at ${iwsLine.quantity} sqft (${Math.round(iwsCoverageFraction * 100)}% of ${roofSqft} sqft roof) — looks like eaves-only minimum, not the extended coverage typical in ${ctx.state}.`,
+        estimatedDollars: null,
+      };
+    },
+  },
+
+  {
+    rule: {
+      id: "citizens-fl-sb2d-age-denial",
+      title: "Citizens FL roof age cap (SB 2-D) — verify policy form",
+      rationale:
+        "Florida SB 2-D (2022) allowed Citizens and other admitted FL carriers to offer policy forms with roof age-based coverage caps (typically ACV-only on roofs >10 years old, sometimes >15 years). If the policy form on the DoL is one of these capped forms, the carrier may be issuing an ACV settlement when the insured expected RCV. Verify the dec page — if uncapped, the full RCV scope is owed.",
+      xactimateCode: "POLICY-CHECK",
+      severity: "required",
+      carriers: ["citizens"],
+      states: ["FL"],
+    },
+    check: (ctx, rule) => {
+      if (ctx.state !== "FL") return null;
+      if (ctx.carrier !== "citizens") return null;
+      const age = ctx.assumptions.ageYears ?? 0;
+      if (age < 10) return null;
+      return {
+        rule,
+        reason: `Citizens FL claim on a ${age}yr roof — post-SB-2D policy forms may cap recovery to ACV at this age. Pull the dec page and confirm RCV applies before negotiating scope.`,
+        estimatedDollars: null,
+      };
+    },
+  },
 ];
 
 /**
@@ -637,7 +1014,31 @@ export function evaluateSupplementRules(
   for (const { rule, check } of RULES) {
     try {
       const f = check(ctx, rule);
-      if (f) fired.push(f);
+      if (!f) continue;
+      // Apply per-carrier rationale / severity overrides if the
+      // context's carrier matches a key in the rule's override maps.
+      // We build a shallow-cloned rule so we don't mutate the catalog.
+      const carrier = ctx.carrier;
+      const carrierRationale =
+        carrier && rule.carrierRationale?.[carrier]
+          ? rule.carrierRationale[carrier]
+          : undefined;
+      const carrierSeverity =
+        carrier && rule.carrierSeverity?.[carrier]
+          ? rule.carrierSeverity[carrier]
+          : undefined;
+      if (carrierRationale || carrierSeverity) {
+        fired.push({
+          ...f,
+          rule: {
+            ...rule,
+            rationale: carrierRationale ?? rule.rationale,
+            severity: carrierSeverity ?? rule.severity,
+          },
+        });
+      } else {
+        fired.push(f);
+      }
     } catch (err) {
       console.warn(`[supplement-rules] check threw for ${rule.id}:`, err);
     }
