@@ -30,10 +30,7 @@ export default function SectionHeader({ index, title, caption, trailing }: Props
     <div className="flex items-end justify-between gap-4 pt-2 pb-2 flex-wrap">
       <div className="flex items-baseline gap-3 min-w-0">
         {index != null && (
-          <span
-            className="font-mono text-[10px] uppercase tracking-[0.18em] text-cy-300/90 px-2 py-0.5 rounded-full border border-cy-300/30 bg-cy-300/5 flex-shrink-0"
-            aria-hidden
-          >
+          <span className="glass-eyebrow" aria-hidden>
             {typeof index === "number" ? String(index).padStart(2, "0") : index}
           </span>
         )}

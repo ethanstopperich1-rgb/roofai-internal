@@ -19,7 +19,17 @@ export default function InternalHeader() {
   if (isCustomerRoute) return null;
 
   return (
-    <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#07090d]/70 backdrop-blur-xl">
+    <header
+      className="sticky top-0 z-40 border-b border-white/[0.08]"
+      style={{
+        background:
+          "linear-gradient(180deg, rgba(8,11,17,0.72) 0%, rgba(8,11,17,0.55) 100%)",
+        backdropFilter: "blur(32px) saturate(180%)",
+        WebkitBackdropFilter: "blur(32px) saturate(180%)",
+        boxShadow:
+          "inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 0 rgba(0,0,0,0.4)",
+      }}
+    >
       <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-16 sm:h-20 flex items-center justify-between gap-3">
         <Link href="/" className="group flex items-center gap-2 min-w-0" aria-label="Voxaris Pitch">
           <img

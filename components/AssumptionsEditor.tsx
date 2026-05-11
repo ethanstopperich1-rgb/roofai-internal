@@ -34,7 +34,7 @@ export default function AssumptionsEditor({ value, onChange }: Props) {
   const matPct = ((value.materialMultiplier - 0.5) / 1.5) * 100;
 
   return (
-    <div className="glass rounded-3xl p-6 space-y-6">
+    <div className="glass-panel p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-cy-300/10 border border-cy-300/20 flex items-center justify-center text-cy-300">
@@ -90,7 +90,7 @@ export default function AssumptionsEditor({ value, onChange }: Props) {
         <div className="label mb-2">Roof Size · sq ft</div>
         <div className="flex items-stretch gap-2">
           <button
-            className="btn btn-ghost px-3 aspect-square"
+            className="glass-button-secondary px-3 aspect-square"
             onClick={() => set("sqft", Math.max(200, value.sqft - 100))}
             aria-label="Decrease size"
           >
@@ -98,12 +98,12 @@ export default function AssumptionsEditor({ value, onChange }: Props) {
           </button>
           <input
             type="number"
-            className="input text-center font-display tabular text-[22px] font-semibold py-2 tracking-tight"
+            className="glass-input text-center font-display tabular text-[22px] font-semibold py-2 tracking-tight"
             value={value.sqft}
             onChange={(e) => set("sqft", Math.max(0, Number(e.target.value) || 0))}
           />
           <button
-            className="btn btn-ghost px-3 aspect-square"
+            className="glass-button-secondary px-3 aspect-square"
             onClick={() => set("sqft", value.sqft + 100)}
             aria-label="Increase size"
           >
@@ -139,7 +139,7 @@ export default function AssumptionsEditor({ value, onChange }: Props) {
           <div className="label mb-2">Age · yrs</div>
           <input
             type="number"
-            className="input w-20 text-center font-display tabular font-semibold"
+            className="glass-input w-20 text-center font-display tabular font-semibold"
             value={value.ageYears}
             onChange={(e) => set("ageYears", Math.max(0, Number(e.target.value) || 0))}
           />

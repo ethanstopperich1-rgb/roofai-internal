@@ -115,7 +115,7 @@ export default function PhotoUploadPanel({ photos, onChange }: Props) {
   const claimReadyCount = photos.filter((p) => p.claimReady).length;
 
   return (
-    <div className="glass rounded-3xl p-5 space-y-4">
+    <div className="glass-panel p-5 space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-cy-300/10 border border-cy-300/20 flex items-center justify-center text-cy-300">
@@ -132,7 +132,7 @@ export default function PhotoUploadPanel({ photos, onChange }: Props) {
         </div>
         <button
           onClick={() => inputRef.current?.click()}
-          className="btn btn-ghost py-1.5 px-3 text-[12px]"
+          className="glass-button-secondary py-1.5 px-3 text-[12px]"
         >
           <Plus size={12} /> Add
         </button>

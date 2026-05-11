@@ -46,7 +46,7 @@ export default function InsightsPanel({ estimate }: { estimate: Estimate }) {
   };
 
   return (
-    <div className="glass rounded-3xl p-5 relative overflow-hidden">
+    <div className="glass-panel p-5 relative overflow-hidden">
       <div
         className="absolute -top-12 -left-8 w-56 h-56 blur-3xl pointer-events-none opacity-50"
         style={{ background: "radial-gradient(closest-side, rgba(95,227,176,0.10), transparent)" }}
@@ -63,7 +63,7 @@ export default function InsightsPanel({ estimate }: { estimate: Estimate }) {
             </div>
           </div>
         </div>
-        <button onClick={run} disabled={loading} className="btn btn-ghost py-1.5 px-3 text-[12px]">
+        <button onClick={run} disabled={loading} className="glass-button-secondary py-1.5 px-3 text-[12px]">
           {loading ? <Loader2 size={12} className="animate-spin" /> : "Generate"}
         </button>
       </div>

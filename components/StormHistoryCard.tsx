@@ -153,7 +153,7 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
 
   return (
     <div
-      className={`glass rounded-3xl p-5 relative overflow-hidden ${
+      className={`glass-panel p-5 relative overflow-hidden ${
         insuranceWorthy ? "ring-1 ring-amber/30" : ""
       }`}
     >

@@ -1454,16 +1454,12 @@ export default function HomePage() {
           past the section's bottom edge. The gradient blob below uses
           isolation: isolate to keep its rounded-3xl clipping local. */}
       <section
-        className="glass-strong rounded-3xl p-5 sm:p-7 md:p-9 relative"
+        className="glass-panel-hero p-5 sm:p-7 md:p-9 relative"
         style={{ isolation: "isolate" }}
       >
-        <div
-          className="absolute -top-32 -right-24 w-[420px] h-[420px] rounded-full blur-3xl pointer-events-none opacity-50 -z-10"
-          style={{ background: "radial-gradient(closest-side, rgba(103,220,255,0.18), transparent)" }}
-        />
         <div className="relative flex items-end justify-between gap-6 mb-6 flex-wrap">
           <div className="flex items-end gap-3">
-            <div className="chip chip-accent">
+            <div className="glass-eyebrow">
               <Zap size={11} /> Quick Estimate
             </div>
             <div className="hidden md:flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-slate-300">
@@ -1478,7 +1474,7 @@ export default function HomePage() {
           </div>
           <div className="flex items-stretch gap-2 w-full sm:w-auto">
             <input
-              className="input flex-1 sm:flex-none sm:w-44 text-[13px]"
+              className="glass-input flex-1 sm:flex-none sm:w-44 text-[13px]"
               placeholder="Your name"
               value={staff}
               onChange={(e) => setStaff(e.target.value)}
@@ -1486,7 +1482,7 @@ export default function HomePage() {
             {shown && (
               <button
                 onClick={reset}
-                className="flex-shrink-0 inline-flex items-center justify-center gap-1.5 px-3.5 rounded-[0.7rem] border border-white/[0.10] bg-ink-800 text-slate-200 text-[13px] font-medium tracking-tight transition hover:border-white/[0.20] hover:bg-ink-700"
+                className="glass-button-secondary flex-shrink-0 text-[13px]"
                 aria-label="Start new estimate"
               >
                 <RotateCcw size={13} />
@@ -1498,9 +1494,7 @@ export default function HomePage() {
 
         <h1 className="font-display text-[28px] sm:text-4xl md:text-[44px] leading-[1.05] tracking-tight font-medium mb-1.5">
           Where are we{" "}
-          <span className="bg-gradient-to-r from-cy-300 via-cy-400 to-mint bg-clip-text text-transparent">
-            roofing
-          </span>{" "}
+          <span className="iridescent-text">roofing</span>{" "}
           today?
         </h1>
         <p className="text-[13.5px] text-slate-400 mb-6 max-w-xl">
@@ -1623,7 +1617,7 @@ export default function HomePage() {
                 <button
                   type="button"
                   onClick={() => setPickingBuilding((p) => !p)}
-                  className="rounded-md border border-cy-300/30 bg-cy-300/10 px-3 py-1.5 text-[12px] font-mono uppercase tracking-[0.14em] text-cy-100 hover:bg-cy-300/20 transition-colors"
+                  className="glass-button-secondary text-[12px] font-mono uppercase tracking-[0.14em]"
                   disabled={pickingLoading}
                 >
                   {pickingLoading
@@ -1814,25 +1808,26 @@ export default function HomePage() {
               <PropertyContextPanel address={address} />
               <StormHistoryCard lat={address?.lat} lng={address?.lng} />
               <PhotoUploadPanel photos={photos} onChange={setPhotos} />
-              <div className="glass rounded-2xl p-5 space-y-3">
+              <div className="glass-panel p-5 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="font-display font-semibold tracking-tight">Customer & Notes</div>
                   <span className="label">internal only</span>
                 </div>
                 <input
-                  className="input"
+                  className="glass-input"
                   placeholder="Customer name"
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
                 />
                 <textarea
-                  className="input"
+                  className="glass-input"
                   placeholder="Notes…"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
+                  style={{ minHeight: 90, resize: "vertical", lineHeight: 1.5 }}
                 />
               </div>
-              <div className="glass rounded-2xl p-5 space-y-3">
+              <div className="glass-panel p-5 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="font-display font-semibold tracking-tight">Output</div>
                   <span className="label">deliver</span>
@@ -1903,7 +1898,7 @@ function EmptyState() {
       {tips.map((t, i) => (
         <div
           key={t.title}
-          className="glass rounded-2xl p-5 card-hover float-in"
+          className="glass-panel is-interactive p-5 float-in"
           style={{ animationDelay: `${i * 70}ms` }}
         >
           <div className="flex items-center gap-2 mb-2">

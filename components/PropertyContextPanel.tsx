@@ -38,7 +38,7 @@ export default function PropertyContextPanel({ address }: Props) {
   if (!weather) return null;
 
   return (
-    <div className="glass rounded-3xl p-5 space-y-4">
+    <div className="glass-panel p-5 space-y-4">
       <div className="font-display font-semibold tracking-tight text-[15px]">
         Property Context
       </div>

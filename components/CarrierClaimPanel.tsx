@@ -50,7 +50,7 @@ export default function CarrierClaimPanel({ context, onChange }: Props) {
       <div>
         <div className="label mb-2">Carrier</div>
         <select
-          className="input"
+          className="glass-input"
           value={context.carrier}
           onChange={(e) =>
             onChange({ ...context, carrier: e.target.value as ClaimContext["carrier"] })
@@ -74,7 +74,7 @@ export default function CarrierClaimPanel({ context, onChange }: Props) {
         {fields.has("claim-number") && (
           <Field label="Claim #">
             <input
-              className="input"
+              className="glass-input"
               value={context.claimNumber ?? ""}
               onChange={(e) => onChange({ ...context, claimNumber: e.target.value })}
               placeholder="ABC-12345"
@@ -84,7 +84,7 @@ export default function CarrierClaimPanel({ context, onChange }: Props) {
         {fields.has("policy-number") && (
           <Field label="Policy #">
             <input
-              className="input"
+              className="glass-input"
               value={context.policyNumber ?? ""}
               onChange={(e) => onChange({ ...context, policyNumber: e.target.value })}
             />
@@ -93,7 +93,7 @@ export default function CarrierClaimPanel({ context, onChange }: Props) {
         {fields.has("adjuster-name") && (
           <Field label="Adjuster">
             <input
-              className="input"
+              className="glass-input"
               value={context.adjusterName ?? ""}
               onChange={(e) => onChange({ ...context, adjusterName: e.target.value })}
             />
@@ -102,7 +102,7 @@ export default function CarrierClaimPanel({ context, onChange }: Props) {
         {fields.has("adjuster-phone") && (
           <Field label="Adjuster phone">
             <input
-              className="input"
+              className="glass-input"
               type="tel"
               value={context.adjusterPhone ?? ""}
               onChange={(e) => onChange({ ...context, adjusterPhone: e.target.value })}
@@ -112,7 +112,7 @@ export default function CarrierClaimPanel({ context, onChange }: Props) {
         {fields.has("date-of-loss") && (
           <Field label="Date of loss">
             <input
-              className="input"
+              className="glass-input"
               type="date"
               value={context.dateOfLoss ?? ""}
               onChange={(e) => onChange({ ...context, dateOfLoss: e.target.value })}
@@ -122,7 +122,7 @@ export default function CarrierClaimPanel({ context, onChange }: Props) {
         {fields.has("peril") && (
           <Field label="Peril">
             <select
-              className="input"
+              className="glass-input"
               value={context.peril ?? ""}
               onChange={(e) => onChange({ ...context, peril: e.target.value })}
             >

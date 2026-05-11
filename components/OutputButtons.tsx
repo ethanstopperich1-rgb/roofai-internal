@@ -49,7 +49,7 @@ export default function OutputButtons({ estimate, onSaved }: Props) {
         <SecondaryAction onClick={email} icon={<Mail size={14} />} label="Email" />
         <SecondaryAction onClick={shareLink} icon={linked ? <Check size={14} /> : <LinkIcon size={14} />} label={linked ? "Link copied" : "Share link"} active={linked} />
       </div>
-      <button className="btn btn-primary w-full py-3 text-[14px]" onClick={save}>
+      <button className="glass-button-primary w-full" style={{ paddingTop: "0.85rem", paddingBottom: "0.85rem" }} onClick={save}>
         {saved ? <Check size={15} /> : <Save size={15} />}
         {saved ? "Saved to history" : "Save to History"}
       </button>

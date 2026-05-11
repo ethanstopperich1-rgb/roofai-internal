@@ -162,7 +162,7 @@ export default function SupplementAnalyzerPanel({
   };
 
   return (
-    <div className="glass rounded-3xl p-5 relative overflow-hidden">
+    <div className="glass-panel p-5 relative overflow-hidden">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl flex items-center justify-center bg-cy-300/10 border border-cy-300/20 text-cy-300">

@@ -53,12 +53,7 @@ export default function ResultsPanel({
   const serviceType = assumptions.serviceType ?? "reroof-tearoff";
 
   return (
-    <div className="glass-strong rounded-3xl p-7 md:p-8 relative overflow-hidden">
-      <div
-        className="absolute -top-20 right-0 w-[460px] h-[300px] blur-3xl pointer-events-none opacity-60"
-        style={{ background: "radial-gradient(closest-side, rgba(95,227,176,0.10), transparent)" }}
-      />
-
+    <div className="glass-panel-hero p-7 md:p-8 relative overflow-hidden">
       <div className="relative grid lg:grid-cols-[1fr_auto] gap-8 items-end">
         {/* Address */}
         <div className="min-w-0">
@@ -92,11 +87,8 @@ export default function ResultsPanel({
           </div>
           <div
             className={`font-display tabular text-[68px] md:text-[88px] leading-[0.92] font-semibold tracking-[-0.04em] ${
-              flash ? "price-flash" : "text-slate-50"
+              flash ? "price-flash" : "iridescent-text"
             }`}
-            style={{
-              textShadow: "0 1px 0 rgba(0,0,0,0.5), 0 0 60px rgba(103,220,255,0.06)",
-            }}
           >
             {fmt(total)}
           </div>
@@ -109,7 +101,7 @@ export default function ResultsPanel({
         </div>
       </div>
 
-      <div className="divider my-7" />
+      <div className="glass-divider my-7" />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

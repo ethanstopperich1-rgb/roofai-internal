@@ -6,8 +6,10 @@
  */
 export default function InternalLayout({ children }: { children: React.ReactNode }) {
   return (
-    <main className="relative z-[1] max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 py-6 sm:py-8">
-      {children}
+    <main className="relative z-[1] lg-env min-h-screen">
+      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 py-6 sm:py-8">
+        {children}
+      </div>
     </main>
   );
 }

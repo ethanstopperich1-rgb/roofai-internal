@@ -20,7 +20,7 @@ export default function AddOnsPanel({ addOns, onChange }: Props) {
     .reduce((s, x) => s + x.price, 0);
 
   return (
-    <div className="glass rounded-3xl p-6 space-y-5">
+    <div className="glass-panel p-6 space-y-5">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-mint/10 border border-mint/20 flex items-center justify-center text-mint">

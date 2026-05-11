@@ -29,7 +29,7 @@ export default function TiersPanel({ assumptions, addOns, onApplyTier }: Props) 
   const [selected, setSelected] = useState<ProposalTier["key"]>("better");
 
   return (
-    <div className="glass rounded-3xl p-6 relative overflow-hidden">
+    <div className="glass-panel p-6 relative overflow-hidden">
       <div
         className="absolute -top-12 left-1/3 w-72 h-72 blur-3xl pointer-events-none opacity-50"
         style={{ background: "radial-gradient(closest-side, rgba(243,177,75,0.10), transparent)" }}
@@ -120,7 +120,7 @@ export default function TiersPanel({ assumptions, addOns, onApplyTier }: Props) 
                     e.stopPropagation();
                     onApplyTier(t);
                   }}
-                  className="btn btn-primary w-full mt-5 text-[13px]"
+                  className="glass-button-primary w-full mt-5 text-[13px]"
                 >
                   Apply this tier
                 </button>

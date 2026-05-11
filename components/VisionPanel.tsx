@@ -65,7 +65,7 @@ function hasMaterialDamage(damage: RoofVision["visibleDamage"]): boolean {
 
 export default function VisionPanel({ vision, loading, error, ageYears, zip }: Props) {
   return (
-    <div className="glass rounded-3xl p-6 relative overflow-hidden">
+    <div className="glass-panel p-6 relative overflow-hidden">
       <div
         className="absolute -top-12 -right-8 w-56 h-56 blur-3xl pointer-events-none opacity-50"
         style={{ background: "radial-gradient(closest-side, rgba(103,220,255,0.10), transparent)" }}

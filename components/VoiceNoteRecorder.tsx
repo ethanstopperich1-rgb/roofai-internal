@@ -257,7 +257,7 @@ export default function VoiceNoteRecorder({
         onClick={recording ? stop : start}
         disabled={processing}
         aria-label={recording ? "Stop voice note" : "Record voice note"}
-        className={`fixed bottom-6 right-6 z-50 flex items-center gap-2.5 rounded-full pl-4 pr-5 py-3 shadow-2xl transition-all border ${
+        className={`fixed bottom-6 right-6 z-50 flex items-center gap-2.5 rounded-full pl-4 pr-5 py-3 transition-all border ${
           recording
             ? "bg-rose-500 hover:bg-rose-400 border-rose-300/40 text-white"
             : processing
@@ -267,11 +267,14 @@ export default function VoiceNoteRecorder({
         style={
           recording
             ? {
-                boxShadow: `0 4px 24px -4px rgba(244,63,94,0.55), 0 0 ${
+                boxShadow: `inset 0 1.5px 0 rgba(255,255,255,0.45), inset 0 -1px 0 rgba(0,0,0,0.18), 0 8px 24px -6px rgba(244,63,94,0.55), 0 0 ${
                   4 + level * 28
                 }px ${2 + level * 8}px rgba(244,63,94,${0.18 + level * 0.45})`,
               }
-            : { boxShadow: "0 4px 24px -4px rgba(103,220,255,0.55)" }
+            : {
+                boxShadow:
+                  "inset 0 1.5px 0 rgba(255,255,255,0.7), inset 0 -1px 0 rgba(0,0,0,0.18), 0 8px 24px -4px rgba(103,220,255,0.55), 0 18px 48px -16px rgba(167,139,250,0.30)",
+              }
         }
       >
         {processing ? (

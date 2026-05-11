@@ -46,7 +46,7 @@ export default function MeasurementsPanel({ lengths, waste, defaultOpen = false 
   const badge = SOURCE_BADGE[lengths.source];
 
   return (
-    <div className="glass rounded-3xl p-5">
+    <div className="glass-panel p-5">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

@@ -36,7 +36,7 @@ export default function LineItemsPanel({
   }, [alwaysShowXactimate]);
 
   return (
-    <div className="glass rounded-3xl p-6">
+    <div className="glass-panel p-6">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
