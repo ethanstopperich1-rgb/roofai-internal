@@ -9,8 +9,11 @@ import { getCached, setCached } from "@/lib/cache";
 import { polygonAreaSqft } from "@/lib/polygon";
 import type { SolarSummary } from "@/types/estimate";
 import type { SolarMaskPolygon } from "@/lib/solar-mask";
-import { fetchMicrosoftBuildingPolygon } from "@/lib/microsoft-buildings";
-import { fetchBuildingPolygon } from "@/lib/buildings";
+// fetchMicrosoftBuildingPolygon / fetchBuildingPolygon are no longer
+// used to RE-CENTER the satellite tile (see resolveBuildingCenter
+// rationale below). They're still consumed by reconcileRoofPolygon
+// downstream — that import chain stays in lib/reconcile-roof-polygon.ts
+// where it belongs.
 
 export const runtime = "nodejs";
 // 90s allows for SAM3 cold starts (which can take 30-60s on Roboflow's
@@ -304,19 +307,32 @@ function coercePolygon(input: unknown): Array<[number, number]> | null {
 
 /** Resolve the best available "actual building center" for the address.
  *
- *  The geocoded address often sits on the road rather than on the actual
- *  house — particularly true for setback rural / suburban properties.
- *  Centering the satellite tile on this resolved point puts the target
- *  building in the centre of the image, dramatically improving SAM3's
- *  segmentation AND making "closest to image center" trivially correct
- *  for the picker.
+ *  IMPORTANT — this function is the answer to the question "where should
+ *  the satellite tile be centered before SAM3 traces?" Google Places API
+ *  already returns rooftop-precise lat/lng for residential addresses
+ *  (it's what Google Maps shows you when you search the address). The
+ *  job here is NOT to re-snap that — it's to OPTIONALLY refine it when
+ *  we have evidence that's at least as authoritative as Google's own.
  *
- *  Fallback chain:
- *    1. Solar findClosest's buildingCenter (cached if /api/solar fired)
- *    2. Solar mask polygon centroid (cached if /api/solar-mask fired)
- *    3. Microsoft Buildings polygon centroid
- *    4. OSM Overpass polygon centroid
- *    5. Geocoded address (no recentering)
+ *  Old behavior (BROKEN on rural lots): tried Solar → Solar mask → MS
+ *  Buildings → OSM in priority order. On a rural FL parcel where Google
+ *  correctly placed the address on the house, but MS/OSM only had a
+ *  polygon for the shop (closer to the road), this re-snapped the tile
+ *  center onto the shop — and SAM3 then traced the shop. Effectively we
+ *  were throwing away Google's correct data and replacing it with worse.
+ *
+ *  New behavior:
+ *    1. If Solar API returns a building center (cached or fresh), use it.
+ *       Solar uses Google's same internal building-detection that Maps
+ *       uses, so it's the only data source that can plausibly outrank
+ *       the geocoded address. AND it implicitly identifies the principal
+ *       residence (the one with high-quality solar imagery available).
+ *    2. Otherwise STAY ON Google's geocoded lat/lng. Don't re-snap to
+ *       MS/OSM — those are used downstream for footprint OVERRIDES
+ *       (via reconcileRoofPolygon), but NOT for tile centering.
+ *
+ *  Result: rural lots with outbuildings now trace the house because the
+ *  tile center stays where Google put it.
  */
 async function resolveBuildingCenter(
   lat: number,
@@ -376,7 +392,9 @@ async function resolveBuildingCenter(
     }
   }
 
-  // 2. Solar mask polygon centroid (also Redis-cached when /api/solar-mask fired)
+  // 2. Solar mask polygon centroid — Solar Mask is also a Google product
+  //    and uses the same building-detection, so it CAN outrank the
+  //    geocoded point. (Cached by /api/solar-mask if it fired already.)
   const solarMask = await getCached<SolarMaskPolygon | null>(
     "solar-mask",
     lat,
@@ -396,40 +414,13 @@ async function resolveBuildingCenter(
     };
   }
 
-  // 3. Microsoft Buildings (precomputed local file — fast)
-  const ms = await fetchMicrosoftBuildingPolygon({ lat, lng }).catch(() => null);
-  if (ms?.polygon?.length) {
-    let cLat = 0;
-    let cLng = 0;
-    for (const v of ms.polygon) {
-      cLat += v.lat;
-      cLng += v.lng;
-    }
-    return {
-      lat: cLat / ms.polygon.length,
-      lng: cLng / ms.polygon.length,
-      source: "ms-buildings-centroid",
-    };
-  }
-
-  // 4. OSM Overpass (slower, requires network) — User-Agent fix should
-  //    have unblocked this for FL addresses
-  const osm = await fetchBuildingPolygon({ lat, lng }).catch(() => null);
-  if (osm?.latLng?.length) {
-    let cLat = 0;
-    let cLng = 0;
-    for (const v of osm.latLng) {
-      cLat += v.lat;
-      cLng += v.lng;
-    }
-    return {
-      lat: cLat / osm.latLng.length,
-      lng: cLng / osm.latLng.length,
-      source: "osm-centroid",
-    };
-  }
-
-  // 5. Last resort — use the geocoded address itself
+  // 3. NOTHING ELSE — return Google's geocoded lat/lng as the tile
+  //    center. MS Buildings and OSM are deliberately NOT consulted here.
+  //    Their polygons are still used downstream by reconcileRoofPolygon
+  //    to OVERRIDE the SAM3 trace when SAM3 returns garbage, but they
+  //    must NOT re-snap the tile center because on rural lots they
+  //    return outbuilding polygons that would move the tile away from
+  //    the (correctly-geocoded) house.
   return { lat, lng, source: "address" };
 }
 
