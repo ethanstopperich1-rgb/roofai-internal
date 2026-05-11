@@ -1,0 +1,10 @@
+livekit-agents[openai,deepgram,cartesia,silero,turn-detector,rime]~=1.5
+livekit-plugins-noise-cancellation~=0.2
+# ai-coustics QUAIL_VF_L — telephony voice isolation. Per LK docs
+# (transport/media/noise-cancellation), 11.8% WER vs Krisp BVC's 23.5%
+# on agent-pipeline workloads. Better fit for convention/loud-room demos.
+livekit-plugins-ai-coustics
+livekit-api~=1.0
+python-dotenv~=1.0
+pytest~=8.0
+pytest-asyncio~=0.24

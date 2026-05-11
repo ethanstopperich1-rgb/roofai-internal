@@ -1,0 +1,14 @@
+.venv/
+.env
+.env.example
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+.git/
+.gitignore
+.DS_Store
+setup_sip.py
+README.md
+KMS/
+*.bak
