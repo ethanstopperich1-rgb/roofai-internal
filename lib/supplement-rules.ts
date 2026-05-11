@@ -121,6 +121,59 @@ export interface SupplementFlag {
  *  of the array. */
 type Check = (ctx: SupplementContext, rule: SupplementRule) => SupplementFlag | null;
 
+/**
+ * Shared helper for "carrier scope is under-billing this material per
+ * Q2 2026 wholesale floor" rules. Used by 6 stale-pricing rules
+ * (asphalt shingle, galvalume metal, aluminum metal, concrete tile,
+ * underlayment, ice & water, drip edge) so the same threshold logic
+ * doesn't get hand-copied 6 times.
+ *
+ * Floors below are Q2 2026 contractor-cost lower-bounds from
+ * manufacturer announcements + distributor data (May 2026). Each
+ * floor is set at "typical wholesale × 0.85" — gives carriers a 15%
+ * margin headroom before we flag, so the rule only fires on
+ * meaningfully under-billed lines, not borderline misses.
+ *
+ * Returns a SupplementFlag with computed dollar impact when the
+ * carrier line is below the floor; null otherwise (rule didn't fire).
+ */
+function checkStalePricing(opts: {
+  ctx: SupplementContext;
+  rule: SupplementRule;
+  /** Regex matching line-item descriptions for this material. */
+  descriptionRegex: RegExp;
+  /** Material restriction — only fire when the rep's estimate uses
+   *  one of these materials. Empty = fire for any material. */
+  applicableMaterials?: Assumptions["material"][];
+  /** Q2 2026 wholesale floors. The matcher picks one based on the
+   *  carrier line's `unit` field. */
+  floorsByUnit: Partial<Record<"SQ" | "SF" | "LF" | "EA", number>>;
+}): SupplementFlag | null {
+  const { ctx, rule, descriptionRegex, applicableMaterials, floorsByUnit } = opts;
+  if (ctx.carrierLineItems.length === 0) return null;
+  if (
+    applicableMaterials &&
+    !applicableMaterials.includes(ctx.assumptions.material)
+  ) {
+    return null;
+  }
+  const line = ctx.carrierLineItems.find((it) =>
+    descriptionRegex.test(it.description),
+  );
+  if (!line || line.unitCost == null) return null;
+  const unit = (line.unit ?? "").toUpperCase() as "SQ" | "SF" | "LF" | "EA";
+  const floor = floorsByUnit[unit];
+  if (floor == null) return null;
+  if (line.unitCost >= floor) return null;
+  return {
+    rule,
+    reason: `Carrier ${rule.xactimateCode} unit cost is $${line.unitCost.toFixed(2)}/${unit} — below the post-April-2026 wholesale floor of ~$${floor.toFixed(2)}/${unit}.`,
+    estimatedDollars: line.quantity
+      ? Math.round(line.quantity * (floor - line.unitCost))
+      : null,
+  };
+}
+
 const RULES: Array<{ rule: SupplementRule; check: Check }> = [
   // ──────────────────────────────────────────────────────────────────
   // O&P (Overhead & Profit) — the #1 most-frequently-missed line in
@@ -366,39 +419,171 @@ const RULES: Array<{ rule: SupplementRule; check: Check }> = [
       id: "shingle-price-stale",
       title: "Shingle pricing below Q2 2026 manufacturer hikes",
       rationale:
-        "Major manufacturer list-price hikes effective April 2026: GAF and CertainTeed each up to 8% on architectural shingles, Owens Corning and Atlas 5-8%, with SRS distributors layering on an additional 6-10% effective June 2026. The carrier scope's per-square shingle rate sits below the post-hike contractor floor (~$280/square or ~$5.50/sqft installed for asphalt architectural). Request a price-list update or an updated unit cost backed by a current distributor invoice.",
+        "Major manufacturer list-price hikes effective April 2026: GAF and CertainTeed each up to 8% on architectural shingles, Owens Corning and Atlas 5-8%, with SRS distributors layering on an additional 6-10% effective June 2026. The carrier scope's per-square shingle rate sits below the post-hike contractor floor (~$280/square or ~$2.80/sqft material-only). Request a price-list update or an updated unit cost backed by a current distributor invoice.",
       xactimateCode: "RFG ARCH",
       severity: "common",
     },
-    check: (ctx, rule) => {
-      if (ctx.carrierLineItems.length === 0) return null;
-      // Only fires for asphalt — metal / tile pricing trajectory differs
-      if (
-        ctx.assumptions.material !== "asphalt-architectural" &&
-        ctx.assumptions.material !== "asphalt-3tab"
-      ) return null;
-      // Find the primary shingle line in the carrier scope
-      const shingleLine = ctx.carrierLineItems.find((it) =>
-        /(asphalt|architectural|shingle|RFG.?ARCH|RFG.?3T|comp)\b/i.test(
-          it.description,
-        ),
-      );
-      if (!shingleLine || shingleLine.unitCost == null) return null;
-      // Threshold: $280/SQ contractor, ~$2.80/sqft material-only.
-      // If the carrier rate is below this, they're using stale pricing.
-      // Allow Xactimate's typical 10% margin headroom over wholesale
-      // before flagging — only fire when rate is clearly below the
-      // post-hike floor.
-      const lowerBoundPerUnit = shingleLine.unit?.toUpperCase() === "SQ" ? 280 : 2.80;
-      if (shingleLine.unitCost >= lowerBoundPerUnit) return null;
-      return {
+    check: (ctx, rule) =>
+      checkStalePricing({
+        ctx,
         rule,
-        reason: `Carrier shingle unit cost is $${shingleLine.unitCost.toFixed(2)}/${shingleLine.unit ?? "?"} — below the post-April-2026 manufacturer-hike floor of ~$${lowerBoundPerUnit}/${shingleLine.unit ?? "unit"}.`,
-        estimatedDollars: shingleLine.quantity
-          ? Math.round(shingleLine.quantity * (lowerBoundPerUnit - shingleLine.unitCost))
-          : null,
-      };
+        descriptionRegex:
+          /(asphalt|architectural|shingle|RFG.?ARCH|RFG.?3T|\bcomp\b)/i,
+        applicableMaterials: ["asphalt-architectural", "asphalt-3tab"],
+        floorsByUnit: { SQ: 280, SF: 2.8 },
+      }),
+  },
+
+  // ──────────────────────────────────────────────────────────────────
+  // Standing-seam metal (Galvalume / steel) — tariff-heavy, +12-25%
+  // from Q1 2025. Q2 2026 contractor floor ~$2.40/sqft for 24ga
+  // Galvalume per Grok pull (typical $2.85, floor at typical × 0.85).
+  // Most carrier scopes for metal reroofs are 2024-era pricing and
+  // miss the tariff-driven jump.
+  // ──────────────────────────────────────────────────────────────────
+  {
+    rule: {
+      id: "metal-galvalume-price-stale",
+      title: "Galvalume / steel metal pricing below Q2 2026 tariff floor",
+      rationale:
+        "Section 232 steel tariffs drove 24-gauge Galvalume up 12-25% from Q1 2025 to Q2 2026. The carrier scope's per-sqft metal rate sits below the post-tariff wholesale floor (~$2.40/sqft Galvalume). Request the metal line be re-priced from a current distributor quote (ABC Supply, Beacon, Western States, etc.) — the rep can produce one on request.",
+      xactimateCode: "RFG METAL",
+      severity: "expected",
     },
+    check: (ctx, rule) =>
+      checkStalePricing({
+        ctx,
+        rule,
+        descriptionRegex:
+          /(galvalume|standing.?seam.*(steel|galv)|24.?(ga|gauge).*(panel|metal)|RFG.?MTL|RFG.?STM)/i,
+        applicableMaterials: ["metal-standing-seam"],
+        floorsByUnit: { SF: 2.4, SQ: 240 },
+      }),
+  },
+
+  // ──────────────────────────────────────────────────────────────────
+  // Standing-seam metal (Aluminum) — coastal / salt-air premium
+  // option. Even more tariff exposure than Galvalume. Q2 2026 floor
+  // ~$3.80/sqft (typical $4.75 × 0.85). Common in FL coastal markets
+  // where corrosion makes aluminum the standard spec.
+  // ──────────────────────────────────────────────────────────────────
+  {
+    rule: {
+      id: "metal-aluminum-price-stale",
+      title: "Aluminum metal pricing below Q2 2026 tariff floor",
+      rationale:
+        "Aluminum has the highest tariff exposure of any roofing material — Q1 2025 → Q2 2026 wholesale up 15-25%+. The carrier's per-sqft aluminum rate is below the post-tariff floor (~$3.80/sqft for 0.032 aluminum). Standard spec in FL coastal markets for salt-air corrosion. Request re-pricing at current distributor quote.",
+      xactimateCode: "RFG ALUM",
+      severity: "expected",
+    },
+    check: (ctx, rule) =>
+      checkStalePricing({
+        ctx,
+        rule,
+        descriptionRegex:
+          /(aluminum.*(panel|metal|standing.?seam)|0\.032|RFG.?ALUM)/i,
+        applicableMaterials: ["metal-standing-seam"],
+        floorsByUnit: { SF: 3.8, SQ: 380 },
+      }),
+  },
+
+  // ──────────────────────────────────────────────────────────────────
+  // Concrete tile — moderate +4-8% from Q1 2025 (less tariff-exposed
+  // than metal). Q2 2026 floor ~$2.40/sqft material-only (typical
+  // $3.00). Most common in FL retirement communities + SW.
+  // ──────────────────────────────────────────────────────────────────
+  {
+    rule: {
+      id: "tile-concrete-price-stale",
+      title: "Concrete tile pricing below Q2 2026 floor",
+      rationale:
+        "Concrete tile wholesale moved up 4-8% from Q1 2025 to Q2 2026. The carrier rate sits below the post-hike floor (~$2.40/sqft material-only, ~$200/SQ). Less tariff-affected than metal but still benefits from a price refresh on the scope.",
+      xactimateCode: "RFG TILE",
+      severity: "common",
+    },
+    check: (ctx, rule) =>
+      checkStalePricing({
+        ctx,
+        rule,
+        descriptionRegex:
+          /(concrete.?tile|cement.?tile|RFG.?TILE|RFG.?TILEC)/i,
+        applicableMaterials: ["tile-concrete"],
+        floorsByUnit: { SF: 2.4, SQ: 240 },
+      }),
+  },
+
+  // ──────────────────────────────────────────────────────────────────
+  // Synthetic underlayment — +5-10% from Q1 2025 (part of April 2026
+  // accessory hikes from Atlas, GAF, CertainTeed). Q2 2026 floor
+  // ~$0.55/sqft (typical $0.72). Fires regardless of primary material
+  // — every reroof has underlayment.
+  // ──────────────────────────────────────────────────────────────────
+  {
+    rule: {
+      id: "underlayment-synthetic-price-stale",
+      title: "Synthetic underlayment below Q2 2026 manufacturer hikes",
+      rationale:
+        "Synthetic underlayment (Titanium UDL, Tyvek Protec class) bumped up 5-10% with the April 2026 accessory hikes from Atlas, GAF, and CertainTeed. The carrier rate is below the post-hike floor (~$0.55/sqft). Request line refresh at current distributor cost.",
+      xactimateCode: "RFG SYNF",
+      severity: "common",
+    },
+    check: (ctx, rule) =>
+      checkStalePricing({
+        ctx,
+        rule,
+        descriptionRegex:
+          /(synthetic.?underlayment|titanium.?(udl|udls)|tyvek.?protec|RFG.?SYNF)/i,
+        floorsByUnit: { SF: 0.55, SQ: 55 },
+      }),
+  },
+
+  // ──────────────────────────────────────────────────────────────────
+  // Ice & water shield — +5-10% from Q1 2025. Q2 2026 floor
+  // ~$0.85/sqft material-only (typical $1.05). Required by FBC §R905
+  // in FL HVHZ + IRC §R905.1.2 at eaves in cold climates — fires on
+  // any reroof that has it scoped (regardless of state).
+  // ──────────────────────────────────────────────────────────────────
+  {
+    rule: {
+      id: "ice-water-price-stale",
+      title: "Ice & water shield below Q2 2026 floor",
+      rationale:
+        "Ice & water shield (Grace Ultra / CertainTeed WinterGuard class) moved up 5-10% with the April 2026 accessory hikes. Carrier rate is below the post-hike floor (~$0.85/sqft material-only). Refresh the scope's IWS unit cost.",
+      xactimateCode: "RFG IWS",
+      severity: "common",
+    },
+    check: (ctx, rule) =>
+      checkStalePricing({
+        ctx,
+        rule,
+        descriptionRegex:
+          /(ice.?(and|&|n).?water|grace.?ultra|winterguard|\bIWS\b|RFG.?IWS)/i,
+        floorsByUnit: { SF: 0.85, SQ: 85 },
+      }),
+  },
+
+  // ──────────────────────────────────────────────────────────────────
+  // Aluminum drip edge — +10-20%+ from Q1 2025 (heaviest tariff
+  // exposure of the accessories). Q2 2026 floor ~$0.50/LF (typical
+  // $0.65). Fires on any reroof — IRC R905.2.8.5 requires drip edge
+  // at eaves AND rakes, so every scope has it.
+  // ──────────────────────────────────────────────────────────────────
+  {
+    rule: {
+      id: "drip-edge-price-stale",
+      title: "Aluminum drip edge below Q2 2026 tariff floor",
+      rationale:
+        "Aluminum drip edge moved up 10-20%+ from Q1 2025 — heaviest tariff exposure among accessories. Carrier rate is below the post-tariff floor (~$0.50/LF). Standard aluminum, mill / painted finish. Request scope re-price.",
+      xactimateCode: "RFG DRIP",
+      severity: "common",
+    },
+    check: (ctx, rule) =>
+      checkStalePricing({
+        ctx,
+        rule,
+        descriptionRegex: /(drip.?edge|RFG.?DRIP)/i,
+        floorsByUnit: { LF: 0.50 },
+      }),
   },
 
   // ──────────────────────────────────────────────────────────────────
