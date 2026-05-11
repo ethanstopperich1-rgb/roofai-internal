@@ -35,7 +35,11 @@ on:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 min was tight for big backfills (~2s/day × 866 days = 29 min just
+    # for a 2-yr backfill). 90 min gives headroom for a 4-5 year backfill
+    # in one shot. Daily incremental runs finish in <2 min so the higher
+    # ceiling costs nothing on normal runs.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
