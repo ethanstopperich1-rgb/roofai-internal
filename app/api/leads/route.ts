@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { rateLimit } from "@/lib/ratelimit";
 import { checkBotId } from "botid/server";
+import { sendSms, toE164, twilioConfigured } from "@/lib/twilio";
+import { attachLeadContext } from "@/lib/sms-conversation";
 
 export const runtime = "nodejs";
 
@@ -78,6 +80,53 @@ export async function POST(req: Request) {
     } catch (err) {
       console.error("[leads] webhook failed:", err);
     }
+  }
+
+  // SMS confirmation. Fire-and-forget — Twilio failures must NEVER
+  // break the lead capture (the lead is still in the webhook + UI
+  // confirmation). We also seed conversation memory so when the
+  // customer texts back, the SMS bot already knows their estimate.
+  const phoneE164 = toE164(body.phone);
+  if (phoneE164 && twilioConfigured()) {
+    const estimateLine =
+      body.estimateLow && body.estimateHigh
+        ? `Your estimate range: $${body.estimateLow.toLocaleString()}-$${body.estimateHigh.toLocaleString()}. `
+        : "";
+    const firstName = body.name.split(/\s+/)[0];
+    const smsBody = `Hi ${firstName}, this is Voxaris Roofing. We got your estimate request for ${body.address}. ${estimateLine}Reply with any questions or text BOOK to schedule a free inspection. — Voxaris`;
+
+    // Run both writes in parallel and don't await — keep the API
+    // response fast.
+    void Promise.all([
+      sendSms({ to: phoneE164, body: smsBody })
+        .then((r) =>
+          console.log("[leads] sent confirmation SMS", {
+            leadId,
+            sid: r.sid,
+            status: r.status,
+          }),
+        )
+        .catch((err) =>
+          console.error("[leads] SMS send failed:", err),
+        ),
+      attachLeadContext({
+        phone: phoneE164,
+        lead: {
+          leadId,
+          name: body.name,
+          email: body.email,
+          address: body.address,
+          estimateLow: body.estimateLow,
+          estimateHigh: body.estimateHigh,
+          material: body.material,
+          estimatedSqft: body.estimatedSqft,
+          selectedAddOns: body.selectedAddOns,
+          submittedAt,
+        },
+      }).catch((err) =>
+        console.error("[leads] attachLeadContext failed:", err),
+      ),
+    ]);
   }
 
   return NextResponse.json({
