@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import Replicate from "replicate";
+import { generateText } from "ai";
 import { rateLimit } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
@@ -195,33 +196,85 @@ export async function POST(req: Request) {
     .filter(Boolean)
     .join("\n\n");
 
+  // ─── Step 2 — structure the transcript into typed estimate fields ───
+  //
+  // PRIMARY: Vercel AI Gateway → Qwen3-235B-A22B (`alibaba/qwen-3-235b`).
+  //   ~25x cheaper than Claude Sonnet 4.6 on input ($0.60/M vs $3.00/M)
+  //   and ~12x on output ($1.20/M vs $15.00/M). Per-call cost drops
+  //   from ~$0.002 → ~$0.00008. At RSS scale of 800 voice notes/day
+  //   that's $48/mo → $2/mo for this specific step.
+  //
+  //   Qwen3-235B is Alibaba's MoE flagship — strong at structured JSON
+  //   extraction (IFEval, BFCL function-calling within 2-3 pts of
+  //   Sonnet), well-suited for short-transcript-to-schema work. The
+  //   schema is shallow and the input is short, so we're nowhere near
+  //   the failure modes where Qwen drops vs Sonnet (long-horizon
+  //   spatial reasoning, multi-turn agentic planning).
+  //
+  // FALLBACK: Claude Sonnet 4.6 directly via Anthropic SDK.
+  //   Triggered when the gateway call fails or returns un-parseable
+  //   JSON. We never break the rep workflow over a cost optimization;
+  //   if Qwen has a bad day the system gracefully pays Claude prices
+  //   to deliver a working voice-note feature.
   let structured: StructuredFields = {};
-  try {
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const resp = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 800,
-      system: STRUCTURE_PROMPT,
-      messages: [{ role: "user", content: userMessage }],
-    });
-    const block = resp.content.find((c) => c.type === "text");
-    const raw = block && block.type === "text" ? block.text : "";
-    // Claude sometimes wraps in ```json fences despite the prompt;
-    // strip them defensively.
+  let structureSource: "qwen" | "claude-fallback" | "none" = "none";
+
+  const parseClean = (raw: string): StructuredFields | null => {
     const cleaned = raw
       .replace(/^```(?:json)?\s*/i, "")
       .replace(/```\s*$/i, "")
       .trim();
     try {
-      structured = JSON.parse(cleaned) as StructuredFields;
+      return JSON.parse(cleaned) as StructuredFields;
     } catch {
-      console.warn("[voice-note] structure parse failed; raw:", raw.slice(0, 200));
-      structured = {};
+      return null;
+    }
+  };
+
+  // PRIMARY — Qwen via Vercel AI Gateway
+  try {
+    const { text } = await generateText({
+      model: "alibaba/qwen-3-235b",
+      system: STRUCTURE_PROMPT,
+      prompt: userMessage,
+      maxOutputTokens: 800,
+      temperature: 0.1,
+    });
+    const parsed = parseClean(text);
+    if (parsed) {
+      structured = parsed;
+      structureSource = "qwen";
+    } else {
+      console.warn("[voice-note] qwen returned un-parseable JSON; raw:", text.slice(0, 200));
     }
   } catch (err) {
-    console.warn("[voice-note] claude structure failed:", err);
-    // Soft-fail: still return the transcript so the rep can read it
-    // and fill the form manually.
+    console.warn("[voice-note] qwen structure failed (will try Claude fallback):", err);
+  }
+
+  // FALLBACK — Claude Sonnet 4.6 if Qwen failed or returned garbage
+  if (structureSource === "none") {
+    try {
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const resp = await anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 800,
+        system: STRUCTURE_PROMPT,
+        messages: [{ role: "user", content: userMessage }],
+      });
+      const block = resp.content.find((c) => c.type === "text");
+      const raw = block && block.type === "text" ? block.text : "";
+      const parsed = parseClean(raw);
+      if (parsed) {
+        structured = parsed;
+        structureSource = "claude-fallback";
+      } else {
+        console.warn("[voice-note] claude fallback parse failed; raw:", raw.slice(0, 200));
+      }
+    } catch (err) {
+      console.warn("[voice-note] claude fallback structure failed:", err);
+      // Both Qwen + Claude failed. Return transcript only; rep can fill
+      // the form manually. Don't 500 — they still got the transcribe.
+    }
   }
 
   // Sanitize: clamp ageYears, drop unexpected enum values defensively
@@ -244,5 +297,5 @@ export async function POST(req: Request) {
     delete structured.complexity;
   }
 
-  return NextResponse.json({ transcript, structured });
+  return NextResponse.json({ transcript, structured, structureSource });
 }
