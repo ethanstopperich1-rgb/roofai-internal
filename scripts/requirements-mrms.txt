@@ -1,0 +1,4 @@
+# Python deps for scripts/ingest_mrms.py — pinned so the GitHub Actions
+# pip cache key is stable. Bump versions intentionally, not by drift.
+pygrib==2.1.6
+numpy==2.1.3
