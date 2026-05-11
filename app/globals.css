@@ -448,6 +448,264 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   color: #ff7a8a;
 }
 
+/* ─── Liquid Glass (visionOS) — scoped to /quote flow ──────────────────
+ *
+ * A coherent set of utilities that recreate Apple's visionOS "Liquid Glass"
+ * material on top of our existing dark base. Used only by the customer-
+ * facing /quote wizard — the internal rep app keeps its current dark
+ * cyber aesthetic. Pair with `.lg-env` on the page wrapper for the
+ * layered radial backdrop the glass cards float over.
+ */
+
+/* Background environment — soft indigo + teal radials behind the glass. */
+.lg-env {
+  position: relative;
+  background:
+    radial-gradient(1200px 800px at 18% -6%,  rgba(99,102,241,0.10) 0%, transparent 55%),
+    radial-gradient(1000px 700px at 100% 6%,  rgba(125,156,255,0.06) 0%, transparent 55%),
+    radial-gradient(900px 600px  at 82% 100%, rgba(45,212,191,0.07) 0%, transparent 55%),
+    radial-gradient(700px 500px  at 10% 100%, rgba(167,139,250,0.05) 0%, transparent 60%),
+    #07090d;
+}
+
+/* Standard floating glass panel — for body sections, cards, summaries. */
+.glass-panel {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.075) 0%, rgba(255,255,255,0.022) 100%);
+  backdrop-filter: blur(40px) saturate(1.5);
+  -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 24px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(0,0,0,0.18),
+    0 1px 0 rgba(255,255,255,0.04),
+    0 20px 60px -22px rgba(0,0,0,0.55),
+    0 0 0 1px rgba(255,255,255,0.03);
+  transition: transform 300ms cubic-bezier(.2,.8,.2,1),
+              border-color 300ms ease,
+              box-shadow 300ms ease,
+              background 300ms ease;
+}
+.glass-panel.is-interactive:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255,255,255,0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.18),
+    inset 0 -1px 0 rgba(0,0,0,0.2),
+    0 1px 0 rgba(255,255,255,0.05),
+    0 28px 72px -24px rgba(0,0,0,0.65),
+    0 0 0 1px rgba(255,255,255,0.04);
+}
+
+/* Hero / centerpiece glass — deeper blur, taller radius, stronger highlight. */
+.glass-panel-hero {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.028) 100%);
+  backdrop-filter: blur(60px) saturate(1.6);
+  -webkit-backdrop-filter: blur(60px) saturate(1.6);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 32px;
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.18),
+    inset 0 -1px 0 rgba(0,0,0,0.22),
+    0 1px 0 rgba(255,255,255,0.05),
+    0 36px 96px -28px rgba(0,0,0,0.7),
+    0 0 0 1px rgba(255,255,255,0.04);
+}
+
+/* Selected variant — used by material cards / add-on rows in active state. */
+.glass-panel-selected {
+  background:
+    linear-gradient(180deg, rgba(125,211,252,0.16) 0%, rgba(167,139,250,0.06) 100%);
+  border-color: rgba(186,230,253,0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.22),
+    inset 0 -1px 0 rgba(0,0,0,0.18),
+    0 1px 0 rgba(255,255,255,0.06),
+    0 24px 64px -20px rgba(125,211,252,0.25),
+    0 0 0 1px rgba(186,230,253,0.18);
+}
+
+/* Inset glass input surface — slight negative inner shadow. */
+.glass-input {
+  width: 100%;
+  padding: 0.7rem 1rem;
+  background: rgba(8,11,17,0.55);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  color: var(--color-slate-100);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  outline: none;
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.35),
+    inset 0 -1px 0 rgba(255,255,255,0.03);
+  transition: border-color 200ms ease, box-shadow 200ms ease, background 200ms ease;
+}
+.glass-input::placeholder { color: rgba(255,255,255,0.35); }
+.glass-input:hover { border-color: rgba(255,255,255,0.14); }
+.glass-input:focus {
+  border-color: rgba(186,230,253,0.55);
+  background: rgba(8,11,17,0.7);
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.35),
+    0 0 0 4px rgba(125,211,252,0.16),
+    0 0 24px -4px rgba(125,211,252,0.25);
+}
+
+/* Pill primary CTA — saturated translucent fill, strong inner highlight. */
+.glass-button-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1.3rem;
+  border-radius: 9999px;
+  font-weight: 540;
+  font-size: 0.92rem;
+  letter-spacing: -0.005em;
+  color: #061018;
+  background:
+    linear-gradient(180deg, rgba(224,242,254,0.96) 0%, rgba(125,211,252,0.92) 55%, rgba(186,230,253,0.96) 100%);
+  border: 1px solid rgba(255,255,255,0.35);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.7),
+    inset 0 -1px 0 rgba(0,0,0,0.12),
+    0 12px 30px -10px rgba(125,211,252,0.55),
+    0 0 0 1px rgba(186,230,253,0.18);
+  text-shadow: 0 1px 0 rgba(255,255,255,0.35);
+  transition: transform 200ms ease, box-shadow 250ms ease, filter 200ms ease;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.glass-button-primary:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.8),
+    inset 0 -1px 0 rgba(0,0,0,0.14),
+    0 18px 40px -12px rgba(125,211,252,0.65),
+    0 0 0 1px rgba(186,230,253,0.24);
+}
+.glass-button-primary:active:not(:disabled) { transform: translateY(0); }
+.glass-button-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+.glass-button-primary:focus-visible {
+  outline: 2px solid rgba(186,230,253,0.7);
+  outline-offset: 3px;
+}
+
+/* Secondary tight-glass button — translucent, subtle border. */
+.glass-button-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.1rem;
+  border-radius: 9999px;
+  font-weight: 510;
+  font-size: 0.88rem;
+  color: rgba(255,255,255,0.86);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.10),
+    0 8px 24px -10px rgba(0,0,0,0.5);
+  transition: background 200ms ease, border-color 200ms ease, transform 200ms ease;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.glass-button-secondary:hover {
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.18);
+}
+.glass-button-secondary:active { transform: translateY(0.5px); }
+.glass-button-secondary:focus-visible {
+  outline: 2px solid rgba(186,230,253,0.55);
+  outline-offset: 3px;
+}
+.glass-button-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Stepper pills — floating glass. */
+.glass-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px; height: 28px;
+  border-radius: 9999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.45);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+  transition: all 250ms ease;
+}
+.glass-pill-active {
+  color: #051019;
+  background:
+    linear-gradient(180deg, rgba(224,242,254,0.98) 0%, rgba(125,211,252,0.94) 100%);
+  border-color: rgba(255,255,255,0.4);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.7),
+    inset 0 -1px 0 rgba(0,0,0,0.12),
+    0 8px 22px -6px rgba(125,211,252,0.55);
+}
+.glass-pill-done {
+  color: #5fe3b0;
+  background: rgba(95,227,176,0.12);
+  border-color: rgba(95,227,176,0.32);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+/* Hairline divider tuned for glass surfaces. */
+.glass-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+}
+
+/* Iridescent text gradient — for accent labels + headings. */
+.iridescent-text {
+  background: linear-gradient(90deg, #7dd3fc 0%, #a7c4ff 50%, #c4b5fd 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Tiny accent chip — Step label. */
+.glass-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 9999px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(186,230,253,0.95);
+  background: rgba(125,211,252,0.08);
+  border: 1px solid rgba(186,230,253,0.22);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+/* Mint success / amber warning desaturated 20% for visionOS palette. */
+.glass-success {
+  background: rgba(95,227,176,0.10);
+  border: 1px solid rgba(95,227,176,0.28);
+  color: #8aeec5;
+}
+
 /* ─── Animated dots used by Roof3DViewer "Generating…" pill ─────────── */
 .generating-dots::after {
   content: "";

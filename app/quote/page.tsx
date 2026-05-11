@@ -11,7 +11,6 @@ import {
   MapPin,
 } from "lucide-react";
 import Link from "next/link";
-import { AuroraButton } from "@/components/ui/aurora-button";
 import { BoltStyleHero, type QuoteHeroFormValues } from "@/components/ui/bolt-style-chat";
 import NavHeader from "@/components/ui/nav-header";
 import {
@@ -447,7 +446,7 @@ export default function QuotePage() {
   // between header strip and hero background.
   if (step === "Lead" && !submitted) {
     return (
-      <div className="relative z-[1]">
+      <div className="relative z-[1] lg-env">
         {/* Vercel BotID — transparent challenge before the lead form
             submits. Bots that try to POST /api/leads via curl/script
             get rejected server-side; humans see nothing. */}
@@ -473,7 +472,7 @@ export default function QuotePage() {
           }
         />
 
-        <div className="bg-[#07090d]">
+        <div className="lg-env">
           <StatsStrip />
           <HowItWorks />
           <Testimonials />
@@ -485,11 +484,10 @@ export default function QuotePage() {
     );
   }
 
-  // Steps 2–4 — wizard with stepper. Wrap in a solid ink background so the
-  // global indigo radial-gradient on app/layout.tsx doesn't bleed through and
-  // wash out the slate-400/500 secondary text on the material cards / stats.
+  // Steps 2–4 — wizard with stepper, floating over the visionOS Liquid Glass
+  // background environment (layered radial washes behind the glass panels).
   return (
-    <div className="min-h-screen flex flex-col relative z-[1] bg-[#07090d]">
+    <div className="min-h-screen flex flex-col relative z-[1] lg-env">
       <PublicHeader />
       <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-10 sm:py-16 space-y-8">
         {!submitted && <Stepper current={stepIdx} />}
@@ -584,7 +582,17 @@ export default function QuotePage() {
 
 function PublicHeader() {
   return (
-    <header className="relative z-30 border-b border-white/[0.06] bg-[#07090d]/70 backdrop-blur-xl">
+    <header
+      className="relative z-30"
+      style={{
+        background:
+          "linear-gradient(180deg, rgba(8,11,17,0.55) 0%, rgba(8,11,17,0.25) 100%)",
+        backdropFilter: "blur(40px) saturate(1.5)",
+        WebkitBackdropFilter: "blur(40px) saturate(1.5)",
+        borderBottom: "1px solid rgba(255,255,255,0.08)",
+        boxShadow: "inset 0 -1px 0 rgba(255,255,255,0.04)",
+      }}
+    >
       {/* 3-column grid (1fr | auto | 1fr) instead of flex justify-between, so
           the nav pill in the middle column is truly centered on the page —
           flex justify-between centers it between the left and right
@@ -610,7 +618,7 @@ function PublicHeader() {
           ]}
         />
 
-        <div className="hidden sm:flex items-center gap-3 text-[12px] text-slate-300 justify-self-end">
+        <div className="hidden sm:flex items-center gap-3 text-[12px] text-white/75 justify-self-end">
           <Check size={13} className="text-mint" />
           <span>Free · No-obligation</span>
         </div>
@@ -621,8 +629,8 @@ function PublicHeader() {
 
 function PublicFooter() {
   return (
-    <footer className="border-t border-white/[0.06] mt-12">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 flex items-center justify-between text-[11px] text-slate-500 font-mono">
+    <footer className="border-t border-white/[0.08] mt-12">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 flex items-center justify-between text-[11px] text-white/45 font-mono">
         <span>© {new Date().getFullYear()} Voxaris</span>
         <div className="flex items-center gap-4">
           <span>Estimates are non-binding</span>
@@ -646,19 +654,19 @@ function Stepper({ current }: { current: number }) {
           <div key={label} className="flex items-center gap-2 sm:gap-3 flex-1">
             <div className="flex items-center gap-2 min-w-0">
               <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-mono font-semibold tabular flex-shrink-0 ${
-                  active
-                    ? "bg-cy-300 text-[#051019]"
-                    : done
-                      ? "bg-mint/20 text-mint border border-mint/30"
-                      : "bg-white/[0.04] text-slate-500 border border-white/[0.06]"
+                className={`glass-pill tabular flex-shrink-0 ${
+                  active ? "glass-pill-active" : done ? "glass-pill-done" : ""
                 }`}
               >
                 {done ? <Check size={12} strokeWidth={3} /> : i + 1}
               </div>
               <span
-                className={`hidden sm:inline text-[12px] font-mono uppercase tracking-[0.14em] ${
-                  active ? "text-slate-100" : done ? "text-slate-300" : "text-slate-500"
+                className={`hidden sm:inline text-[11.5px] font-mono uppercase tracking-[0.14em] ${
+                  active
+                    ? "text-white/95"
+                    : done
+                      ? "text-white/65"
+                      : "text-white/40"
                 }`}
               >
                 {label}
@@ -666,7 +674,11 @@ function Stepper({ current }: { current: number }) {
             </div>
             {i < STEPS.length - 1 && (
               <div
-                className={`flex-1 h-px ${i < current ? "bg-mint/40" : "bg-white/[0.06]"}`}
+                className={`flex-1 h-px ${
+                  i < current
+                    ? "bg-gradient-to-r from-mint/0 via-mint/50 to-mint/0"
+                    : "bg-white/[0.06]"
+                }`}
               />
             )}
           </div>
@@ -702,23 +714,21 @@ function RoofStep({
   onNext: () => void;
 }) {
   return (
-    <div className="space-y-5 float-in">
+    <div className="space-y-6 float-in">
       <div>
-        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-cy-300">
-          Step 2 · Confirm your roof
-        </div>
-        <h2 className="font-display text-[24px] sm:text-[30px] leading-tight tracking-tight font-medium mt-2">
+        <div className="glass-eyebrow">Step 2 · Confirm your roof</div>
+        <h2 className="font-display text-[32px] sm:text-[44px] leading-[1.05] tracking-[-0.025em] font-semibold mt-4 text-white/95">
           This is your roof
         </h2>
-        <p className="text-slate-400 text-[13.5px] mt-2 flex items-center gap-2">
-          <MapPin size={13} className="text-slate-500" />
+        <p className="text-white/55 text-[14px] mt-3 flex items-center gap-2">
+          <MapPin size={14} className="text-white/40" />
           {address?.formatted ?? "—"}
         </p>
       </div>
 
-      <div className="rounded-2xl overflow-hidden border border-white/[0.075] bg-black/30 aspect-video relative">
+      <div className="glass-panel overflow-hidden aspect-video relative">
         {loading ? (
-          <div className="w-full h-full flex items-center justify-center text-slate-400 text-[13px]">
+          <div className="w-full h-full flex items-center justify-center text-white/55 text-[13px]">
             <Loader2 size={16} className="animate-spin mr-2" /> Measuring your roof…
           </div>
         ) : address?.lat != null && address?.lng != null ? (
@@ -735,9 +745,9 @@ function RoofStep({
             className="w-full h-full object-cover"
           />
         ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 text-[12px] gap-1 px-6 text-center">
+          <div className="w-full h-full flex flex-col items-center justify-center text-white/45 text-[12.5px] gap-1 px-6 text-center">
             <span>Couldn&apos;t locate that address.</span>
-            <span className="text-slate-600">
+            <span className="text-white/35">
               Go back and pick a suggestion from the dropdown to load satellite imagery.
             </span>
           </div>
@@ -749,7 +759,7 @@ function RoofStep({
        *  is done, so the satellite map renders first and the heavy Cesium
        *  bundle isn't blocking. No verification — pure visual. */}
       {!loading && address?.lat != null && address?.lng != null && (
-        <div className="rounded-2xl overflow-hidden border border-white/[0.075] bg-black/30 aspect-video relative">
+        <div className="glass-panel overflow-hidden aspect-video relative">
           <Roof3DViewer
             // Hard-remount on every address change so the previous Cesium
             // camera + tiles can't linger.
@@ -769,12 +779,12 @@ function RoofStep({
         </div>
       )}
 
-      <div className="grid sm:grid-cols-2 gap-3">
-        <div className="rounded-2xl border border-white/[0.05] bg-white/[0.015] p-4">
-          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
+      <div className="grid sm:grid-cols-2 gap-4">
+        <div className="glass-panel p-5">
+          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
             Estimated roof size
           </div>
-          <div className="flex items-baseline gap-1.5 mt-1">
+          <div className="flex items-baseline gap-1.5 mt-2">
             <input
               type="number"
               value={sqft ?? ""}
@@ -785,34 +795,31 @@ function RoofStep({
               // huge "4946________sq ft" gap from the prior fixed w-32.
               size={5}
               style={{ fieldSizing: "content" } as React.CSSProperties}
-              className="bg-transparent border-0 outline-none font-display tabular text-[28px] font-semibold tracking-tight placeholder:text-slate-600 placeholder:text-[18px]"
+              className="bg-transparent border-0 outline-none font-display tabular text-[32px] font-semibold tracking-[-0.02em] text-white/95 placeholder:text-white/25 placeholder:text-[18px]"
             />
-            <span className="font-mono text-[12px] text-slate-400">sq ft</span>
+            <span className="font-mono text-[12px] text-white/55">sq ft</span>
           </div>
-          <div className="text-[11px] text-slate-500 mt-1">
+          <div className="text-[11.5px] text-white/45 mt-1">
             {sqft ? "Edit if it looks off" : "Couldn’t auto-measure — enter approximate size"}
           </div>
           {/* Sets the customer's expectation that the roof number is bigger
-              than their Zillow heated-sqft. Without this, FL ranches and
-              other homes with attached garages + covered porches generate
-              a "wait, my house isn't that big" reaction even though the
-              measurement is right. */}
+              than their Zillow heated-sqft. */}
           {sqft ? (
-            <div className="text-[11.5px] text-slate-400 mt-3 leading-relaxed border-t border-white/[0.04] pt-3">
+            <div className="text-[11.5px] text-white/55 mt-4 leading-relaxed pt-3 border-t border-white/[0.06]">
               Includes the roof over your garage and any covered patios. Often larger
               than your home’s interior square footage because it covers the full
               footprint, not just heated living space.
             </div>
           ) : null}
         </div>
-        <div className="rounded-2xl border border-white/[0.05] bg-white/[0.015] p-4">
-          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
+        <div className="glass-panel p-5">
+          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
             Roof pitch
           </div>
-          <div className="font-display tabular text-[28px] font-semibold tracking-tight mt-1">
+          <div className="font-display tabular text-[32px] font-semibold tracking-[-0.02em] mt-2 text-white/95">
             {pitch ?? "Standard"}
           </div>
-          <div className="text-[11px] text-slate-500 mt-1">
+          <div className="text-[11.5px] text-white/45 mt-1">
             {pitch ? "Auto-detected from satellite" : "Estimated — confirmed at on-site quote"}
           </div>
         </div>
@@ -841,21 +848,19 @@ function MaterialStep({
   onNext: () => void;
 }) {
   return (
-    <div className="space-y-5 float-in">
+    <div className="space-y-6 float-in">
       <div>
-        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-cy-300">
-          Step 3 · Pick your roof
-        </div>
-        <h2 className="font-display text-[24px] sm:text-[30px] leading-tight tracking-tight font-medium mt-2">
+        <div className="glass-eyebrow">Step 3 · Pick your roof</div>
+        <h2 className="font-display text-[32px] sm:text-[44px] leading-[1.05] tracking-[-0.025em] font-semibold mt-4 text-white/95">
           What kind of roof do you want?
         </h2>
-        <p className="text-slate-400 text-[13.5px] mt-2 max-w-xl">
+        <p className="text-white/55 text-[14px] mt-3 max-w-xl">
           Most homeowners go with architectural shingles. You can change this later — this is
           just for the estimate.
         </p>
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-3">
+      <div className="grid sm:grid-cols-2 gap-4">
         {(Object.keys(MATERIAL_RATES) as Material[]).map((m) => {
           const active = material === m;
           const copy = MATERIAL_COPY[m];
@@ -863,24 +868,30 @@ function MaterialStep({
             <button
               key={m}
               onClick={() => onMaterialChange(m)}
-              className={`relative text-left p-5 rounded-2xl border transition ${
-                active
-                  ? "border-cy-300/40 bg-cy-300/[0.06]"
-                  : "border-white/[0.06] bg-white/[0.015] hover:border-white/[0.13] hover:bg-white/[0.03]"
+              className={`glass-panel is-interactive text-left p-5 ${
+                active ? "glass-panel-selected" : ""
               }`}
             >
               <div className="flex items-center justify-between">
-                <div className="font-display font-semibold tracking-tight text-[15px]">
+                <div className="font-display font-semibold tracking-[-0.015em] text-[16px] text-white/95">
                   {copy.title}
                 </div>
                 {active && (
-                  <div className="w-5 h-5 rounded-full bg-cy-300 text-[#051019] flex items-center justify-center">
+                  <div
+                    className="w-5 h-5 rounded-full flex items-center justify-center text-[#051019]"
+                    style={{
+                      background:
+                        "linear-gradient(180deg, rgba(224,242,254,0.98) 0%, rgba(125,211,252,0.94) 100%)",
+                      boxShadow:
+                        "inset 0 1px 0 rgba(255,255,255,0.7), 0 4px 12px -3px rgba(125,211,252,0.55)",
+                    }}
+                  >
                     <Check size={12} strokeWidth={3} />
                   </div>
                 )}
               </div>
-              <div className="text-[12.5px] text-slate-300 mt-1">{copy.tagline}</div>
-              <div className="text-[11px] font-mono uppercase tracking-[0.12em] text-slate-400 mt-3">
+              <div className="text-[13px] text-white/70 mt-1.5">{copy.tagline}</div>
+              <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-white/50 mt-4">
                 {copy.warranty}
               </div>
             </button>
@@ -889,10 +900,10 @@ function MaterialStep({
       </div>
 
       <div>
-        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400 mb-3">
+        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55 mb-3">
           Optional upgrades
         </div>
-        <div className="space-y-2">
+        <div className="space-y-2.5">
           {addOns.map((a) => (
             <div
               key={a.id}
@@ -901,23 +912,34 @@ function MaterialStep({
                   addOns.map((x) => (x.id === a.id ? { ...x, enabled: !x.enabled } : x)),
                 )
               }
-              className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition ${
-                a.enabled
-                  ? "border-cy-300/40 bg-cy-300/[0.06]"
-                  : "border-white/[0.05] bg-white/[0.015] hover:border-white/[0.13]"
+              className={`glass-panel is-interactive flex items-center gap-3 p-3.5 cursor-pointer ${
+                a.enabled ? "glass-panel-selected" : ""
               }`}
+              style={{ borderRadius: 18 }}
             >
               <div
-                className={`w-[18px] h-[18px] rounded-md flex items-center justify-center border ${
-                  a.enabled
-                    ? "bg-cy-300 border-cy-300 text-[#051019]"
-                    : "border-white/20"
+                className={`w-[20px] h-[20px] rounded-md flex items-center justify-center ${
+                  a.enabled ? "text-[#051019]" : ""
                 }`}
+                style={
+                  a.enabled
+                    ? {
+                        background:
+                          "linear-gradient(180deg, rgba(224,242,254,0.98) 0%, rgba(125,211,252,0.94) 100%)",
+                        boxShadow:
+                          "inset 0 1px 0 rgba(255,255,255,0.7), 0 4px 12px -3px rgba(125,211,252,0.5)",
+                      }
+                    : {
+                        background: "rgba(255,255,255,0.04)",
+                        border: "1px solid rgba(255,255,255,0.18)",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
+                      }
+                }
               >
                 {a.enabled && <Check size={12} strokeWidth={3} />}
               </div>
-              <div className="flex-1 text-[14px]">{a.label}</div>
-              <div className="font-mono tabular text-[12px] text-slate-400">
+              <div className="flex-1 text-[14px] text-white/90">{a.label}</div>
+              <div className="font-mono tabular text-[12px] text-white/55">
                 +${a.price.toLocaleString()}
               </div>
             </div>
@@ -980,50 +1002,55 @@ function QuoteStep({
     : [];
   const enabledAddonCount = addOns.filter((a) => a.enabled).length;
   return (
-    <div className="space-y-6 float-in">
+    <div className="space-y-7 float-in">
       <div>
-        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-cy-300">
-          Step 4 · Your estimate
-        </div>
-        <h2 className="font-display text-[24px] sm:text-[30px] leading-tight tracking-tight font-medium mt-2">
+        <div className="glass-eyebrow">Step 4 · Your estimate</div>
+        <h2 className="font-display text-[32px] sm:text-[44px] leading-[1.05] tracking-[-0.025em] font-semibold mt-4 text-white/95">
           Your estimated price range
         </h2>
       </div>
 
-      <div className="glass-strong rounded-3xl p-6 sm:p-8 relative overflow-hidden">
+      <div className="glass-panel-hero p-7 sm:p-10 relative overflow-hidden">
         <div
-          className="absolute -top-20 right-0 w-[420px] h-[280px] blur-3xl pointer-events-none opacity-50"
+          className="absolute -top-24 -right-10 w-[520px] h-[340px] blur-3xl pointer-events-none opacity-70"
           style={{
             background:
-              "radial-gradient(closest-side, rgba(95,227,176,0.12), transparent)",
+              "radial-gradient(closest-side, rgba(125,211,252,0.22), transparent)",
+          }}
+        />
+        <div
+          className="absolute -bottom-24 -left-10 w-[480px] h-[320px] blur-3xl pointer-events-none opacity-60"
+          style={{
+            background:
+              "radial-gradient(closest-side, rgba(167,139,250,0.18), transparent)",
           }}
         />
         <div className="relative">
-          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
+          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
             Estimated total
           </div>
-          <div className="font-display tabular text-[44px] sm:text-[64px] leading-[0.95] font-semibold tracking-[-0.04em] mt-1">
-            {fmt(range.low)} <span className="text-slate-500">–</span> {fmt(range.high)}
+          <div className="font-display tabular text-[48px] sm:text-[72px] leading-[0.95] font-semibold tracking-[-0.04em] mt-2 iridescent-text">
+            {fmt(range.low)} <span className="text-white/35 not-italic">–</span> {fmt(range.high)}
           </div>
-          <div className="text-[12px] text-slate-400 mt-2">
+          <div className="text-[12.5px] text-white/55 mt-3 max-w-md">
             Materials + labor + tear-off included. Final pricing requires an on-site inspection.
           </div>
         </div>
       </div>
 
       {breakdown.length > 0 && (
-        <div className="glass rounded-3xl p-6 space-y-3">
-          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
+        <div className="glass-panel p-6 space-y-3">
+          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
             What&apos;s in the estimate
           </div>
-          <ul className="divide-y divide-white/[0.04]">
+          <ul className="divide-y divide-white/[0.06]">
             {breakdown.map((row, i) => (
               <li
                 key={i}
-                className="flex items-center justify-between gap-3 py-2.5 text-[13px]"
+                className="flex items-center justify-between gap-3 py-3 text-[13px]"
               >
-                <span className="text-slate-200">{row.label}</span>
-                <span className="font-mono tabular text-slate-300 text-[12.5px]">
+                <span className="text-white/85">{row.label}</span>
+                <span className="font-mono tabular text-white/75 text-[12.5px]">
                   {row.low === row.high
                     ? fmt(row.low)
                     : `${fmt(row.low)} – ${fmt(row.high)}`}
@@ -1031,7 +1058,7 @@ function QuoteStep({
               </li>
             ))}
           </ul>
-          <div className="text-[11px] text-slate-500 pt-1">
+          <div className="text-[11.5px] text-white/45 pt-1">
             {enabledAddonCount === 0
               ? "No optional upgrades selected. You can add ice & water shield, ridge ventilation, or skylight work in the previous step."
               : `${enabledAddonCount} upgrade${enabledAddonCount === 1 ? "" : "s"} selected.`}
@@ -1040,34 +1067,41 @@ function QuoteStep({
       )}
 
       {lead && (
-        <div className="glass rounded-3xl p-6 space-y-3">
-          <div className="font-display font-semibold tracking-tight text-[15px]">
+        <div className="glass-panel p-6 space-y-3">
+          <div className="font-display font-semibold tracking-[-0.015em] text-[16px] text-white/95">
             We have your details
           </div>
-          <div className="text-[12px] text-slate-400">
-            We&apos;ll reach out to <span className="text-slate-200">{lead.name}</span> at{" "}
-            <span className="text-slate-200">{lead.email}</span> within 1 business hour. No
+          <div className="text-[12.5px] text-white/65 leading-relaxed">
+            We&apos;ll reach out to <span className="text-white/95">{lead.name}</span> at{" "}
+            <span className="text-white/95">{lead.email}</span> within 1 business hour. No
             unsolicited follow-up beyond that.
           </div>
         </div>
       )}
 
       {error && (
-        <div className="text-[12px] text-rose px-3 py-2 rounded-lg bg-rose/[0.08] border border-rose/20">
+        <div
+          className="text-[12.5px] px-4 py-3 rounded-2xl"
+          style={{
+            color: "#ffb3bd",
+            background: "rgba(255,122,138,0.10)",
+            border: "1px solid rgba(255,122,138,0.25)",
+            backdropFilter: "blur(16px)",
+            WebkitBackdropFilter: "blur(16px)",
+          }}
+        >
           {error}
         </div>
       )}
 
       <div className="flex items-center justify-between gap-3 pt-2">
-        <button onClick={onBack} className="btn btn-ghost">
+        <button onClick={onBack} className="glass-button-secondary">
           <ArrowLeft size={14} /> Back
         </button>
-        <AuroraButton
+        <button
           onClick={onSubmit}
           disabled={submitting}
-          className={`px-5 py-2.5 font-medium text-[14px] tracking-tight inline-flex items-center gap-2 ${
-            submitting ? "opacity-60 cursor-not-allowed" : ""
-          }`}
+          className="glass-button-primary"
         >
           {submitting ? (
             <>
@@ -1075,10 +1109,10 @@ function QuoteStep({
             </>
           ) : (
             <>
-              Confirm & request detailed quote <ArrowRight size={14} />
+              Confirm &amp; request detailed quote <ArrowRight size={14} />
             </>
           )}
-        </AuroraButton>
+        </button>
       </div>
     </div>
   );
@@ -1096,40 +1130,47 @@ function ThankYou({
   onReset: () => void;
 }) {
   return (
-    <div className="space-y-7 float-in">
+    <div className="space-y-8 float-in">
       <div className="text-center">
-        <div className="w-14 h-14 mx-auto rounded-2xl bg-mint/10 border border-mint/30 flex items-center justify-center text-mint">
-          <Check size={26} strokeWidth={2.5} />
+        <div
+          className="w-16 h-16 mx-auto rounded-2xl flex items-center justify-center text-mint"
+          style={{
+            background:
+              "linear-gradient(180deg, rgba(95,227,176,0.18) 0%, rgba(95,227,176,0.06) 100%)",
+            border: "1px solid rgba(95,227,176,0.35)",
+            boxShadow:
+              "inset 0 1px 0 rgba(255,255,255,0.15), 0 12px 32px -10px rgba(95,227,176,0.35)",
+            backdropFilter: "blur(28px) saturate(1.5)",
+            WebkitBackdropFilter: "blur(28px) saturate(1.5)",
+          }}
+        >
+          <Check size={28} strokeWidth={2.5} />
         </div>
-        <h2 className="font-display text-[28px] sm:text-[36px] leading-tight tracking-tight font-medium mt-5">
+        <h2 className="font-display text-[36px] sm:text-[52px] leading-[1.05] tracking-[-0.03em] font-semibold mt-6 text-white/95">
           You&apos;re all set.
         </h2>
-        <p className="text-slate-300 text-[14px] mt-3 max-w-xl mx-auto">
+        <p className="text-white/65 text-[14.5px] mt-4 max-w-xl mx-auto">
           A {BRAND_CONFIG.companyName} partner roofer will reach out shortly. Reference:
         </p>
-        <div className="font-mono text-[13px] text-cy-300 mt-2 select-all">{leadId}</div>
+        <div className="font-mono text-[13px] mt-2 select-all iridescent-text">{leadId}</div>
       </div>
 
-      <div className="glass rounded-3xl p-5 sm:p-6 max-w-md mx-auto text-center">
-        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-400">
+      <div className="glass-panel p-6 max-w-md mx-auto text-center">
+        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
           Your estimate range
         </div>
-        <div className="font-display tabular text-[28px] sm:text-[32px] font-semibold tracking-tight mt-1">
-          {fmt(range.low)} <span className="text-slate-500">–</span> {fmt(range.high)}
+        <div className="font-display tabular text-[32px] sm:text-[36px] font-semibold tracking-[-0.025em] mt-2 iridescent-text">
+          {fmt(range.low)} <span className="text-white/35">–</span> {fmt(range.high)}
         </div>
-        <div className="text-[11px] text-slate-500 mt-2">
+        <div className="text-[11.5px] text-white/45 mt-3">
           Final pricing requires an on-site inspection.
         </div>
       </div>
 
-      {/* What happens next — concrete timeline.  Roofing leads often abandon
-          here because they don't know when/how the contractor will reach
-          out, and assume the worst (immediate spam call).  An explicit
-          "no calls until you ask" + 3-step timeline with realistic
-          windows reassures and reduces no-show rate. */}
-      <div className="rounded-3xl border border-white/[0.06] bg-white/[0.015] p-6 sm:p-7 max-w-2xl mx-auto">
-        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-cy-300 text-center">
-          What happens next
+      {/* What happens next — concrete timeline. */}
+      <div className="glass-panel p-7 max-w-2xl mx-auto">
+        <div className="flex justify-center">
+          <div className="glass-eyebrow">What happens next</div>
         </div>
         <ol className="mt-5 space-y-4">
           <NextStep
@@ -1157,7 +1198,7 @@ function ThankYou({
       <div className="text-center">
         <button
           onClick={onReset}
-          className="text-[12px] font-mono uppercase tracking-[0.14em] text-slate-400 hover:text-cy-300 transition-colors"
+          className="text-[12px] font-mono uppercase tracking-[0.14em] text-white/55 hover:text-white/95 transition-colors"
         >
           Get a quote for another property →
         </button>
@@ -1182,19 +1223,29 @@ function NextStep({
   return (
     <li className="relative flex gap-4">
       <div className="flex flex-col items-center">
-        <div className="w-7 h-7 rounded-full bg-cy-300/[0.12] border border-cy-300/30 text-cy-300 flex items-center justify-center text-[11px] font-mono font-semibold flex-shrink-0">
+        <div
+          className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-mono font-semibold flex-shrink-0"
+          style={{
+            color: "#bae6fd",
+            background: "rgba(125,211,252,0.10)",
+            border: "1px solid rgba(186,230,253,0.30)",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.08)",
+            backdropFilter: "blur(16px)",
+            WebkitBackdropFilter: "blur(16px)",
+          }}
+        >
           {n}
         </div>
-        {!last && <div className="flex-1 w-px bg-white/[0.06] mt-1" />}
+        {!last && <div className="flex-1 w-px bg-white/[0.08] mt-1" />}
       </div>
       <div className="flex-1 pb-4">
         <div className="flex items-baseline justify-between gap-3">
-          <div className="text-[14px] font-medium text-slate-100">{title}</div>
-          <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 flex-shrink-0">
+          <div className="text-[14px] font-medium text-white/95">{title}</div>
+          <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-white/45 flex-shrink-0">
             {time}
           </div>
         </div>
-        <p className="text-[12.5px] text-slate-400 mt-1.5 leading-relaxed">{body}</p>
+        <p className="text-[13px] text-white/65 mt-1.5 leading-relaxed">{body}</p>
       </div>
     </li>
   );
@@ -1213,18 +1264,16 @@ function NavButtons({
 }) {
   return (
     <div className="flex items-center justify-between gap-3 pt-3">
-      <button onClick={onBack} className="btn btn-ghost">
+      <button onClick={onBack} className="glass-button-secondary">
         <ArrowLeft size={14} /> Back
       </button>
-      <AuroraButton
+      <button
         onClick={onNext}
         disabled={disabled}
-        className={`px-5 py-2.5 font-medium text-[14px] tracking-tight inline-flex items-center gap-2 ${
-          disabled ? "opacity-60 cursor-not-allowed" : ""
-        }`}
+        className="glass-button-primary"
       >
         Next <ArrowRight size={14} />
-      </AuroraButton>
+      </button>
     </div>
   );
 }
