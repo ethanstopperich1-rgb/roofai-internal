@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withBotId } from "botid/next/config";
 
 const config: NextConfig = {
   reactStrictMode: true,
@@ -36,4 +37,8 @@ const config: NextConfig = {
   },
 };
 
-export default config;
+// Wrap with Vercel BotID — adds challenge headers + propagates the
+// per-route protect config from <BotIdClient> down to the verifier in
+// /api/leads. The actual route-level enforcement happens via
+// `await checkBotId()` inside the route handler.
+export default withBotId(config);

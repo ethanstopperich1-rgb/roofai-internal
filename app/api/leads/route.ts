@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { rateLimit } from "@/lib/ratelimit";
+import { checkBotId } from "botid/server";
 
 export const runtime = "nodejs";
 
@@ -29,6 +30,21 @@ interface LeadPayload {
 export async function POST(req: Request) {
   const __rl = await rateLimit(req, "public");
   if (__rl) return __rl;
+
+  // Vercel BotID — paired with <BotIdClient> mounted on /quote + /embed.
+  // The client widget runs a transparent JS challenge before the form
+  // submits; the server side here verifies the signed verdict in the
+  // request headers. Bots that bypass the widget (curl, script, etc.)
+  // are rejected with 403. Human submissions are sub-50ms transparent.
+  // No legit user sees a CAPTCHA.
+  const verdict = await checkBotId();
+  if ("isBot" in verdict && verdict.isBot && !verdict.isVerifiedBot) {
+    return NextResponse.json(
+      { error: "Bot detected" },
+      { status: 403 },
+    );
+  }
+
   let body: LeadPayload;
   try {
     body = (await req.json()) as LeadPayload;

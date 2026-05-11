@@ -33,6 +33,7 @@
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ShieldCheck } from "lucide-react";
+import { BotIdClient } from "botid/client";
 import { BoltStyleHero, type QuoteHeroFormValues } from "@/components/ui/bolt-style-chat";
 
 function EmbedWidget() {
@@ -131,6 +132,10 @@ function EmbedWidget() {
 
   return (
     <div ref={containerRef} className="w-full">
+      {/* BotID — even more important on /embed than on /quote because
+          the widget runs on third-party sites and is the more obvious
+          target for scrapers / spam scripts. */}
+      <BotIdClient protect={[{ path: "/api/leads", method: "POST" }]} />
       <BoltStyleHero
         title={headline}
         titleAccent={accentText}

@@ -20,6 +20,7 @@ import SectionHeader from "@/components/SectionHeader";
 import OutlineQualityWarning from "@/components/OutlineQualityWarning";
 import PhotoUploadPanel from "@/components/PhotoUploadPanel";
 import ImageryStormBanner from "@/components/ImageryStormBanner";
+import VoiceNoteRecorder, { type VoiceNoteResult } from "@/components/VoiceNoteRecorder";
 import CarrierClaimPanel from "@/components/CarrierClaimPanel";
 import type { PhotoMeta } from "@/types/photo";
 import type { ClaimContext } from "@/lib/carriers";
@@ -1167,6 +1168,66 @@ export default function HomePage() {
     });
   };
 
+  /** Merge structured fields from a voice-note into the estimate state.
+   *  Each branch is conservatively gated — if the model didn't return a
+   *  field, we don't touch the existing value. The rep can always edit
+   *  any field manually after the merge. */
+  const onVoiceNoteResult = (result: VoiceNoteResult) => {
+    const s = result.structured;
+    setAssumptions((a) => {
+      const next: Assumptions = { ...a };
+      if (s.material) next.material = s.material;
+      if (s.complexity) next.complexity = s.complexity;
+      if (s.serviceType) next.serviceType = s.serviceType;
+      if (s.ageYears != null) next.ageYears = s.ageYears;
+      return next;
+    });
+    if (s.customerName) setCustomerName(s.customerName);
+    if (s.insuranceClaim) setIsInsuranceClaim(true);
+    if (s.carrier) {
+      // ClaimContext['carrier'] is a typed enum — only set if it matches
+      // one of our 10 supported carriers.
+      const validCarriers: ClaimContext["carrier"][] = [
+        "state-farm", "allstate", "usaa", "citizens", "travelers",
+        "farmers", "liberty-mutual", "progressive", "nationwide", "other",
+      ];
+      if (validCarriers.includes(s.carrier as ClaimContext["carrier"])) {
+        setClaim((c) => ({ ...c, carrier: s.carrier as ClaimContext["carrier"] }));
+      }
+    }
+    if (s.addOns) {
+      // The 4 customer-facing add-ons map by id; ignore unknowns.
+      const idMap: Record<string, string> = {
+        iceWater: "ice-water",
+        ridgeVent: "ridge-vent",
+        gutters: "gutters",
+        skylight: "skylight",
+      };
+      setAddOns((cur) =>
+        cur.map((a) => {
+          const k = Object.entries(idMap).find(([, v]) => v === a.id)?.[0];
+          if (k && (s.addOns as Record<string, boolean | undefined>)[k]) {
+            return { ...a, enabled: true };
+          }
+          return a;
+        }),
+      );
+    }
+    // Append damage notes + timeline to the rep notes field (don't
+    // clobber existing notes — append with a newline separator).
+    const noteParts: string[] = [];
+    if (s.notes) noteParts.push(s.notes);
+    if (s.damageNotes && s.damageNotes.length) {
+      noteParts.push(`Damage: ${s.damageNotes.join("; ")}`);
+    }
+    if (s.timelineDays != null) {
+      noteParts.push(`Customer timeline: ${s.timelineDays} days`);
+    }
+    if (noteParts.length) {
+      setNotes((prev) => (prev ? `${prev}\n\n${noteParts.join(" · ")}` : noteParts.join(" · ")));
+    }
+  };
+
   const enabledAddOns = addOns.filter((a) => a.enabled).reduce((s, x) => s + x.price, 0);
   const estimate: Estimate = {
     id: estimateId,
@@ -1269,6 +1330,21 @@ export default function HomePage() {
 
   return (
     <div className="space-y-8 sm:space-y-10">
+      {/* Floating voice-note recorder — mounts once the rep has loaded
+          an address. Clicking it captures from the mic, ships to
+          /api/voice-note for Whisper transcription + Claude structuring,
+          and auto-fills the estimate fields (material, complexity,
+          carrier, customer name, damage notes, add-ons, timeline).
+          Hidden until shown=true to avoid presenting it before the rep
+          has a property in scope. */}
+      {shown && address?.lat != null && (
+        <VoiceNoteRecorder
+          addressText={address.formatted}
+          currentSqft={assumptions.sqft}
+          onResult={onVoiceNoteResult}
+        />
+      )}
+
       {/* ─── Hero / address bar ─────────────────────────────────────── */}
       {/* No overflow-hidden here so the autocomplete dropdown can extend
           past the section's bottom edge. The gradient blob below uses

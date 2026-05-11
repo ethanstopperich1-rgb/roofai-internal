@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
+import { BotIdClient } from "botid/client";
 import {
   ArrowLeft,
   ArrowRight,
@@ -447,6 +448,10 @@ export default function QuotePage() {
   if (step === "Lead" && !submitted) {
     return (
       <div className="relative z-[1]">
+        {/* Vercel BotID — transparent challenge before the lead form
+            submits. Bots that try to POST /api/leads via curl/script
+            get rejected server-side; humans see nothing. */}
+        <BotIdClient protect={[{ path: "/api/leads", method: "POST" }]} />
         <BoltStyleHero
           title="What will it cost to"
           subtitle="Free, instant, no calls until you ask."
