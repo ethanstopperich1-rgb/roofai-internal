@@ -180,17 +180,47 @@ export async function fetchBuildingPolygon(opts: {
   }
   if (candidates.length === 0) return null;
 
-  // Prefer the building that CONTAINS the point. Among containers, prefer the
-  // SMALLEST (parcel ways sometimes wrap multiple structures — we want the
-  // actual house, not the lot envelope). For non-containers, prefer the
-  // closest by centroid distance, then largest by area as tiebreak.
-  candidates.sort((a, b) => {
-    if (a.contains !== b.contains) return a.contains ? -1 : 1;
-    if (a.contains && b.contains) return a.area - b.area;
-    if (Math.abs(a.distSq - b.distSq) > 4) return a.distSq - b.distSq;
-    return b.area - a.area;
-  });
-  const best = candidates[0];
+  // Selection logic — engineered for rural parcels with outbuildings.
+  //
+  // Problem: on a 5-acre FL lot with a house, barn, shop, and two sheds,
+  // Google's geocoder routinely snaps the address to the driveway entrance
+  // or mailbox, which is closer to a roadside shed than to the main house.
+  // A pure "closest building" sort then picks the wrong structure, and
+  // SAM3 traces the shop's roof.
+  //
+  // Heuristic, in order:
+  //   1. If any candidate CONTAINS the point, pick the smallest container
+  //      (parcel polygons sometimes wrap multiple buildings).
+  //   2. Otherwise, FILTER OUT candidates < 50 m² (sheds, carports, AC
+  //      enclosures). A real residence is rarely under 540 sqft. We keep
+  //      this filter strict because false-positives (tiny house, ADU) are
+  //      a rare edge case while false-negatives (shed picked instead of
+  //      house) are the common rural failure mode this PR fixes.
+  //   3. Among remaining candidates, score each as
+  //          score = sqrt(distSq) - 8 × ln(area)
+  //      Lower wins. The area term means a 200 m² building 50m away beats
+  //      a 50 m² building 10m away (which is exactly the rural shop-vs-
+  //      house case). The sqrt keeps distance in meters so the constants
+  //      stay interpretable.
+  //   4. If the area filter empties the list (genuinely small structures
+  //      only — tiny home, mobile home), fall back to closest-by-distance
+  //      without the filter.
+  const containers = candidates.filter((c) => c.contains);
+  let best: Candidate;
+  if (containers.length > 0) {
+    containers.sort((a, b) => a.area - b.area);
+    best = containers[0];
+  } else {
+    const RESIDENTIAL_MIN_M2 = 50;
+    const sizable = candidates.filter((c) => c.area >= RESIDENTIAL_MIN_M2);
+    const pool = sizable.length > 0 ? sizable : candidates;
+    pool.sort((a, b) => {
+      const scoreA = Math.sqrt(a.distSq) - 8 * Math.log(Math.max(1, a.area));
+      const scoreB = Math.sqrt(b.distSq) - 8 * Math.log(Math.max(1, b.area));
+      return scoreA - scoreB;
+    });
+    best = pool[0];
+  }
 
   return {
     latLng: best.polygon,

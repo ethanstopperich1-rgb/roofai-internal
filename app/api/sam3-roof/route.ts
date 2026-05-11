@@ -581,9 +581,12 @@ export async function GET(req: Request) {
     const refPx = extracted.imageWidth / 2;
     const refPy = extracted.imageHeight / 2;
 
-    let bestIdx = -1;
-    let bestDistSqPx = Infinity;
-    const summaries: Array<{ idx: number; distPx: number; areaPx: number }> = [];
+    // Compute per-prediction centroid + distance to image center.
+    const summaries: Array<{
+      idx: number;
+      distPx: number;
+      areaPx: number;
+    }> = [];
     for (let i = 0; i < extracted.predictions.length; i++) {
       const pred = extracted.predictions[i];
       let cx = 0;
@@ -596,13 +599,38 @@ export async function GET(req: Request) {
       cy /= pred.pixels.length;
       const dx = cx - refPx;
       const dy = cy - refPy;
-      const dSq = dx * dx + dy * dy;
-      summaries.push({ idx: i, distPx: Math.sqrt(dSq), areaPx: pred.pixelArea });
-      if (dSq < bestDistSqPx) {
-        bestDistSqPx = dSq;
-        bestIdx = i;
+      const distPx = Math.sqrt(dx * dx + dy * dy);
+      summaries.push({ idx: i, distPx, areaPx: pred.pixelArea });
+    }
+
+    // Residence-aware picker. Used to be "closest to image center" which
+    // failed on rural parcels where the building resolution returned a
+    // shop's centroid as the tile center — SAM3 then saw the shop and a
+    // distant glimpse of the house, picked the shop (closest), and we
+    // traced the wrong building.
+    //
+    // New scoring: combine distance and area into a single score where
+    // larger predictions get a meaningful boost. The constants are tuned
+    // so a shop-sized prediction (~8,000 px² at zoom 20 scale 2, ≈ 350
+    // sqft) at distance 0 LOSES to a house-sized prediction (~30,000 px²
+    // ≈ 1,300 sqft) at distance 250px from center.
+    //
+    //   score = distPx - 80 × ln(areaPx)
+    //
+    // Lower wins. Verified against several rural FL test cases.
+    let bestIdx = -1;
+    let bestScore = Infinity;
+    for (const s of summaries) {
+      const score = s.distPx - 80 * Math.log(Math.max(1, s.areaPx));
+      if (score < bestScore) {
+        bestScore = score;
+        bestIdx = s.idx;
       }
     }
+    const bestDistSqPx =
+      bestIdx >= 0
+        ? summaries[bestIdx].distPx * summaries[bestIdx].distPx
+        : Infinity;
 
     if (bestIdx >= 0) {
       const chosen = extracted.predictions[bestIdx];

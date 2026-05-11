@@ -168,28 +168,78 @@ export async function fetchMicrosoftBuildingPolygon(opts: {
     }
   }
 
-  // Pass 2: nearest building within ~25m. Microsoft footprints can drift
-  // 1-3m vs ground truth, OR the geocoded address point can land on a
-  // driveway/lawn just outside the actual roof. 25m generous threshold.
-  // ~25m at TN latitude (~36°N) ≈ 0.000225° lat, 0.000278° lng.
+  // Pass 2: residence-aware search within ~60m. Two changes from the old
+  // "nearest building within 25m" — both to fix the rural-parcel failure
+  // mode where the geocoded pin lands closer to a shop/shed than to the
+  // main house:
+  //
+  //   1. Search radius bumped 25m → 60m. Rural parcels can have the
+  //      house set back well behind the driveway pin.
+  //   2. Score = sqrt(distance_m²) - 8 × ln(area_m²). The area term
+  //      means a 200 m² house at 50m beats a 30 m² shed at 5m. Filter
+  //      out anything < 50 m² unless only small structures exist.
+  //
+  // ~60m at TN latitude (~36°N) ≈ 0.00054° lat, 0.00067° lng.
   const cosLat = Math.cos((lat * Math.PI) / 180);
-  const radiusLng = 25 / (111_320 * cosLat);
-  const radiusLat = 25 / 111_320;
-  let bestPoly: number[] | null = null;
-  let bestDistSq = Infinity;
-  const radiusLngSq = radiusLng * radiusLng;
+  const radiusLng = 60 / (111_320 * cosLat);
+  const radiusLat = 60 / 111_320;
+
+  // Build candidate list with vertex-distance + footprint area.
+  const candidates: Array<{ poly: number[]; distSq: number; areaM2: number }> = [];
+  const mPerDegLat = 111_320;
+  const mPerDegLng = 111_320 * cosLat;
   for (const b of data.buildings) {
     if (b.b[0] > lng + radiusLng || b.b[2] < lng - radiusLng) continue;
     if (b.b[1] > lat + radiusLat || b.b[3] < lat - radiusLat) continue;
     const d2 = minSquaredDistToVertex(lng, lat, b.p);
-    if (d2 < bestDistSq && d2 < radiusLngSq) {
-      bestDistSq = d2;
-      bestPoly = b.p;
+    // Convert minSquaredDistToVertex (degrees²) to meters². The function
+    // operates in raw lng/lat units so we scale x by cosLat. Good enough
+    // for ranking at parcel scale.
+    const distSqDeg = d2;
+    // Compute polygon area in m² via shoelace on the flat ring.
+    let sum = 0;
+    for (let i = 0; i < b.p.length; i += 2) {
+      const ax = b.p[i] * mPerDegLng;
+      const ay = b.p[i + 1] * mPerDegLat;
+      const j = (i + 2) % b.p.length;
+      const bx = b.p[j] * mPerDegLng;
+      const by = b.p[j + 1] * mPerDegLat;
+      sum += ax * by - bx * ay;
+    }
+    const areaM2 = Math.abs(sum) / 2;
+    candidates.push({ poly: b.p, distSq: distSqDeg, areaM2 });
+  }
+
+  if (candidates.length === 0) {
+    debug(
+      `[ms-buildings] no building within 60m of (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
+    );
+    return null;
+  }
+
+  // Filter out shed-sized (< 50 m²) structures unless that empties the pool.
+  const RESIDENTIAL_MIN_M2 = 50;
+  const sizable = candidates.filter((c) => c.areaM2 >= RESIDENTIAL_MIN_M2);
+  const pool = sizable.length > 0 ? sizable : candidates;
+
+  // Convert distSq (deg²) → distance in meters before scoring so the
+  // area-vs-distance trade-off uses interpretable units.
+  let bestPoly: number[] | null = null;
+  let bestScore = Infinity;
+  for (const c of pool) {
+    // Approximate degree² → meter² by scaling by mPerDegLng² (degrees
+    // are small enough at parcel scale that the lat/lng asymmetry is
+    // negligible for ranking purposes).
+    const distM = Math.sqrt(c.distSq) * mPerDegLng;
+    const score = distM - 8 * Math.log(Math.max(1, c.areaM2));
+    if (score < bestScore) {
+      bestScore = score;
+      bestPoly = c.poly;
     }
   }
   if (!bestPoly) {
     debug(
-      `[ms-buildings] no building within 25m of (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
+      `[ms-buildings] no scorable candidate near (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
     );
     return null;
   }
