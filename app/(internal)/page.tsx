@@ -22,6 +22,7 @@ import PhotoUploadPanel from "@/components/PhotoUploadPanel";
 import ImageryStormBanner from "@/components/ImageryStormBanner";
 import VoiceNoteRecorder, { type VoiceNoteResult } from "@/components/VoiceNoteRecorder";
 import CarrierClaimPanel from "@/components/CarrierClaimPanel";
+import SupplementAnalyzerPanel from "@/components/SupplementAnalyzerPanel";
 import type { PhotoMeta } from "@/types/photo";
 import type { ClaimContext } from "@/lib/carriers";
 import dynamic from "next/dynamic";
@@ -1579,6 +1580,27 @@ export default function HomePage() {
           {/* ─── Carrier-specific claim metadata (insurance mode only) ─── */}
           {isInsuranceClaim && (
             <CarrierClaimPanel context={claim} onChange={setClaim} />
+          )}
+
+          {/* ─── Supplement Analyzer (insurance mode only) ───────────────
+                Rep uploads carrier's initial Xactimate PDF → Qwen parses
+                → we diff against industry rule catalog (O&P, steep
+                charge, FL matching, code items) + cross-ref MRMS hail
+                data → flag missing items with copy-paste rationale.
+                Highest-leverage feature for the insurance close. */}
+          {isInsuranceClaim && (
+            <SupplementAnalyzerPanel
+              assumptions={assumptions}
+              claim={claim}
+              state={
+                /\bFL\b/.test(address?.formatted ?? "") ? "FL"
+                : /\bMN\b/.test(address?.formatted ?? "") ? "MN"
+                : /\bTX\b/.test(address?.formatted ?? "") ? "TX"
+                : null
+              }
+              propertyLat={address?.lat ?? null}
+              propertyLng={address?.lng ?? null}
+            />
           )}
 
           {/* ─── Imagery × storm correlation (multi-temporal) ──────────── */}
