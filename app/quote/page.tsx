@@ -111,6 +111,11 @@ export default function QuotePage() {
   // Comes from whichever tier won (Solar mask / Roboflow / MS Buildings);
   // null when nothing usable returned (manual-entry case).
   const [roofPolygon, setRoofPolygon] = useState<Array<{ lat: number; lng: number }> | null>(null);
+  // Classifies the resolved polygon so onPolygonEdited can re-apply the
+  // correct multipliers. "wall" sources (MS Buildings, SAM3 reconciler
+  // substitution) need the 1.06 eave-overhang factor; "eave" sources
+  // (raw SAM3, Solar mask) trace roof material directly and don't.
+  const [polygonKind, setPolygonKind] = useState<"eave" | "wall" | null>(null);
   const [loadingRoof, setLoadingRoof] = useState(false);
   const [material, setMaterial] = useState<Material>("asphalt-architectural");
   const [addOns, setAddOns] = useState<SimpleAddon[]>(QUOTE_ADDONS);
@@ -265,6 +270,7 @@ export default function QuotePage() {
             : 1.118; // default 6/12
 
         // Tier 1 — Custom SAM3 (with GIS reconciliation built-in server-side)
+        let resolvedKind: "eave" | "wall" | null = null;
         if (sam3Res?.ok) {
           try {
             const sam3 = await sam3Res.json();
@@ -278,6 +284,14 @@ export default function QuotePage() {
               if (footprintSqft >= 200 && footprintSqft <= 20_000) {
                 resolvedPolygon = poly;
                 resolvedSqft = Math.round(footprintSqft * slope);
+                // Reconciler returned "footprint-only" / "footprint-occluded"
+                // → the polygon traces the GIS wall footprint (1.06 already
+                // baked into footprintSqft). Other SAM3 sources trace eaves.
+                resolvedKind =
+                  sam3?.source === "footprint-only" ||
+                  sam3?.source === "footprint-occluded"
+                    ? "wall"
+                    : "eave";
               }
             }
           } catch {
@@ -304,6 +318,7 @@ export default function QuotePage() {
                   // Solar mask traces eaves photogrammetrically — apply pitch
                   // slope (no overhang multiplier needed; mask already includes it)
                   resolvedSqft = Math.round(footprintSqft * slope);
+                  resolvedKind = "eave";
                 }
               }
             }
@@ -329,6 +344,7 @@ export default function QuotePage() {
                   // MS Buildings is ground-projected wall footprint — apply
                   // 1.06 eave overhang factor before pitch.
                   resolvedSqft = Math.round(footprintSqft * 1.06 * slope);
+                  resolvedKind = "wall";
                 }
               }
             }
@@ -350,6 +366,7 @@ export default function QuotePage() {
         if (resolvedSqft) setSqft(resolvedSqft);
         if (resolvedPitch) setPitch(resolvedPitch);
         if (resolvedPolygon) setRoofPolygon(resolvedPolygon);
+        if (resolvedKind) setPolygonKind(resolvedKind);
 
         const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
         if (key) {
@@ -505,7 +522,11 @@ export default function QuotePage() {
               setRoofPolygon(poly);
               // Recompute sqft from the edited polygon: footprint via
               // shoelace × slope multiplier from Solar pitch (or 1.118
-              // default for 6/12 when pitch unknown).
+              // default for 6/12 when pitch unknown). When the resolved
+              // polygon traces walls (MS Buildings, SAM3 reconciler
+              // substitution), re-apply the 1.06 eave-overhang factor —
+              // otherwise the displayed sqft drops ~6% on the first edit
+              // even when the rep nudged a single vertex.
               const PITCH_MAP: Record<string, number> = {
                 "4/12": 18.43,
                 "5/12": 22.62,
@@ -515,8 +536,9 @@ export default function QuotePage() {
               };
               const pitchDeg = pitch ? (PITCH_MAP[pitch] ?? 26.57) : 26.57;
               const slope = 1 / Math.cos((pitchDeg * Math.PI) / 180);
+              const overhang = polygonKind === "wall" ? 1.06 : 1;
               const footprint = polygonAreaSqftLocal(poly);
-              const newSqft = Math.round(footprint * slope);
+              const newSqft = Math.round(footprint * overhang * slope);
               if (newSqft >= 200 && newSqft <= 30_000) setSqft(newSqft);
             }}
             onBack={goBack}

@@ -154,6 +154,15 @@ export default function HomePage() {
   const [sam3Polygon, setSam3Polygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // Reconciler source from /api/sam3-roof. When SAM3's raw output gets
+  // substituted with the GIS wall footprint (occluded by tree canopy,
+  // catastrophic centroid drift, area-ratio gate fail), the returned
+  // polygon traces walls, not eaves — so it needs the 1.06 overhang
+  // multiplier applied to roof-material sqft. "sam3" / "sam3-no-footprint"
+  // mean the polygon traces eaves directly and no multiplier applies.
+  const [sam3Source, setSam3Source] = useState<
+    "sam3" | "footprint-only" | "footprint-occluded" | "sam3-no-footprint" | null
+  >(null);
   // "Pick the right building" mode — when the auto-detection picks the
   // wrong building on a multi-structure rural parcel, the rep toggles
   // this on and clicks the actual house on the satellite tile. We then
@@ -192,8 +201,24 @@ export default function HomePage() {
   // can later compute "Roboflow IoU vs rep-corrected truth" by source.
   const editCaptureTimerRef = useRef<number | null>(null);
   const lastCapturedSignatureRef = useRef<string | null>(null);
+  // Ref mirror of `isWallFootprintSource`, updated by a useEffect below
+  // (the derived value depends on polygonSource which is declared later
+  // in the component, so we can't read it directly from this callback).
+  // Captures whether the polygon being edited originated from a wall-
+  // footprint source (MS Buildings, OSM, or SAM3 reconciler substitution).
+  // Once livePolygons is set, `polygonSource` flips to "edited" and we
+  // lose track of what the polygon was *traced from* — but the rep's
+  // edits still describe walls, so the 1.06 overhang still applies.
+  const isWallFootprintSourceRef = useRef<boolean>(false);
+  // Frozen at first edit; cleared on runEstimate / reset.
+  const editOriginIsWallFootprintRef = useRef<boolean>(false);
   const handlePolygonsChanged = useCallback(
     (polys: Array<Array<{ lat: number; lng: number }>>) => {
+      if (!hasUserEditedRef.current) {
+        // First edit — capture whether the source we're editing FROM
+        // traces walls (so 1.06 keeps applying as the rep nudges).
+        editOriginIsWallFootprintRef.current = isWallFootprintSourceRef.current;
+      }
       hasUserEditedRef.current = true;
       setLivePolygons(polys);
       // Debounced capture: reset on every edit, fire 5s after last edit.
@@ -921,6 +946,40 @@ export default function HomePage() {
   // polygon (livePolygons set), the edit is the truth — recompute from it.
   // For addresses where Solar has no segments at all, polygon × pitch is
   // the fallback (handled by `solar?.sqft` being null → guard skipped).
+  // Polygon sources that trace WALL footprint, not roof eaves. These
+  // need a 1.06 overhang multiplier to approximate the roof-material
+  // outline (typical residential eaves project 6-18in past the wall).
+  // The reconciler at /api/sam3-roof already applies this internally
+  // to its returned footprintSqft, but the page recomputes from the
+  // polygon shape (so it stays right after rep edits) — meaning we
+  // must apply the multiplier here whenever the underlying source
+  // traces walls. Mirrors lib/reconcile-roof-polygon.ts EAVE_OVERHANG_FACTOR.
+  //
+  // Eave-traced sources (Solar facets, Solar mask, raw SAM3, Roboflow,
+  // SAM 2, Claude) trace roof material directly → no multiplier.
+  // Once the rep edits (polygonSource === "edited"), we use the frozen
+  // pre-edit value captured by handlePolygonsChanged so the multiplier
+  // persists through edits of MS/OSM polygons.
+  const EAVE_OVERHANG = 1.06;
+  const isWallFootprintSource = useMemo(() => {
+    if (polygonSource === "edited") return editOriginIsWallFootprintRef.current;
+    if (polygonSource === "microsoft-buildings") return true;
+    if (polygonSource === "osm") return true;
+    if (
+      polygonSource === "sam3" &&
+      (sam3Source === "footprint-only" || sam3Source === "footprint-occluded")
+    ) {
+      return true;
+    }
+    return false;
+  }, [polygonSource, sam3Source]);
+
+  // Mirror into a ref so the (forward-declared) handlePolygonsChanged
+  // callback can capture the pre-edit value at the moment of first edit.
+  useEffect(() => {
+    isWallFootprintSourceRef.current = isWallFootprintSource;
+  }, [isWallFootprintSource]);
+
   useEffect(() => {
     // Solar's segment-summed sqft is canonical when available + no rep edit.
     // assumptions.sqft is set from solar.sqft in runEstimate; this guard
@@ -960,11 +1019,19 @@ export default function HomePage() {
       PITCH_MAP[assumptions.pitch] ??
       26.57;
     const slopeMult = 1 / Math.cos((pitchDeg * Math.PI) / 180);
-    const sqft = Math.round(totalM2 * 10.7639 * slopeMult);
+    const overhang = isWallFootprintSource ? EAVE_OVERHANG : 1;
+    const sqft = Math.round(totalM2 * 10.7639 * overhang * slopeMult);
     if (sqft >= 200 && sqft <= 30_000) {
       setAssumptions((a) => ({ ...a, sqft }));
     }
-  }, [activePolygons, solar?.sqft, solar?.pitchDegrees, livePolygons, assumptions.pitch]);
+  }, [
+    activePolygons,
+    solar?.sqft,
+    solar?.pitchDegrees,
+    livePolygons,
+    assumptions.pitch,
+    isWallFootprintSource,
+  ]);
 
   // Auto-derive complexity from polygon shape — strictly geometric, beats
   // Vision's noisy-thumbnail guess. Vision still wins when it returns
@@ -1036,8 +1103,10 @@ export default function HomePage() {
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
     setSam3Polygon(null);
+    setSam3Source(null);
     setLivePolygons(null);
     hasUserEditedRef.current = false;
+    editOriginIsWallFootprintRef.current = false;
 
     if (addr.lat == null || addr.lng == null) {
       setAssumptions((a) => ({
@@ -1120,8 +1189,14 @@ export default function HomePage() {
         if (!r.ok) return null;
         const data = (await r.json()) as {
           polygon?: Array<{ lat: number; lng: number }>;
+          source?:
+            | "sam3"
+            | "footprint-only"
+            | "footprint-occluded"
+            | "sam3-no-footprint";
         };
-        return data.polygon && data.polygon.length >= 3 ? data.polygon : null;
+        if (!data.polygon || data.polygon.length < 3) return null;
+        return { polygon: data.polygon, source: data.source ?? "sam3" };
       })
       .catch(() => null);
 
@@ -1156,9 +1231,12 @@ export default function HomePage() {
     // This avoids paying for Solar dataLayers on the common path where
     // SAM3 succeeds AND eliminates the visual flicker where Solar mask
     // would render first and then SAM3 would override it.
-    sam3Promise.then((sam3Poly) => {
-      if (sam3Poly) {
-        if (!hasUserEditedRef.current) setSam3Polygon(sam3Poly);
+    sam3Promise.then((sam3Result) => {
+      if (sam3Result) {
+        if (!hasUserEditedRef.current) {
+          setSam3Polygon(sam3Result.polygon);
+          setSam3Source(sam3Result.source);
+        }
         return;
       }
       // SAM3 returned nothing — fall back to Solar mask. No need to fire
@@ -1319,10 +1397,12 @@ export default function HomePage() {
     setSamRefinedPolygon(null);
     setSolarMaskPolygon(null);
     setSam3Polygon(null);
+    setSam3Source(null);
     setRoboflowPolygon(null);
     setMsBuildingPolygon(null);
     setClaudeVerifications({});
     hasUserEditedRef.current = false;
+    editOriginIsWallFootprintRef.current = false;
   };
 
   const mapBadges = (() => {
@@ -1510,15 +1590,20 @@ export default function HomePage() {
                     if (!r.ok) return null;
                     const data = (await r.json()) as {
                       polygon?: Array<{ lat: number; lng: number }>;
+                      source?:
+                        | "sam3"
+                        | "footprint-only"
+                        | "footprint-occluded"
+                        | "sam3-no-footprint";
                     };
-                    return data.polygon && data.polygon.length >= 3
-                      ? data.polygon
-                      : null;
+                    if (!data.polygon || data.polygon.length < 3) return null;
+                    return { polygon: data.polygon, source: data.source ?? "sam3" };
                   })
-                  .then((poly) => {
-                    if (poly) {
+                  .then((result) => {
+                    if (result) {
                       hasUserEditedRef.current = false;
-                      setSam3Polygon(poly);
+                      setSam3Polygon(result.polygon);
+                      setSam3Source(result.source);
                     } else {
                       console.warn("[page] click-override SAM3 returned no polygon");
                     }
