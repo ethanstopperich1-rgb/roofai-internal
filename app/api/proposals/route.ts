@@ -6,11 +6,10 @@
  * fallback (useful for offline + when Supabase isn't configured), but
  * the share link only works cross-device when this endpoint succeeds.
  *
- * Auth: this is called from the rep tool at /, which is staff-only via
- * `middleware.ts`. We use the service-role client because the staff
- * user doesn't have a Supabase Auth JWT yet (auth migration is a later
- * PR). office_id is hardcoded to the seed Voxaris office during this
- * transition — same TODO as the dashboard pages.
+ * Auth: POST is gated in `middleware.ts` (HTTP Basic or Supabase session),
+ * same as the rep tool at `/`. We still use the service-role client
+ * because the staff JWT path is not wired through PostgREST yet.
+ * office_id comes from the optional `office` body field (defaults voxaris).
  */
 
 import { NextResponse } from "next/server";

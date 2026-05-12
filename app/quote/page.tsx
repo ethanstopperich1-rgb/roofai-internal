@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { BotIdClient } from "botid/client";
 import {
@@ -129,6 +129,9 @@ export default function QuotePage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<{ leadId: string } | null>(null);
   const [submitError, setSubmitError] = useState("");
+  /** Public id returned from the step-1 /api/leads call — final submit
+   *  updates the same row instead of inserting a duplicate. */
+  const existingLeadPublicIdRef = useRef<string | null>(null);
 
   const stepIdx = STEPS.indexOf(step);
 
@@ -267,9 +270,15 @@ export default function QuotePage() {
         tcpaConsent: values.tcpaConsent,
         tcpaConsentAt: values.tcpaConsentAt,
       }),
-    }).catch(() => {
-      /* silent */
-    });
+    })
+      .then(async (r) => {
+        if (!r.ok) return;
+        const data = (await r.json()) as { leadId?: string };
+        if (data.leadId) existingLeadPublicIdRef.current = data.leadId;
+      })
+      .catch(() => {
+        /* silent */
+      });
 
     // Resolve sqft + pitch via the tier ladder so customers on
     // Solar-uncovered addresses (rural / new construction / non-US) still
@@ -520,6 +529,7 @@ export default function QuotePage() {
           estimateLow: range.low,
           estimateHigh: range.high,
           source: "quote-wizard-confirmed",
+          existingLeadPublicId: existingLeadPublicIdRef.current ?? undefined,
           // TCPA consent carried forward from step-1 form. The
           // server re-validates on this final post too.
           tcpaConsent: lead.tcpaConsent,
@@ -670,6 +680,7 @@ export default function QuotePage() {
               setSubmitted(null);
               setStep("Lead");
               setLead(null);
+              existingLeadPublicIdRef.current = null;
               setAddress(null);
               setSqft(null);
               setPitch(null);
