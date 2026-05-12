@@ -106,7 +106,9 @@ function validateSignature(opts: {
 }
 
 export async function POST(req: Request) {
-  const __rl = await rateLimit(req, "expensive");
+  // Sydney can emit several tool_fired rows per call; "expensive" (10/min
+  // per IP) was starving legitimate workers behind a shared egress NAT.
+  const __rl = await rateLimit(req, "standard");
   if (__rl) return __rl;
 
   if (!supabaseServiceRoleConfigured()) {
@@ -181,7 +183,7 @@ export async function POST(req: Request) {
         .from("calls")
         .select("id")
         .eq("room_name", event.room_name)
-        .single();
+        .maybeSingle();
       const { error } = await supabase.from("events").insert({
         office_id: officeId,
         call_id: call?.id ?? null,
@@ -201,25 +203,47 @@ export async function POST(req: Request) {
     }
 
     if (event.type === "call_ended") {
-      const { error } = await supabase
+      const patch = {
+        ended_at: event.ended_at,
+        duration_sec: event.duration_sec,
+        turn_count: event.turn_count,
+        outcome: event.outcome ?? "unknown",
+        transcript: event.transcript ?? null,
+        summary: event.summary ?? null,
+        llm_prompt_tokens: event.llm_prompt_tokens ?? null,
+        llm_completion_tokens: event.llm_completion_tokens ?? null,
+        tts_chars: event.tts_chars ?? null,
+        stt_secs: event.stt_secs ?? null,
+        estimated_cost_usd: event.estimated_cost_usd ?? null,
+      };
+      const { data: updatedRows, error: updateErr } = await supabase
         .from("calls")
-        .update({
-          ended_at: event.ended_at,
-          duration_sec: event.duration_sec,
-          turn_count: event.turn_count,
-          outcome: event.outcome ?? "unknown",
-          transcript: event.transcript ?? null,
-          summary: event.summary ?? null,
-          llm_prompt_tokens: event.llm_prompt_tokens ?? null,
-          llm_completion_tokens: event.llm_completion_tokens ?? null,
-          tts_chars: event.tts_chars ?? null,
-          stt_secs: event.stt_secs ?? null,
-          estimated_cost_usd: event.estimated_cost_usd ?? null,
-        })
-        .eq("room_name", event.room_name);
-      if (error) {
-        console.error("[agent-events] call_ended update failed:", error.message);
+        .update(patch)
+        .eq("room_name", event.room_name)
+        .select("id");
+      if (updateErr) {
+        console.error("[agent-events] call_ended update failed:", updateErr.message);
         return NextResponse.json({ error: "db_error" }, { status: 500 });
+      }
+      // If call_started was dropped (network, DB error) but call_ended
+      // arrived, synthesize a row so the dashboard still has a record.
+      if (!updatedRows?.length) {
+        const endedMs = Date.parse(event.ended_at);
+        const startedGuess =
+          Number.isFinite(endedMs) && event.duration_sec >= 0
+            ? new Date(endedMs - event.duration_sec * 1000).toISOString()
+            : event.ended_at;
+        const { error: insertErr } = await supabase.from("calls").insert({
+          office_id: officeId,
+          agent_name: event.agent_name,
+          room_name: event.room_name,
+          started_at: startedGuess,
+          ...patch,
+        });
+        if (insertErr) {
+          console.error("[agent-events] call_ended insert fallback failed:", insertErr.message);
+          return NextResponse.json({ error: "db_error" }, { status: 500 });
+        }
       }
       return NextResponse.json({ status: "ok" });
     }

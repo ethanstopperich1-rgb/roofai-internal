@@ -55,7 +55,8 @@ import { NextResponse, type NextRequest } from "next/server";
  *   /api/verify-polygon-multiview  same
  *   /api/roboflow           Roboflow inference (rep tool, $$$ abuse risk)
  *   /api/sam-refine         Replicate SAM2 (rep tool, $$$ abuse risk)
- *   /api/estimates          rep proposal persistence
+ *   /api/estimates          rep proposal persistence (stub)
+ *   POST /api/proposals     staff-only — same-origin + Basic Auth or session
  *   /api/aerial             currently unused by any caller — gated until
  *                           an intentional customer call site exists
  */
@@ -93,6 +94,7 @@ const PROTECTED_API_PREFIXES = [
  *   /api/solar, /api/solar-mask, /api/sam3-roof, /api/microsoft-building,
  *   /api/building, /api/storms, /api/hail-mrms, /api/weather  → /quote stack
  *   /api/healthz               operator probe (gated by HEALTHZ_TOKEN if set)
+ *   GET /api/proposals/*       anonymous proposal read for /p/[id] share links
  *
  * If a future PR adds an /api/<new> that /quote depends on, add it to the
  * "intentionally public" comment in the file header — do not silently
@@ -102,7 +104,11 @@ const PROTECTED_API_PREFIXES = [
 const PROTECTED_PAGE_PATHS = new Set<string>(["/"]);
 const PROTECTED_PAGE_PREFIXES = ["/history", "/admin", "/eval-trace", "/dashboard"];
 
-function isProtected(pathname: string): boolean {
+function isProtected(pathname: string, method: string): boolean {
+  // POST /api/proposals — staff-only (prevents unauthenticated proposal spam).
+  // GET /api/proposals/[publicId] must stay public for customer share links.
+  if (pathname === "/api/proposals" && method === "POST") return true;
+
   // Exact match on protected pages
   if (PROTECTED_PAGE_PATHS.has(pathname)) return true;
   // Prefix match on rep-only sections
@@ -182,7 +188,7 @@ export function middleware(req: NextRequest): NextResponse {
     return NextResponse.redirect(dest, 307);
   }
 
-  if (!isProtected(pathname)) {
+  if (!isProtected(pathname, req.method)) {
     return NextResponse.next();
   }
 

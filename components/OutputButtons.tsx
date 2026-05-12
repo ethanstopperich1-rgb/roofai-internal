@@ -36,6 +36,7 @@ export default function OutputButtons({ estimate, onSaved }: Props) {
     saveEstimate(estimate);
     void fetch("/api/proposals", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ estimate }),
     }).catch((err) => console.warn("[output] supabase save failed:", err));

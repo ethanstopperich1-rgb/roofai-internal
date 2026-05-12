@@ -38,9 +38,10 @@ interface LeadPayload {
    *  store this verbatim so we can prove what they agreed to if asked
    *  by FTC / a partner contractor in a compliance audit. */
   tcpaConsentText?: string;
-  /** ISO timestamp the customer checked the box. Client-supplied; the
-   *  server also records `submittedAt` which is the source of truth. */
-  tcpaConsentAt?: string;
+  /** When the wizard already created a row (e.g. step-1 capture), pass
+   *  the same public_id so the final submit updates instead of inserting
+   *  a duplicate. Server requires the same email as the original row. */
+  existingLeadPublicId?: string;
 }
 
 /** TCPA disclosure text — the exact wording the customer agrees to.
@@ -59,11 +60,15 @@ export const TCPA_CONSENT_TEXT =
   "Reply STOP to opt out, HELP for help. See our Privacy Policy at " +
   "/privacy and Terms of Service at /terms.";
 
+function isValidExistingLeadPublicId(id: unknown): id is string {
+  return typeof id === "string" && /^lead_[0-9a-f]{32}$/i.test(id.trim());
+}
+
 /**
  * POST /api/leads
- * Receives a homeowner lead from the public /quote wizard. Persists nothing
- * yet (Phase 2 — Supabase) but always echoes a leadId so the UI can show a
- * confirmation. Optionally posts to LEAD_WEBHOOK_URL for CRM intake.
+ * Receives a homeowner lead from the public /quote wizard. Persists to
+ * Supabase when configured; always echoes a leadId. Optionally posts to
+ * LEAD_WEBHOOK_URL for CRM intake.
  */
 export async function POST(req: Request) {
   const __rl = await rateLimit(req, "public");
@@ -123,71 +128,99 @@ export async function POST(req: Request) {
     );
   }
 
-  // Cryptographically random UUID (v4) — earlier scheme was
-  // `Date.now() + Math.random().toString(36).slice(2, 7)` which leaked
-  // ordering AND used Math.random (predictable). Anyone who saved two
-  // consecutive proposals could extrapolate the keyspace and read
-  // every customer's PII via /p/<id>. UUID v4 closes that vector.
-  const leadId = `lead_${crypto.randomUUID().replace(/-/g, "")}`;
   const submittedAt = new Date().toISOString();
+  const emailNorm = body.email.trim().toLowerCase();
+  const officeSlug = body.office ?? "voxaris";
+
+  let leadId = `lead_${crypto.randomUUID().replace(/-/g, "")}`;
+  let isLeadUpdate = false;
+
+  if (supabaseServiceRoleConfigured() && isValidExistingLeadPublicId(body.existingLeadPublicId)) {
+    const oid = await resolveOfficeIdBySlug(officeSlug);
+    if (oid) {
+      const sb = createServiceRoleClient();
+      const { data: prior } = await sb
+        .from("leads")
+        .select("id, email, public_id")
+        .eq("public_id", body.existingLeadPublicId.trim())
+        .eq("office_id", oid)
+        .maybeSingle();
+      if (prior && prior.email === emailNorm) {
+        leadId = prior.public_id;
+        isLeadUpdate = true;
+      }
+    }
+  }
 
   // ─── Supabase persistence ──────────────────────────────────────────
   // Primary destination for the lead. When Supabase env vars aren't
   // set (dev / preview), this silently no-ops and the legacy webhook
   // flow below still fires. office slug → office_id lookup is cached
   // 1h in resolveOfficeIdBySlug.
-  let supabaseLeadUuid: string | null = null;
   if (supabaseServiceRoleConfigured()) {
     try {
-      const officeSlug = body.office ?? "voxaris";
       const officeId = await resolveOfficeIdBySlug(officeSlug);
       if (!officeId) {
         console.warn(`[leads] no active office for slug='${officeSlug}'`);
       } else {
         const supabase = createServiceRoleClient();
-        const { data, error } = await supabase
-          .from("leads")
-          .insert({
-            office_id: officeId,
-            public_id: leadId,
-            name: body.name.trim(),
-            email: body.email.trim().toLowerCase(),
-            phone: body.phone?.trim() || null,
-            address: body.address.trim(),
-            zip: body.zip ?? null,
-            lat: body.lat ?? null,
-            lng: body.lng ?? null,
-            estimated_sqft: body.estimatedSqft ?? null,
-            material: body.material ?? null,
-            selected_add_ons: body.selectedAddOns ?? null,
-            estimate_low: body.estimateLow ?? null,
-            estimate_high: body.estimateHigh ?? null,
-            source: body.source ?? null,
-            notes: body.notes ?? null,
-            tcpa_consent: true,
-            tcpa_consent_at: submittedAt,
-            tcpa_consent_text: TCPA_CONSENT_TEXT,
-          })
-          .select("id")
-          .single();
-        if (error) {
-          console.error("[leads] supabase insert failed:", error.message);
+        const row = {
+          name: body.name.trim(),
+          email: emailNorm,
+          phone: body.phone?.trim() || null,
+          address: body.address.trim(),
+          zip: body.zip ?? null,
+          lat: body.lat ?? null,
+          lng: body.lng ?? null,
+          estimated_sqft: body.estimatedSqft ?? null,
+          material: body.material ?? null,
+          selected_add_ons: body.selectedAddOns ?? null,
+          estimate_low: body.estimateLow ?? null,
+          estimate_high: body.estimateHigh ?? null,
+          source: body.source ?? null,
+          notes: body.notes ?? null,
+          tcpa_consent: true,
+          tcpa_consent_at: submittedAt,
+          tcpa_consent_text: TCPA_CONSENT_TEXT,
+        };
+
+        if (isLeadUpdate) {
+          const { error } = await supabase
+            .from("leads")
+            .update(row)
+            .eq("public_id", leadId)
+            .eq("office_id", officeId);
+          if (error) {
+            console.error("[leads] supabase update failed:", error.message);
+          }
         } else {
-          supabaseLeadUuid = data.id;
-          // Audit-trail row in consents — append-only, regulator-grade
-          // receipt of what disclosure the customer agreed to.
-          await supabase.from("consents").insert({
-            office_id: officeId,
-            lead_id: data.id,
-            // Matches the documented enum in migrations/0001:
-            // 'tcpa_marketing' | 'call_recording' | 'sms' | 'email_marketing'.
-            consent_type: "tcpa_marketing",
-            disclosure_text: TCPA_CONSENT_TEXT,
-            email: body.email.trim().toLowerCase(),
-            phone: body.phone?.trim() || null,
-            ip_address: consentIp,
-            user_agent: consentUserAgent,
-          });
+          const { data, error } = await supabase
+            .from("leads")
+            .insert({
+              office_id: officeId,
+              public_id: leadId,
+              ...row,
+            })
+            .select("id")
+            .single();
+          if (error) {
+            console.error("[leads] supabase insert failed:", error.message);
+          } else if (data) {
+            // Audit-trail row in consents — append-only, regulator-grade
+            // receipt of what disclosure the customer agreed to.
+            await supabase.from("consents").insert({
+              office_id: officeId,
+              lead_id: data.id,
+              // Matches the documented enum in migrations/0001:
+              // 'tcpa_marketing' | 'call_recording' | 'sms' | 'email_marketing'.
+              consent_type: "tcpa_marketing",
+              disclosure_text: TCPA_CONSENT_TEXT,
+              email: emailNorm,
+              phone: body.phone?.trim() || null,
+              ip_address: consentIp,
+              user_agent: consentUserAgent,
+            });
+          }
         }
       }
     } catch (err) {
@@ -207,6 +240,7 @@ export async function POST(req: Request) {
           leadId,
           submittedAt,
           ...body,
+          email: emailNorm,
           // Always echo back the verbatim consent text we BELIEVE the
           // customer saw, plus the server-side timestamp. The body's
           // tcpaConsentText is client-supplied and could be spoofed;
@@ -243,7 +277,7 @@ export async function POST(req: Request) {
       tag: "tcpa-consent",
       leadId,
       submittedAt,
-      emailHash: hashFragment(body.email.toLowerCase()),
+      emailHash: hashFragment(emailNorm),
       phoneHash: body.phone ? hashFragment(body.phone.replace(/\D/g, "")) : null,
       consentText: TCPA_CONSENT_TEXT,
     }),
@@ -254,7 +288,7 @@ export async function POST(req: Request) {
   // confirmation). We also seed conversation memory so when the
   // customer texts back, the SMS bot already knows their estimate.
   const phoneE164 = toE164(body.phone);
-  if (phoneE164 && twilioConfigured()) {
+  if (phoneE164 && twilioConfigured() && !isLeadUpdate) {
     const estimateLine =
       body.estimateLow && body.estimateHigh
         ? `Your estimate range: $${body.estimateLow.toLocaleString()}-$${body.estimateHigh.toLocaleString()}. `
@@ -294,6 +328,24 @@ export async function POST(req: Request) {
         console.error("[leads] attachLeadContext failed:", err),
       ),
     ]);
+  } else if (phoneE164 && twilioConfigured() && isLeadUpdate) {
+    void attachLeadContext({
+      phone: phoneE164,
+      lead: {
+        leadId,
+        name: body.name,
+        email: body.email,
+        address: body.address,
+        estimateLow: body.estimateLow,
+        estimateHigh: body.estimateHigh,
+        material: body.material,
+        estimatedSqft: body.estimatedSqft,
+        selectedAddOns: body.selectedAddOns,
+        submittedAt,
+      },
+    }).catch((err) =>
+      console.error("[leads] attachLeadContext failed:", err),
+    );
   }
 
   return NextResponse.json({

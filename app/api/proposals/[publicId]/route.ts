@@ -25,7 +25,10 @@ export async function GET(
   req: Request,
   { params }: { params: Promise<{ publicId: string }> },
 ) {
-  const __rl = await rateLimit(req, "public");
+  // Anonymous customers open /p/[id] from shared networks — use the
+  // standard bucket (60/min per IP) instead of `public` (5/min), which
+  // caused false 429s on office Wi‑Fi and family devices.
+  const __rl = await rateLimit(req, "standard");
   if (__rl) return __rl;
 
   if (!supabaseServiceRoleConfigured()) {
