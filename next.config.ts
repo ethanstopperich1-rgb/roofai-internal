@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { withBotId } from "botid/next/config";
+import { withSentryConfig } from "@sentry/nextjs";
 
 const config: NextConfig = {
   reactStrictMode: true,
@@ -37,8 +38,22 @@ const config: NextConfig = {
   },
 };
 
-// Wrap with Vercel BotID — adds challenge headers + propagates the
-// per-route protect config from <BotIdClient> down to the verifier in
-// /api/leads. The actual route-level enforcement happens via
-// `await checkBotId()` inside the route handler.
-export default withBotId(config);
+// Compose enhancers in order:
+//   1. BotID — adds challenge headers, propagates per-route protect config
+//   2. Sentry — source-map upload + tunnel for ad-blockers; init lives in
+//      instrumentation.ts + instrumentation-client.ts. When SENTRY_AUTH_TOKEN
+//      is unset (dev / partner forks), `withSentryConfig` skips the upload
+//      step but the wrapper is still inert-safe to apply.
+const enhanced = withSentryConfig(withBotId(config), {
+  // Disable source-map upload when running locally — otherwise Sentry's
+  // build plugin prints a warning every `npm run dev`.
+  silent: !process.env.CI,
+  // Tunnel /monitoring through our own domain so ad-blockers (uBlock,
+  // Brave Shields) don't strip Sentry events from the customer flow.
+  // Costs one extra Vercel function invocation per error; cheap.
+  tunnelRoute: "/monitoring",
+  // Disable Sentry's automatic telemetry — we already track our own.
+  telemetry: false,
+});
+
+export default enhanced;

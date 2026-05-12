@@ -283,9 +283,29 @@ export function BoltStyleHero({
                   By submitting this form, you consent to receive automated
                   marketing calls, texts, and emails from Voxaris and its
                   partner contractors at the phone number and email provided.
-                  Consent is not required to make a purchase. Message and
-                  data rates may apply. You may opt out at any time by
-                  replying STOP to texts or contacting us.
+                  Consent is not required to make a purchase. Message
+                  frequency varies; message and data rates may apply. Reply
+                  STOP to opt out, HELP for help. See our{" "}
+                  <a
+                    href="/privacy"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-cy-300 hover:underline"
+                  >
+                    Privacy Policy
+                  </a>{" "}
+                  and{" "}
+                  <a
+                    href="/terms"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-cy-300 hover:underline"
+                  >
+                    Terms of Service
+                  </a>
+                  .
                 </span>
               </label>
             </div>

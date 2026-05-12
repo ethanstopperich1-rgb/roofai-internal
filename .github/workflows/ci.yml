@@ -1,0 +1,71 @@
+name: CI
+
+# PR + main-push guard. Catches the kind of issue Cursor's review has
+# repeatedly surfaced (typescript drift, lint regressions, broken
+# builds) BEFORE merge instead of after. Three independent checks run
+# in parallel so a typecheck failure doesn't block lint feedback.
+#
+# Fail-fast: false — we want all three results on the PR page so the
+# author can fix everything in one push instead of ping-ponging.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+
+  lint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Lint
+        run: npm run lint
+
+  build:
+    name: Next build
+    runs-on: ubuntu-latest
+    # The build resolves env vars at compile time even when the route
+    # would degrade gracefully at runtime. Provide harmless placeholders
+    # for the publicly-readable keys so `next build` doesn't fail with
+    # "missing NEXT_PUBLIC_*" in CI; real secrets remain in Vercel.
+    env:
+      NEXT_PUBLIC_GOOGLE_MAPS_KEY: ci-placeholder
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder
+      NEXT_PUBLIC_SITE_ORIGIN: https://pitch.voxaris.io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Build
+        run: npm run build
