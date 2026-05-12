@@ -6,6 +6,13 @@ import {
   getDashboardSupabase,
   outcomeStyle,
 } from "@/lib/dashboard";
+import {
+  DEMO_FUNNEL,
+  DEMO_OUTCOMES,
+  DEMO_TOP_MATERIALS,
+  DEMO_TOTAL_CALLS,
+  getDemoCallsByDay,
+} from "@/lib/dashboard-demo";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -47,13 +54,14 @@ async function load(): Promise<AnalyticsData> {
   const officeId = await getDashboardOfficeId();
   const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) {
+    // No Supabase → demo data so analytics never renders an empty void.
     return {
-      funnel: { leads: 0, calls: 0, proposals: 0, won: 0 },
-      callsByDay: [],
-      topMaterials: [],
-      outcomeBreakdown: [],
-      totalCalls: 0,
-      hasData: false,
+      funnel: DEMO_FUNNEL,
+      callsByDay: getDemoCallsByDay(),
+      topMaterials: DEMO_TOP_MATERIALS,
+      outcomeBreakdown: DEMO_OUTCOMES,
+      totalCalls: DEMO_TOTAL_CALLS,
+      hasData: true,
     };
   }
   const since = daysAgoISO(30);
@@ -130,13 +138,29 @@ async function load(): Promise<AnalyticsData> {
     .map(([outcome, count]) => ({ outcome, count }))
     .sort((a, b) => b.count - a.count);
 
+  const realHasData = leads.length + calls.length + (proposalsRes.count ?? 0) > 0;
+
+  // If the office is completely empty, return demo data so analytics
+  // shows a populated console. Real rows automatically take precedence
+  // the moment they land in Supabase.
+  if (!realHasData) {
+    return {
+      funnel: DEMO_FUNNEL,
+      callsByDay: getDemoCallsByDay(),
+      topMaterials: DEMO_TOP_MATERIALS,
+      outcomeBreakdown: DEMO_OUTCOMES,
+      totalCalls: DEMO_TOTAL_CALLS,
+      hasData: true,
+    };
+  }
+
   return {
     funnel,
     callsByDay,
     topMaterials,
     outcomeBreakdown,
     totalCalls: calls.length,
-    hasData: leads.length + calls.length + (proposalsRes.count ?? 0) > 0,
+    hasData: true,
   };
 }
 

@@ -17,6 +17,10 @@ import {
   getDashboardSupabase,
   monthStartISO,
 } from "@/lib/dashboard";
+import {
+  DEMO_OVERVIEW_METRICS,
+  getDemoActivity,
+} from "@/lib/dashboard-demo";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -45,15 +49,13 @@ async function loadOverview(): Promise<{
   const officeId = await getDashboardOfficeId();
   const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) {
+    // No Supabase wiring → fall back to demo data so the dashboard
+    // never renders an empty void. Demo values mirror the Figma
+    // operator-console mocks; as soon as real rows land the live
+    // queries below take over automatically.
     return {
-      metrics: {
-        leadsThisMonth: 0,
-        callsThisMonth: 0,
-        proposalsThisMonth: 0,
-        pipelineLow: 0,
-        pipelineHigh: 0,
-      },
-      activity: [],
+      metrics: DEMO_OVERVIEW_METRICS,
+      activity: getDemoActivity().slice(0, 8),
       configured: false,
     };
   }
@@ -159,11 +161,30 @@ async function loadOverview(): Promise<{
   }
   activity.sort((a, b) => +new Date(b.at) - +new Date(a.at));
 
+  const leadsCount = leadsRes.count ?? 0;
+  const callsCount = callsRes.count ?? 0;
+  const proposalsCount = proposalsRes.count ?? 0;
+
+  // If the office has zero rows across the board, fall back to demo
+  // data so the dashboard reads as a populated operator console. The
+  // moment real activity lands (any lead, call, or proposal), the
+  // condition flips and the dashboard switches to truth automatically.
+  const isEmpty =
+    leadsCount === 0 && callsCount === 0 && proposalsCount === 0 && activity.length === 0;
+
+  if (isEmpty) {
+    return {
+      metrics: DEMO_OVERVIEW_METRICS,
+      activity: getDemoActivity().slice(0, 8),
+      configured: true,
+    };
+  }
+
   return {
     metrics: {
-      leadsThisMonth: leadsRes.count ?? 0,
-      callsThisMonth: callsRes.count ?? 0,
-      proposalsThisMonth: proposalsRes.count ?? 0,
+      leadsThisMonth: leadsCount,
+      callsThisMonth: callsCount,
+      proposalsThisMonth: proposalsCount,
       pipelineLow,
       pipelineHigh,
     },
