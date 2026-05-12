@@ -107,6 +107,39 @@ def pick_opener() -> str:
     return OPENER_BUSINESS_HOURS if (is_weekday and is_business_hours) else OPENER_AFTER_HOURS
 
 
+def build_outbound_opener(lead: "dict[str, object]") -> str:
+    """Personalized opener for OUTBOUND calls.
+
+    Customer just submitted a quote on /quote — their phone is ringing
+    seconds later. We greet by first name, reference the address they
+    submitted, and quote the estimate range so the call feels like
+    continuity (not cold). Then ask permission for a 2-minute chat
+    so we honor the "consent to converse" pattern (TCPA-conservative).
+    """
+    name_raw = (lead.get("name") or "").strip()
+    first_name = name_raw.split()[0] if name_raw else "there"
+    addr = (lead.get("address") or "").split(",")[0].strip()
+    est_low = lead.get("estimateLow")
+    est_high = lead.get("estimateHigh")
+
+    msg = f"Hi {first_name}, this is Sydney from Noland's Roofing — "
+    msg += "thanks so much for requesting an estimate online. "
+    if addr:
+        msg += f"I'm calling about your roof at {addr}. "
+    if est_low and est_high:
+        try:
+            lo = f"${int(est_low):,}"
+            hi = f"${int(est_high):,}"
+            msg += f"Your estimate range came back at {lo} to {hi}. "
+        except (TypeError, ValueError):
+            pass
+    msg += (
+        "Is now a good time for a quick two-minute conversation about "
+        "scheduling your free inspection?"
+    )
+    return msg
+
+
 class SydneyAgent(Agent):
     def __init__(self) -> None:
         super().__init__(instructions=SYSTEM_PROMPT, tools=ALL_TOOLS)
@@ -127,10 +160,34 @@ def prewarm(proc: JobProcess) -> None:
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
 
+    # ─── Outbound mode detection ───────────────────────────────────────
+    # When /api/dispatch-outbound creates this job, it encodes the lead
+    # context (name, address, estimate range, etc.) as JSON in the job
+    # metadata. We parse it here so the rest of entrypoint can switch
+    # between INBOUND mode (caller dialing in) and OUTBOUND mode
+    # (Sydney calling them right after a /quote submit).
+    import json as _json
+    lead_context: dict[str, object] | None = None
+    try:
+        raw_meta = getattr(getattr(ctx, "job", None), "metadata", None) or ""
+        if raw_meta:
+            parsed = _json.loads(raw_meta)
+            if isinstance(parsed, dict) and parsed.get("mode") == "outbound":
+                lead_context = parsed
+                logger.info(
+                    "sydney OUTBOUND dispatch: name=%s phone=%s leadId=%s addr=%s",
+                    parsed.get("name"),
+                    parsed.get("phone"),
+                    parsed.get("leadId"),
+                    parsed.get("address"),
+                )
+    except Exception as e:
+        logger.warning("failed to parse job metadata: %s", e)
+
     # Wait for the SIP/PSTN caller to actually land in the room before
-    # spinning up the session. Without this, session.start can race the
-    # SIP leg and end up with no participant to talk to — caller hears
-    # ringing forever.
+    # spinning up the session. For INBOUND calls this is the caller
+    # dialing in; for OUTBOUND it's the customer answering Sydney's
+    # outbound dial. Either way: no participant → no call.
     try:
         await ctx.wait_for_participant()
     except Exception as e:
@@ -429,7 +486,31 @@ async def entrypoint(ctx: JobContext) -> None:
     # generate_reply just to have the LLM regurgitate a fixed greeting.
     # The text is added to chat_ctx so the LLM still has it as the first
     # turn for subsequent context.
-    await session.say(pick_opener(), allow_interruptions=True)
+    if lead_context is not None:
+        # OUTBOUND mode: customer just submitted /quote, their phone is
+        # ringing. Greet by name, reference the estimate. Also inject the
+        # full lead context into chat_ctx as a system message so the LLM
+        # has the address, material preference, etc. for the rest of the
+        # conversation without us re-summarizing.
+        opener = build_outbound_opener(lead_context)
+        try:
+            session.chat_ctx.add_message(
+                role="system",
+                content=(
+                    "OUTBOUND CALL CONTEXT — this customer just submitted "
+                    "a roof estimate on the Voxaris /quote page seconds "
+                    "ago. We are calling them, not the other way around. "
+                    f"Lead context: {_json.dumps(lead_context)}. "
+                    "Your job: confirm we have the right person, walk "
+                    "through the estimate range, and book a free "
+                    "inspection appointment. Stay warm and conversational."
+                ),
+            )
+        except Exception as e:
+            logger.warning("failed to attach lead context to chat_ctx: %s", e)
+    else:
+        opener = pick_opener()
+    await session.say(opener, allow_interruptions=True)
 
 
 if __name__ == "__main__":

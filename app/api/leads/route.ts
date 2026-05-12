@@ -348,6 +348,44 @@ export async function POST(req: Request) {
     );
   }
 
+  // ─── Sydney outbound dispatch ────────────────────────────────────────
+  // After the lead is captured, immediately dispatch Sydney to OUTBOUND
+  // call the customer's phone. Fire-and-forget — failures don't block
+  // the API response. The /api/dispatch-outbound route validates env
+  // (LiveKit + SIP trunk), the dispatch secret, and the phone format
+  // before any LiveKit call is made.
+  if (phoneE164 && process.env.INTERNAL_DISPATCH_SECRET && !isLeadUpdate) {
+    const origin = new URL(req.url).origin;
+    void fetch(`${origin}/api/dispatch-outbound`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-dispatch-secret": process.env.INTERNAL_DISPATCH_SECRET,
+      },
+      body: JSON.stringify({
+        leadId,
+        name: body.name,
+        phone: phoneE164,
+        address: body.address,
+        estimateLow: body.estimateLow,
+        estimateHigh: body.estimateHigh,
+        material: body.material,
+        office: body.office ?? "voxaris",
+      }),
+    })
+      .then(async (r) => {
+        const text = await r.text().catch(() => "");
+        if (!r.ok) {
+          console.error("[leads] outbound dispatch non-OK:", r.status, text);
+        } else {
+          console.log("[leads] outbound dispatched:", { leadId, body: text });
+        }
+      })
+      .catch((err) =>
+        console.error("[leads] outbound dispatch failed:", err),
+      );
+  }
+
   return NextResponse.json({
     leadId,
     submittedAt,
