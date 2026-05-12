@@ -83,7 +83,6 @@ A complete new product surface — **Storm Intelligence**. Detects hail events i
 | Storm Intelligence daily cron writes | Run migration `0005_canvass_targets.sql` on Supabase + ensure `SUPABASE_SERVICE_ROLE_KEY` is set |
 | TCPA STOP persistence | Run migration `0004_sms_opt_outs.sql` |
 | The "live contractor network" claims on `/quote` | `NEXT_PUBLIC_CONTRACTOR_NETWORK_LIVE=true` (only after you have real contractors signed) |
-| Override the Storm Intelligence demo region | `STORMS_DEMO_REGION_LAT`, `STORMS_DEMO_REGION_LNG` (default: Orlando) |
 | Override the Roboflow workflow URL | `ROBOFLOW_SAM3_WORKFLOW_URL` |
 
 The site works without any of these — it just degrades gracefully.

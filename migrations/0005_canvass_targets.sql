@@ -7,8 +7,9 @@
 --   1. Scans MRMS for ≥1" hail events in the previous 48-hour window
 --      across every watched region (one per office)
 --   2. For each event, creates a `storm_events` row
---   3. For each event, queues a `canvass_jobs` row that the office can
---      pull / dispatch / mark contacted
+--   3. For each address inside the impact zone, queues a
+--      `canvass_targets` row that the office can pull / dispatch /
+--      mark contacted
 --
 -- This table is separate from `leads` because canvass targets are not
 -- yet leads — they're ADDRESS-level prospects the operator will work.

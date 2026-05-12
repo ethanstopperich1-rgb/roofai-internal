@@ -133,6 +133,17 @@ function hasSupabaseSession(req: NextRequest): boolean {
 export function middleware(req: NextRequest): NextResponse {
   const { pathname } = req.nextUrl;
 
+  // Customer-proposal share links live at `/p/<random-id>`. The page-
+  // level metadata already sets `robots: { index: false }` for Google /
+  // Googlebot, but other crawlers (Bing, Yandex, ChatGPT, etc.) respect
+  // the `X-Robots-Tag` HTTP header more consistently than HTML meta.
+  // Belt + suspenders for the customer-PII-on-share-link surface.
+  if (pathname.startsWith("/p/")) {
+    const res = NextResponse.next();
+    res.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+    return res;
+  }
+
   // Root-domain landing: redirect unauthenticated visitors to the
   // customer-facing /quote page so a buyer pasting the bare URL
   // (`pitch.voxaris.io/`) doesn't hit the staff-auth 503. Authenticated

@@ -64,6 +64,16 @@ export async function POST(req: Request) {
   const __rl = await rateLimit(req, "public");
   if (__rl) return __rl;
 
+  // TCPA receipts must capture IP + UA at consent time (FTC guidance &
+  // standard TCPA defense playbook). `x-forwarded-for` may be a comma-
+  // separated proxy chain; the leftmost value is the client.
+  const xff = req.headers.get("x-forwarded-for") ?? "";
+  const consentIp =
+    xff.split(",")[0]?.trim() ||
+    req.headers.get("x-real-ip") ||
+    null;
+  const consentUserAgent = req.headers.get("user-agent") || null;
+
   // Vercel BotID — paired with <BotIdClient> mounted on /quote + /embed.
   // The client widget runs a transparent JS challenge before the form
   // submits; the server side here verifies the signed verdict in the
@@ -164,10 +174,14 @@ export async function POST(req: Request) {
           await supabase.from("consents").insert({
             office_id: officeId,
             lead_id: data.id,
-            consent_type: "tcpa",
+            // Matches the documented enum in migrations/0001:
+            // 'tcpa_marketing' | 'call_recording' | 'sms' | 'email_marketing'.
+            consent_type: "tcpa_marketing",
             disclosure_text: TCPA_CONSENT_TEXT,
             email: body.email.trim().toLowerCase(),
             phone: body.phone?.trim() || null,
+            ip_address: consentIp,
+            user_agent: consentUserAgent,
           });
         }
       }
