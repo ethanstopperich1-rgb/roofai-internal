@@ -3,7 +3,12 @@ import { rateLimit } from "@/lib/ratelimit";
 import { getCached, setCached } from "@/lib/cache";
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+// Capped at 15s — the page hydrates this client-side and we want it
+// to either return data or fail fast so the UI flips to empty/error
+// state. The upstream /api/hail-mrms internally has a 60s ceiling but
+// in practice resolves in <3s once warm; if it's cold we'd rather
+// show "data temporarily unavailable" than hang the demo.
+export const maxDuration = 15;
 
 /**
  * GET /api/storms/recent-significant?lat=..&lng=..&radiusMiles=25&minInches=1.0
@@ -65,7 +70,7 @@ export async function GET(req: Request) {
       `${origin}/api/hail-mrms?lat=${lat}&lng=${lng}` +
         `&radiusMiles=${Math.min(5, radiusMiles)}` +
         `&yearsBack=1&minInches=${minInches}`,
-      { cache: "no-store", signal: AbortSignal.timeout(20_000) },
+      { cache: "no-store", signal: AbortSignal.timeout(10_000) },
     );
     if (mrmsRes.ok) {
       const data = (await mrmsRes.json()) as { events?: typeof mrmsEvents };
@@ -101,7 +106,7 @@ export async function GET(req: Request) {
       const stormsRes = await fetch(
         `${origin}/api/storms?lat=${lat}&lng=${lng}` +
           `&radiusMiles=${radiusMiles}&yearsBack=1`,
-        { cache: "no-store", signal: AbortSignal.timeout(15_000) },
+        { cache: "no-store", signal: AbortSignal.timeout(6_000) },
       );
       if (stormsRes.ok) {
         const data = (await stormsRes.json()) as {

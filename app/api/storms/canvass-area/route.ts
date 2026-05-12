@@ -3,7 +3,10 @@ import { rateLimit } from "@/lib/ratelimit";
 import { getCached, setCached } from "@/lib/cache";
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+// 12s ceiling — gives 3 Overpass mirrors at 8s each a chance to
+// respond. If all mirrors are slow, we fall through to the regional-
+// density heuristic so the UI never hangs.
+export const maxDuration = 12;
 
 /**
  * GET /api/storms/canvass-area?lat=..&lng=..&radiusMiles=2
@@ -50,8 +53,11 @@ async function queryOverpass(
 ): Promise<number | null> {
   // `out count` returns just the aggregate count — no per-element data
   // shipped over the wire, perfect for our "how many buildings" use case.
+  // [timeout:3] tells Overpass to abort the query server-side after
+  // 3s — matched to our per-mirror fetch timeout. Counting buildings
+  // by radius is cheap on Overpass even at 25km, so 3s is plenty.
   const query = `
-    [out:json][timeout:20];
+    [out:json][timeout:3];
     (
       way(around:${radiusMeters},${lat},${lng})["building"];
       relation(around:${radiusMeters},${lat},${lng})["building"];
@@ -69,7 +75,11 @@ async function queryOverpass(
             "voxaris-pitch/1.0 (https://pitch.voxaris.io; contact: hello@voxaris.io)",
         },
         body: `data=${encodeURIComponent(query)}`,
-        signal: AbortSignal.timeout(20_000),
+        // 3.5s per mirror — total iteration over 3 mirrors fits under
+        // the 12s route maxDuration. If all mirrors are slow we'd
+        // rather fall through to the density-heuristic estimate than
+        // hang the demo page.
+        signal: AbortSignal.timeout(3_500),
       });
       if (!res.ok) continue;
       const data = (await res.json()) as {

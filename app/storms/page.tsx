@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
 import Link from "next/link";
 import {
-  CloudHail,
   Radio,
   MapPin,
   Activity,
@@ -14,6 +12,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import ActivationForm from "@/components/storms/ActivationForm";
+import LiveStormCard from "@/components/storms/LiveStormCard";
 
 export const metadata: Metadata = {
   title: "Storm Intelligence · Voxaris Pitch",
@@ -21,10 +20,6 @@ export const metadata: Metadata = {
     "Turn every hail event into a same-day canvass list. Voxaris ingests NOAA MRMS radar daily, scores damaged-property addresses, and routes them to your reps before the out-of-state storm chasers arrive.",
   robots: { index: true, follow: true },
 };
-
-// Don't render at build time — every request gets fresh data.
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
 // Default watched region for the demo card. Orange County, FL — the
 // heart of the central-Florida roofing market. Operator-specific
@@ -36,146 +31,13 @@ const DEMO_REGION = {
   radiusMiles: 25,
 };
 
-interface RecentEvent {
-  date: string;
-  maxInches: number;
-  hitCount: number;
-  distanceMiles: number;
-  groundReportCount: number;
-  source: "mrms+spc";
-}
+// The Maps key is read here on the server and passed to the
+// client-side LiveStormCard. Static-map URLs include the key, so
+// surfacing it is fine — same surface as the existing /quote map.
+const GOOGLE_MAPS_KEY =
+  process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
 
-interface RecentResponse {
-  event: RecentEvent | null;
-  coverage: { lat: number; lng: number; radiusMiles: number; minInches: number };
-  queriedAt: string;
-}
-
-interface CanvassResponse {
-  buildingCount: number;
-  isEstimate: boolean;
-  source: string;
-}
-
-async function fetchRecent(origin: string): Promise<RecentResponse | null> {
-  try {
-    const res = await fetch(
-      `${origin}/api/storms/recent-significant` +
-        `?lat=${DEMO_REGION.lat}&lng=${DEMO_REGION.lng}` +
-        `&radiusMiles=${DEMO_REGION.radiusMiles}&minInches=1.0`,
-      { cache: "no-store", signal: AbortSignal.timeout(20_000) },
-    );
-    if (!res.ok) return null;
-    return (await res.json()) as RecentResponse;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchCanvass(
-  origin: string,
-  lat: number,
-  lng: number,
-): Promise<CanvassResponse | null> {
-  try {
-    const res = await fetch(
-      `${origin}/api/storms/canvass-area?lat=${lat}&lng=${lng}&radiusMiles=2`,
-      { cache: "no-store", signal: AbortSignal.timeout(20_000) },
-    );
-    if (!res.ok) return null;
-    return (await res.json()) as CanvassResponse;
-  } catch {
-    return null;
-  }
-}
-
-/** Build a Google Static Maps URL with hail-event indicator + radius
- *  ring around the watched region. Returns null when no Maps key is
- *  configured (the card then renders without imagery). */
-function buildMapUrl(opts: {
-  lat: number;
-  lng: number;
-  radiusMiles: number;
-  hailDistanceMiles?: number;
-}): string | null {
-  const key = process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
-  if (!key) return null;
-  const params = new URLSearchParams({
-    center: `${opts.lat},${opts.lng}`,
-    zoom: "9",
-    size: "720x420",
-    scale: "2",
-    maptype: "roadmap",
-    style: "feature:all|element:labels|visibility:off",
-    key,
-  });
-  let url = `https://maps.googleapis.com/maps/api/staticmap?${params.toString()}`;
-  // Center marker (city) — cyan
-  url += `&markers=${encodeURIComponent(
-    `color:0x67dcff|size:tiny|${opts.lat},${opts.lng}`,
-  )}`;
-  // Approximate hail-affected ring — amber overlay at the radar's
-  // ~5-mile detection radius from the query point. Static Maps doesn't
-  // support real polygons without a path; we approximate with a
-  // polygonal ring drawn from 24 vertices.
-  const hailRadiusMi = Math.min(5, opts.hailDistanceMiles ?? 5);
-  const points: string[] = [];
-  for (let i = 0; i <= 24; i++) {
-    const theta = (i / 24) * 2 * Math.PI;
-    const dLat = (hailRadiusMi / 69) * Math.cos(theta);
-    const dLng =
-      (hailRadiusMi / (69 * Math.cos((opts.lat * Math.PI) / 180))) * Math.sin(theta);
-    points.push(`${(opts.lat + dLat).toFixed(5)},${(opts.lng + dLng).toFixed(5)}`);
-  }
-  url +=
-    "&path=" +
-    encodeURIComponent(
-      `color:0xf3b14bcc|fillcolor:0xf3b14b40|weight:2|${points.join("|")}`,
-    );
-  return url;
-}
-
-function formatEventDate(yyyymmdd: string): string {
-  const y = yyyymmdd.slice(0, 4);
-  const m = yyyymmdd.slice(4, 6);
-  const d = yyyymmdd.slice(6, 8);
-  return new Date(`${y}-${m}-${d}T12:00:00Z`).toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-function daysAgo(yyyymmdd: string): number {
-  const y = yyyymmdd.slice(0, 4);
-  const m = yyyymmdd.slice(4, 6);
-  const d = yyyymmdd.slice(6, 8);
-  const event = new Date(`${y}-${m}-${d}T00:00:00Z`).getTime();
-  return Math.max(0, Math.floor((Date.now() - event) / (24 * 60 * 60 * 1000)));
-}
-
-export default async function StormsPage() {
-  // Build an absolute origin from the request headers so server-side
-  // fetch can reach /api/* during SSR.
-  const h = await headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "pitch.voxaris.io";
-  const proto = h.get("x-forwarded-proto") ?? "https";
-  const origin = `${proto}://${host}`;
-
-  const [recent, canvass] = await Promise.all([
-    fetchRecent(origin),
-    fetchCanvass(origin, DEMO_REGION.lat, DEMO_REGION.lng),
-  ]);
-
-  const event = recent?.event ?? null;
-  const mapUrl = buildMapUrl({
-    lat: DEMO_REGION.lat,
-    lng: DEMO_REGION.lng,
-    radiusMiles: DEMO_REGION.radiusMiles,
-    hailDistanceMiles: event?.distanceMiles,
-  });
-
+export default function StormsPage() {
   return (
     <div className="min-h-screen lg-env relative">
       {/* Header */}
@@ -264,100 +126,14 @@ export default async function StormsPage() {
             Storm Events for ground-truth validation.
           </p>
 
-          <div className="glass-panel-hero p-6 sm:p-8 mt-8 grid lg:grid-cols-[1fr_1.1fr] gap-6 sm:gap-10">
-            {/* Stats column */}
-            <div className="space-y-6">
-              {event ? (
-                <>
-                  <div>
-                    <div className="label flex items-center gap-2 mb-2">
-                      <CloudHail size={12} />
-                      Event date
-                    </div>
-                    <div className="font-display text-[24px] sm:text-[28px] font-semibold tracking-tight text-slate-50 leading-tight">
-                      {formatEventDate(event.date)}
-                    </div>
-                    <div className="text-[12.5px] text-slate-400 mt-1">
-                      {daysAgo(event.date) === 0
-                        ? "Detected today"
-                        : daysAgo(event.date) === 1
-                          ? "Detected yesterday"
-                          : `${daysAgo(event.date)} days ago`}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <Stat
-                      label="Peak MESH size"
-                      value={`${event.maxInches.toFixed(2)}"`}
-                      hint="radar-estimated hail"
-                      tone="amber"
-                    />
-                    <Stat
-                      label="Radar cells hit"
-                      value={event.hitCount.toLocaleString()}
-                      hint="≥1km² each"
-                    />
-                    <Stat
-                      label="Ground reports"
-                      value={`${event.groundReportCount}`}
-                      hint="NOAA Storm Events"
-                      tone={event.groundReportCount > 0 ? "mint" : "slate"}
-                    />
-                    <Stat
-                      label="Distance from center"
-                      value={`${event.distanceMiles.toFixed(1)} mi`}
-                      hint={`from ${DEMO_REGION.name}`}
-                    />
-                  </div>
-
-                  <div className="pt-2 border-t border-white/[0.06]">
-                    <div className="label flex items-center gap-2 mb-2">
-                      <MapPin size={12} />
-                      Canvass-eligible buildings
-                    </div>
-                    <div className="flex items-baseline gap-3">
-                      <div className="font-display tabular text-[44px] sm:text-[56px] font-semibold tracking-[-0.02em] text-cy-300 leading-none">
-                        {canvass
-                          ? canvass.buildingCount.toLocaleString()
-                          : "—"}
-                      </div>
-                      <div className="text-[12px] text-slate-400 font-mono uppercase tracking-[0.12em]">
-                        inside 2-mi radius
-                      </div>
-                    </div>
-                    <div className="text-[12px] text-slate-500 mt-2 leading-relaxed">
-                      {canvass?.isEstimate
-                        ? "Estimated from regional density (OSM mirrors temporarily unavailable). Real count refreshes within 24h."
-                        : "Counted via OpenStreetMap Overpass. Address-level rows populate from your county parcel feed at activation."}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <EmptyState />
-              )}
-            </div>
-
-            {/* Map column */}
-            <div className="relative rounded-2xl overflow-hidden border border-white/[0.08] bg-black/30 min-h-[280px]">
-              {mapUrl ? (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img
-                  src={mapUrl}
-                  alt={`Approximate hail footprint around ${DEMO_REGION.name}`}
-                  className="w-full h-full object-cover"
-                  loading="eager"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-slate-500 text-[12px] p-6 text-center">
-                  Map preview unavailable.
-                </div>
-              )}
-              <div className="absolute top-3 left-3 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/60 backdrop-blur-sm text-[10px] font-mono uppercase tracking-[0.12em] text-amber border border-amber/40">
-                <Activity size={10} />
-                {event ? "Hail polygon" : "Watched region"}
-              </div>
-            </div>
+          <div className="mt-8">
+            <LiveStormCard
+              lat={DEMO_REGION.lat}
+              lng={DEMO_REGION.lng}
+              regionName={DEMO_REGION.name}
+              radiusMiles={DEMO_REGION.radiusMiles}
+              googleMapsKey={GOOGLE_MAPS_KEY}
+            />
           </div>
 
           <p className="text-[11.5px] text-slate-500 mt-4 leading-relaxed max-w-prose">
@@ -506,64 +282,6 @@ function SectionEyebrow({ children }: { children: React.ReactNode }) {
   return (
     <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-cy-300">
       {children}
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  hint,
-  tone = "slate",
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-  tone?: "slate" | "amber" | "mint";
-}) {
-  const tones: Record<typeof tone, string> = {
-    slate: "text-slate-50",
-    amber: "text-amber",
-    mint: "text-mint",
-  };
-  return (
-    <div className="glass-panel p-4">
-      <div className="label text-[10px]">{label}</div>
-      <div
-        className={`font-display tabular text-[24px] sm:text-[28px] font-semibold tracking-[-0.02em] mt-1.5 leading-none ${tones[tone]}`}
-      >
-        {value}
-      </div>
-      {hint && (
-        <div className="text-[11px] font-mono uppercase tracking-[0.12em] text-slate-500 mt-2">
-          {hint}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="space-y-4">
-      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-mint/[0.08] border border-mint/30 text-mint text-[11px] font-mono uppercase tracking-[0.14em]">
-        Quiet skies · last 90 days
-      </div>
-      <div className="font-display text-[24px] sm:text-[28px] font-semibold tracking-tight text-slate-100 leading-tight">
-        No qualifying hail events in the Orlando area.
-      </div>
-      <p className="text-[14px] text-slate-400 leading-relaxed max-w-prose">
-        This is a feature, not a bug — we only surface events with
-        radar-estimated hail ≥1 inch, the size where roofing replacement
-        becomes a real conversation. The cron continues to scan daily;
-        the next significant event will appear here within 6 hours of
-        the radar pass.
-      </p>
-      <p className="text-[12.5px] text-slate-500 leading-relaxed">
-        Florida averages 12–18 hail days per year statewide; central
-        Florida specifically sees most activity Feb–May. Quiet windows
-        are normal.
-      </p>
     </div>
   );
 }
