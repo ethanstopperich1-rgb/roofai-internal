@@ -277,8 +277,10 @@ export function BoltStyleHero({
                 type="tel"
                 placeholder="Phone number"
                 value={phone}
-                onChange={setPhone}
+                onChange={(v) => setPhone(formatPhoneUS(v))}
                 autoComplete="tel"
+                inputMode="tel"
+                maxLength={14}
               />
             </div>
 
@@ -434,6 +436,8 @@ function Field({
   onChange,
   autoComplete,
   className = "",
+  inputMode,
+  maxLength,
 }: {
   type?: string;
   placeholder: string;
@@ -441,6 +445,8 @@ function Field({
   onChange: (s: string) => void;
   autoComplete?: string;
   className?: string;
+  inputMode?: "text" | "tel" | "email" | "url" | "numeric" | "decimal" | "search";
+  maxLength?: number;
 }) {
   return (
     <input
@@ -449,9 +455,36 @@ function Field({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       autoComplete={autoComplete}
+      inputMode={inputMode}
+      maxLength={maxLength}
       className={`w-full bg-transparent border-0 outline-none text-[14px] text-white placeholder:text-slate-500 px-4 py-3.5 ${className}`}
     />
   );
+}
+
+/**
+ * Pretty-print a US phone number as the user types.
+ *   "" → ""
+ *   "4" → "(4"
+ *   "407" → "(407"
+ *   "4078" → "(407) 8"
+ *   "407819" → "(407) 819"
+ *   "4078195" → "(407) 819-5"
+ *   "4078195809" → "(407) 819-5809"
+ *
+ * Strips all non-digits first, drops a leading "1" (country code), caps at
+ * 10 digits. Submit path runs the value through lib/twilio toE164() which
+ * also strips non-digits, so the visual format is purely cosmetic — no
+ * round-trip risk.
+ */
+function formatPhoneUS(raw: string): string {
+  let d = (raw || "").replace(/\D+/g, "");
+  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+  d = d.slice(0, 10);
+  if (d.length === 0) return "";
+  if (d.length < 4) return `(${d}`;
+  if (d.length < 7) return `(${d.slice(0, 3)}) ${d.slice(3)}`;
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
 }
 
 /* ─── Address with Places autocomplete ───────────────────────────────── */
