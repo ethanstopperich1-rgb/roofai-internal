@@ -127,7 +127,7 @@ export default function DashboardChrome({ children }: { children: ReactNode }) {
                 day: "numeric",
               })}
             </div>
-            <div className="text-xs text-white/60 font-mono tabular">staff@voxaris.io</div>
+            <div className="text-xs text-white/60 font-mono tabular">admin@voxaris.io</div>
             <form action="/auth/signout" method="POST">
               <button
                 type="submit"
