@@ -9,7 +9,7 @@ import {
   outcomeStyle,
   type Call,
   type Event,
-} from "@/lib/dashboard";
+} from "@/lib/dashboard-format";
 
 type FilterKey =
   | "all"

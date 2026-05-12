@@ -13,7 +13,7 @@ async function loadCalls(): Promise<{
   configured: boolean;
 }> {
   const officeId = await getDashboardOfficeId();
-  const supabase = getDashboardSupabase();
+  const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) {
     return { calls: [], eventsByCall: {}, configured: false };
   }

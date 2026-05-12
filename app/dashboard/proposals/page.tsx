@@ -14,7 +14,7 @@ export const revalidate = 0;
 
 async function load(): Promise<{ rows: Array<Proposal & { lead?: Lead | null }> }> {
   const officeId = await getDashboardOfficeId();
-  const supabase = getDashboardSupabase();
+  const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) return { rows: [] };
 
   const { data: proposals } = await supabase

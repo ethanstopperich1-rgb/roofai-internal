@@ -15,7 +15,7 @@ import {
   type Lead,
   type LeadStatus,
   type Proposal,
-} from "@/lib/dashboard";
+} from "@/lib/dashboard-format";
 import { updateLeadStatus } from "@/app/dashboard/leads/actions";
 
 type StatusFilter = "all" | LeadStatus;

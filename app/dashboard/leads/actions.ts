@@ -22,7 +22,7 @@ export async function updateLeadStatus(leadId: string, status: string): Promise<
   if (!LEAD_STATUSES.includes(status as LeadStatus)) {
     return { ok: false, error: "Invalid status" };
   }
-  const supabase = getDashboardSupabase();
+  const supabase = await getDashboardSupabase();
   const officeId = await getDashboardOfficeId();
   if (!supabase || !officeId) {
     return { ok: false, error: "Supabase not configured" };

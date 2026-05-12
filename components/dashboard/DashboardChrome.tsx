@@ -75,7 +75,17 @@ export default function DashboardChrome({ children }: { children: ReactNode }) {
             <span className="text-white/80 font-semibold tracking-tight">Voxaris</span>
             <span className="text-white/40 text-xs font-mono tabular">voxaris office</span>
           </div>
-          <div className="text-xs text-white/55 font-mono tabular">staff@voxaris.io</div>
+          <div className="flex items-center gap-4">
+            <div className="text-xs text-white/55 font-mono tabular">staff@voxaris.io</div>
+            <form action="/auth/signout" method="POST">
+              <button
+                type="submit"
+                className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/50 hover:text-white/80 transition-colors"
+              >
+                Sign out
+              </button>
+            </form>
+          </div>
         </div>
         <div className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8 max-w-[1400px] mx-auto">
           {children}

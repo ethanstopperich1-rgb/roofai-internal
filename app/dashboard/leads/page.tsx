@@ -17,7 +17,7 @@ async function loadLeads(): Promise<{
   proposalsByLead: Record<string, Proposal[]>;
 }> {
   const officeId = await getDashboardOfficeId();
-  const supabase = getDashboardSupabase();
+  const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) return { leads: [], callsByLead: {}, proposalsByLead: {} };
 
   const { data: leads } = await supabase

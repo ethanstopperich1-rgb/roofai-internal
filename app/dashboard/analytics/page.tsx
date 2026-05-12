@@ -45,7 +45,7 @@ interface AnalyticsData {
 
 async function load(): Promise<AnalyticsData> {
   const officeId = await getDashboardOfficeId();
-  const supabase = getDashboardSupabase();
+  const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) {
     return {
       funnel: { leads: 0, calls: 0, proposals: 0, won: 0 },

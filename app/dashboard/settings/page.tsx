@@ -11,7 +11,7 @@ export const revalidate = 0;
 
 async function loadOffice(): Promise<Office | null> {
   const officeId = await getDashboardOfficeId();
-  const supabase = getDashboardSupabase();
+  const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) return null;
   const { data } = await supabase.from("offices").select("*").eq("id", officeId).single();
   return data ?? null;

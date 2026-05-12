@@ -39,7 +39,7 @@ async function loadOverview(): Promise<{
   configured: boolean;
 }> {
   const officeId = await getDashboardOfficeId();
-  const supabase = getDashboardSupabase();
+  const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) {
     return {
       metrics: {
