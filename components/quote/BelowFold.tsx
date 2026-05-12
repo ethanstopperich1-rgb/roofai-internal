@@ -28,10 +28,18 @@ interface Stat {
   hint?: string;
 }
 
+// Only claims we can defend with data go on the strip.
+//   "Satellite" — verifiable: we pull from Google's high-res aerial imagery
+//   "AI" — verifiable: SAM3 (Segment Anything Model 3) + multi-source
+//          reconciliation. Documented in our methodology page.
+//   "NOAA radar" — verifiable: we ingest MRMS hail data daily from NOAA.
+//   "$0" — verifiable: there is no charge to the homeowner for the estimate.
+// Removed: "30s" (measured 25-33s with cold start), "1 hour contractor
+// response" (no contractor network to enforce that promise yet).
 const STATS: Stat[] = [
-  { value: "30s", label: "Average estimate time", hint: "from address to price" },
-  { value: "AI", label: "Voxaris in-house roof model", hint: "trained on FL/MN/TX imagery" },
-  { value: "1 hour", label: "Contractor response", hint: "during business hours" },
+  { value: "Satellite", label: "High-resolution aerial imagery", hint: "no in-person visit needed" },
+  { value: "AI", label: "Multi-source roof segmentation", hint: "SAM3 + Google Solar + radar" },
+  { value: "NOAA", label: "Radar hail history per address", hint: "5-year storm exposure window" },
   { value: "$0", label: "Cost to homeowner", hint: "no obligation, ever" },
 ];
 
@@ -168,38 +176,44 @@ interface FaqItem {
   a: string;
 }
 
+// FAQ has been audited for verifiability — every claim either references
+// a documented platform behavior, a measurable methodology output, or is
+// explicitly conditional ("when available," "in those cases"). Claims
+// that imply a guaranteed contractor outcome were softened, since the
+// contractor network is per-deployment and we shouldn't promise things
+// the local operator hasn't underwritten.
 const FAQS: FaqItem[] = [
   {
-    q: "How accurate is the satellite estimate?",
-    a: "On most residential properties, Voxaris estimates come within ~10% of an in-person quote. Our in-house model analyzes high-resolution aerial imagery to measure square footage, pitch, and complexity, then applies regional waste factors. On properties with imagery older than 5 years, we show a wider accuracy band and flag it clearly. In those cases, we recommend getting on-site confirmation before moving forward.",
+    q: "How accurate is the estimate?",
+    a: "The estimate is a satellite-measured starting point — typically within a 10–15% band of an in-person quote on standard residential properties, wider on complex or larger roofs. We measure square footage and roof complexity from high-resolution imagery and apply regional pricing assumptions. When we can't measure pitch directly from the imagery, we use a standard 6/12 assumption and label it clearly on your estimate page. Treat the number as a range, not a binding quote. Read the full methodology at /methodology.",
   },
   {
-    q: "How is this free? What's the catch?",
-    a: "Voxaris is paid by the roofing contractor you choose — not by you. We only get paid if you decide to move forward with one of our vetted partners. There are no hidden fees, no markups on materials, and no obligation to hire anyone. You see your estimate first. What you do after that is entirely up to you.",
+    q: "How is this free?",
+    a: "There is no charge to you for the estimate. Voxaris is the technology platform; the cost is covered by the local roofing operator using our tools to serve their service area. You see your estimate first. What you do after that is entirely your decision — no obligation, no follow-up unless you ask for one.",
   },
   {
-    q: "Will I get spam-called by a bunch of contractors?",
-    a: "No. Your information is only shared with one contractor — the one you select from your estimate. We never sell or share your contact information with networks or marketing lists. The only person who will follow up is the roofer you chose (if you want them to).",
+    q: "Will I get spam-called?",
+    a: "No. Your information is only shared with the contractor you choose from your estimate page. We never sell or share your contact details with marketing networks. SMS messages are limited to your inquiry — you can reply STOP at any time and we'll stop immediately.",
   },
   {
-    q: "What materials and roof types do you cover?",
-    a: "We provide instant estimates for the most common residential systems: 3-tab asphalt, architectural shingles, standing-seam metal, and concrete tile. Specialty roofs such as slate, cedar shake, and flat membrane systems typically require an on-site assessment and may not return an instant estimate.",
+    q: "What materials and roof types are supported?",
+    a: "Instant estimates cover the most common residential systems: 3-tab asphalt, architectural shingles, standing-seam metal, and concrete tile. Specialty roofs (slate, cedar shake, flat membrane) and large commercial properties typically need an on-site assessment — we'll route those to a human reviewer instead of returning an instant number.",
   },
   {
     q: "What if my roof needs repair, not replacement?",
-    a: "Partner contractors can handle both repairs and full replacements. The instant estimate is designed for replacement scenarios. If you're looking for a repair, simply request a follow-up from the contractor — they'll provide a separate repair scope at no charge.",
+    a: "The instant estimate is designed for replacement work. If you suspect a repair is what you need, request a follow-up from the contractor on your estimate page and ask them to scope a repair instead. A repair quote requires an on-site visit.",
   },
   {
-    q: "Is there financing available?",
-    a: "Yes. Most of our partner contractors offer 0% APR financing for 12–18 months on full roof replacements, along with longer-term traditional financing options. Financing is handled directly by the contractor. You'll see estimated monthly payment options on your estimate page when available.",
+    q: "Is there financing?",
+    a: "Most roofing replacements can be financed; specific terms (APR, term length, payment) depend on the contractor and the financing provider they work with. When financing options are available for your estimate, they'll be shown on your estimate page.",
   },
   {
     q: "How long until I get a precise quote?",
-    a: "You'll see an instant estimate range within seconds of submitting your address. If you'd like a more precise, on-site quote, a local contractor will typically respond within 1 business hour during normal business hours. Storm damage claims often qualify for same-day inspections.",
+    a: "Your range estimate appears within seconds of submitting your address. A precise on-site quote — including deck inspection, code-compliance check, and signed scope of work — requires an in-person visit. The contractor handling your area will be in touch to schedule it.",
   },
   {
     q: "Does this work with insurance claims?",
-    a: "Yes. If your roof was damaged in a storm, our partner contractors can document the loss with photos, drone imagery, or a ladder inspection. They'll prepare an Xactimate-compatible estimate package that you can submit directly to your insurance carrier. Most homeowners only pay their deductible.",
+    a: "If your roof was damaged in a storm event we have on record (we ingest NOAA's MRMS hail radar daily), we'll surface the storm history on your estimate page. The contractor can use that to document the loss for your insurance carrier. We are not insurance adjusters; we provide measurement and documentation tools the contractor uses on your behalf.",
   },
 ];
 
@@ -281,18 +295,31 @@ const TRUST_ITEMS = [
   { icon: <ShieldCheck size={14} />, label: "We never sell your info" },
 ];
 
+// The TRUTH_ITEMS variant below replaces TRUST_ITEMS when no contractor
+// network is wired up yet. Each item is a verifiable claim about the
+// PLATFORM, not about partner contractors we don't have under contract.
+const TRUTH_ITEMS = [
+  { icon: <Satellite size={14} />, label: "Measured from satellite imagery" },
+  { icon: <ShieldCheck size={14} />, label: "We never sell your info" },
+  { icon: <CheckCircle2 size={14} />, label: "Non-binding estimate, no obligation" },
+  { icon: <ShieldCheck size={14} />, label: "TCPA-compliant consent on file" },
+];
+
 export function TrustStrip() {
-  // Mobile: only the two highest-trust items ("BBB-vetted" + "never sell
-  // your info"). The other two (47-min reply, license + insurance on
-  // every quote) live in the FAQ already, so we don't need to repeat them
-  // in a footer on a 4-inch screen. Desktop shows all four.
-  const MOBILE_TRUST = TRUST_ITEMS.filter((_, i) => i === 0 || i === 3);
+  // Switch between contractor-network claims (TRUST_ITEMS) and platform-only
+  // claims (TRUTH_ITEMS) based on NEXT_PUBLIC_CONTRACTOR_NETWORK_LIVE.
+  // Default = TRUTH_ITEMS until a real partner network is under contract.
+  // Flip the env var per-deploy when a tenant has verified contractors
+  // wired up to take leads.
+  const networkLive = process.env.NEXT_PUBLIC_CONTRACTOR_NETWORK_LIVE === "true";
+  const items = networkLive ? TRUST_ITEMS : TRUTH_ITEMS;
+  const mobileItems = items.filter((_, i) => i === 0 || i === items.length - 1);
   return (
     <section className="relative z-10 px-4 sm:px-6 py-6 sm:py-8 border-t border-white/[0.04]">
       <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-center gap-x-8 gap-y-3">
         {/* Mobile only — 2 items */}
         <div className="md:hidden contents">
-          {MOBILE_TRUST.map((item, i) => (
+          {mobileItems.map((item, i) => (
             <div
               key={`m-${i}`}
               className="flex items-center gap-2 text-[12px] text-slate-400"
@@ -302,9 +329,9 @@ export function TrustStrip() {
             </div>
           ))}
         </div>
-        {/* Desktop only — all 4 items */}
+        {/* Desktop only — all items */}
         <div className="hidden md:contents">
-          {TRUST_ITEMS.map((item, i) => (
+          {items.map((item, i) => (
             <div
               key={`d-${i}`}
               className="flex items-center gap-2 text-[12.5px] text-slate-400"

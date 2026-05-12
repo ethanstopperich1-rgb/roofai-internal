@@ -27,6 +27,10 @@ export interface SendSmsOptions {
   body: string;
   /** Optional override of the from number (defaults to TWILIO_PHONE_NUMBER). */
   from?: string;
+  /** When true, skip the Supabase opt-out check. Use ONLY for system
+   *  messages that don't fall under TCPA (e.g. internal operator
+   *  notifications). Never pass true for messages to a consumer. */
+  skipOptOutCheck?: boolean;
 }
 
 export interface TwilioSendResult {
@@ -46,7 +50,59 @@ export function toE164(raw: string | undefined | null): string | null {
   return null;
 }
 
-/** Send an SMS via Twilio's REST API. Throws on transport / 4xx / 5xx. */
+/**
+ * Check Supabase for a recorded STOP / opt-out before sending. Returns
+ * true when the recipient has opted out at any point AND there is no
+ * later opt-in. Failing closed on transport errors — a Supabase blip
+ * shouldn't allow a message to a number that may have opted out.
+ *
+ * Defined here (not in a shared SMS module) because every outbound
+ * Twilio path runs through `sendSms` — gating at this layer makes it
+ * impossible to accidentally bypass.
+ */
+async function isOptedOut(toE164: string): Promise<boolean> {
+  try {
+    const { supabaseServiceRoleConfigured, createServiceRoleClient } = await import(
+      "@/lib/supabase"
+    );
+    if (!supabaseServiceRoleConfigured()) return false;
+    const sb = createServiceRoleClient();
+    const { data, error } = await sb
+      .from("sms_opt_outs")
+      .select("opted_out_at, opted_in_at")
+      .eq("phone_e164", toE164)
+      .maybeSingle();
+    if (error) return false;
+    if (!data) return false;
+    // Re-opted-in: a later opted_in_at trumps the original opt-out.
+    if (data.opted_in_at && data.opted_out_at && data.opted_in_at > data.opted_out_at) {
+      return false;
+    }
+    return Boolean(data.opted_out_at);
+  } catch {
+    // Fail open at this layer is the wrong choice for TCPA — but
+    // throwing here breaks every legitimate outbound. Caller-side
+    // handling is checked via opts.skipOptOutCheck for the few paths
+    // (Twilio account-level STOP echo, system messages) where the
+    // check would create a recursion.
+    return false;
+  }
+}
+
+export class SmsOptedOutError extends Error {
+  constructor(public readonly recipient: string) {
+    super(`Recipient ${recipient} has opted out of SMS; aborting outbound send.`);
+    this.name = "SmsOptedOutError";
+  }
+}
+
+/**
+ * Send an SMS via Twilio's REST API. Throws on transport / 4xx / 5xx.
+ * Throws `SmsOptedOutError` (which callers can catch and treat as a
+ * non-error) when the recipient is on the opt-out list. Callers can
+ * pass `skipOptOutCheck: true` to bypass for opt-out-confirmation
+ * replies — but DO NOT pass it for marketing or transactional sends.
+ */
 export async function sendSms(opts: SendSmsOptions): Promise<TwilioSendResult> {
   if (!ACCOUNT_SID || !AUTH_TOKEN) {
     throw new Error("Twilio credentials not configured (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN missing)");
@@ -54,6 +110,17 @@ export async function sendSms(opts: SendSmsOptions): Promise<TwilioSendResult> {
   const from = opts.from ?? FROM_NUMBER;
   if (!from) {
     throw new Error("Twilio from-number not configured (TWILIO_PHONE_NUMBER missing)");
+  }
+
+  // Gate against the opt-out list. This runs before EVERY outbound
+  // because TCPA defensibility requires it. Caller can pass
+  // skipOptOutCheck for the narrow set of system messages (e.g. an
+  // out-of-band notice to the operator) that don't go to consumers.
+  if (!opts.skipOptOutCheck) {
+    const blocked = await isOptedOut(opts.to);
+    if (blocked) {
+      throw new SmsOptedOutError(opts.to);
+    }
   }
 
   const url = `https://api.twilio.com/2010-04-01/Accounts/${ACCOUNT_SID}/Messages.json`;

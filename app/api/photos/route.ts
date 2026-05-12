@@ -114,7 +114,11 @@ export async function POST(req: Request) {
   }
 
   // ─── Upload to Vercel Blob ─────────────────────────────────────────────
-  const id = `ph_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+  // Cryptographically random ID — earlier scheme was `Date.now() +
+  // Math.random()` which leaked ordering and used a predictable RNG.
+  // A photo URL is essentially the auth token; making it guessable
+  // exposes every uploaded image.
+  const id = `ph_${crypto.randomUUID().replace(/-/g, "")}`;
   // Sanitize extension — blob keys are flat strings (no filesystem
   // semantics) so nothing dangerous, but a clean alpha-num ext keeps the
   // public blob URL readable + ASCII.

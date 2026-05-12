@@ -11,6 +11,10 @@ import {
   getConversation,
   type SmsConversation,
 } from "@/lib/sms-conversation";
+import {
+  createServiceRoleClient,
+  supabaseServiceRoleConfigured,
+} from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -74,9 +78,41 @@ export async function POST(req: Request) {
     });
   }
 
-  // STOP / UNSUBSCRIBE / END / QUIT / CANCEL — Twilio handles these
-  // automatically but we still log so we don't try to reply.
-  if (/^(stop|stopall|unsubscribe|cancel|end|quit)$/i.test(body)) {
+  // STOP / UNSUBSCRIBE / END / QUIT / CANCEL — Twilio handles the
+  // account-level suppression automatically, but we ALSO persist the
+  // opt-out in Supabase so future outbound paths (different sender ID,
+  // a per-office Twilio number, a scheduled follow-up three weeks
+  // later) check Supabase as the source of truth instead of relying
+  // on Twilio's account block. Persisting also creates the
+  // TCPA-defensible audit trail.
+  const stopMatch = body.match(/^(stop|stopall|unsubscribe|cancel|end|quit)$/i);
+  if (stopMatch) {
+    const keyword = stopMatch[1].toLowerCase();
+    if (supabaseServiceRoleConfigured()) {
+      try {
+        const sb = createServiceRoleClient();
+        // Upsert keyed on phone_e164 so a repeat STOP doesn't error.
+        // We don't update opted_out_at on conflict — the original
+        // timestamp is the legally-relevant one.
+        await sb
+          .from("sms_opt_outs")
+          .upsert(
+            {
+              phone_e164: from,
+              source: "sms_stop",
+              keyword,
+            },
+            { onConflict: "phone_e164", ignoreDuplicates: true },
+          );
+      } catch (err) {
+        console.error("[sms-inbound] failed to persist opt-out:", err);
+      }
+    } else {
+      console.warn(
+        "[sms-inbound] opt-out NOT persisted — Supabase service role unconfigured. " +
+          "Set SUPABASE_SERVICE_ROLE_KEY to enable TCPA-grade opt-out tracking.",
+      );
+    }
     console.log("[sms-inbound] opt-out received from", from);
     return new Response("<Response/>", {
       status: 200,

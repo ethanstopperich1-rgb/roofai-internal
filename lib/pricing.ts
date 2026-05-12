@@ -51,6 +51,28 @@ const PITCH_TO_DEG_LOCAL: Record<Pitch, number> = {
  *   Standing-seam metal  : $21.37–$28.91/sf no tear-off              +18%
  *   Concrete tile        : $6.65–$9.00/sf   tear-off $1.45–$1.97   +6%
  */
+/**
+ * IMPORTANT — two pricing engines, two source-of-truth tables:
+ *
+ *   MATERIAL_RATES (this file): full installed cost per sqft of roof by
+ *     material type. Used by `computeBase` for the headline range
+ *     ($/sqft × area × pitch slope). Coarse, fast, customer-facing.
+ *
+ *   DEFAULT_MATERIAL_PRICES (lib/branding.ts): Xactimate-style
+ *     per-component prices ($/SQ for shingles, $/LF for ridge cap, etc).
+ *     Used by `buildDetailedEstimate` to produce a line-item breakdown.
+ *     Fine-grained, used internally and on the rep's worksheet.
+ *
+ * These two tables MUST stay directionally aligned (a 6% Q3 hike in
+ * shingles needs to show up in both) but they aren't auto-derived from
+ * each other today. When you update one, audit the other.
+ *
+ * TODO (post-pilot): collapse to one regional-overrides table that
+ * generates both views. Until then, treat divergence between
+ * MATERIAL_RATES.asphalt-architectural.rate and the corresponding
+ * sum-of-components in DEFAULT_MATERIAL_PRICES as a bug, not a
+ * feature.
+ */
 export const MATERIAL_RATES: Record<
   Material,
   {

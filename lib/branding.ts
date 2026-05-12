@@ -69,6 +69,12 @@ export const BRAND_CONFIG: BrandConfig = {
 /**
  * Material unit prices ($/SQ or $/LF or $/SF) — Xactimate-style codes.
  * Override per-client via BRAND_CONFIG.materialPriceOverrides.
+ *
+ * Paired with MATERIAL_RATES in lib/pricing.ts — see the long-form
+ * comment there. The two tables view the same costs from different
+ * angles (this one component-by-component, the other as a per-sqft
+ * installed rollup). When you bump one, audit the other in the same
+ * commit.
  */
 export const DEFAULT_MATERIAL_PRICES: Record<
   MaterialPriceKey,

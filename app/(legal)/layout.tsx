@@ -22,6 +22,7 @@ export default function LegalLayout({ children }: { children: ReactNode }) {
         <footer className="mt-16 pt-8 border-t border-white/[0.06] flex flex-wrap gap-x-6 gap-y-2 text-[12px] text-slate-500">
           <Link href="/privacy" className="hover:text-slate-300">Privacy Policy</Link>
           <Link href="/terms" className="hover:text-slate-300">Terms of Service</Link>
+          <Link href="/methodology" className="hover:text-slate-300">How we measure</Link>
           <span className="text-slate-600">© {new Date().getFullYear()} Voxaris, Inc.</span>
         </footer>
       </div>

@@ -19,7 +19,18 @@ export default function InternalHeader() {
   // /dashboard renders its own chrome (sidebar + topbar) so the global
   // staff header would double up — hide it there.
   const isDashboardRoute = pathname === "/dashboard" || pathname.startsWith("/dashboard/");
-  if (isCustomerRoute || isDashboardRoute) return null;
+  // Legal pages (/privacy, /terms, /methodology) are public surfaces a
+  // homeowner reaches from the customer flow. They should never show
+  // staff nav ("ESTIMATOR · HISTORY · ADMIN") — that signal of
+  // internal tooling on a public policy page reads as "unfinished
+  // product." Their own (legal) layout provides a minimal back-link
+  // to the brand.
+  const isLegalRoute =
+    pathname === "/privacy" ||
+    pathname === "/terms" ||
+    pathname === "/methodology" ||
+    pathname === "/login";
+  if (isCustomerRoute || isDashboardRoute || isLegalRoute) return null;
 
   return (
     <header

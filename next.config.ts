@@ -34,6 +34,19 @@ const config: NextConfig = {
           { key: "Content-Type", value: "application/javascript; charset=utf-8" },
         ],
       },
+      {
+        // Customer proposal pages contain PII (name, address, phone-
+        // anchored estimate). Tell every well-behaved crawler not to
+        // index them. The Next metadata API in app/p/[id]/layout.tsx
+        // covers Googlebot/Bingbot via meta tag; this header is the
+        // belt-and-suspenders for crawlers that read response headers
+        // only (LLM scrapers, archive.org, IFTTT-style bots).
+        source: "/p/:path*",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive, nosnippet, noimageindex" },
+          { key: "Cache-Control", value: "private, no-store, max-age=0" },
+        ],
+      },
     ];
   },
 };

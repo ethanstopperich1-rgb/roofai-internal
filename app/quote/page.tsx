@@ -117,6 +117,13 @@ export default function QuotePage() {
   // (raw SAM3, Solar mask) trace roof material directly and don't.
   const [polygonKind, setPolygonKind] = useState<"eave" | "wall" | null>(null);
   const [loadingRoof, setLoadingRoof] = useState(false);
+  // Commercial-scale flag — flipped on when the measured roof exceeds
+  // the residential instant-quote band (>15k sqft). The wizard pivots
+  // to a "Talk to a Voxaris rep" branch instead of running the customer
+  // through a polygon-failure cascade. Honest UX: we measured your roof
+  // and it's bigger than this product is designed for; here's what
+  // happens next.
+  const [commercialFootprintSqft, setCommercialFootprintSqft] = useState<number | null>(null);
   const [material, setMaterial] = useState<Material>("asphalt-architectural");
   const [addOns, setAddOns] = useState<SimpleAddon[]>(QUOTE_ADDONS);
   const [submitting, setSubmitting] = useState(false);
@@ -159,10 +166,18 @@ export default function QuotePage() {
     // include lat/lng. Without coords, the page can't render a map or
     // measure the roof. Try to resolve the typed text via Places API
     // (autocomplete → details) before giving up.
+    //
+    // Important: we refuse to proceed if the resolved Place ID lacks a
+    // `street_number`. Previously the fallback grabbed `suggestions[0]`
+    // and accepted whatever Places returned — which on a typed "123
+    // Main St" with no pick could resolve to "Main St" alone, silently
+    // quoting a nearby roof instead of theirs. Refusing forces the
+    // customer back to the address field with a clear message.
     let resolvedLat = values.lat;
     let resolvedLng = values.lng;
     let resolvedZip = values.zip;
     let resolvedFormatted = values.address;
+    const userPickedFromAutocomplete = values.lat != null && values.lng != null;
     if (resolvedLat == null || resolvedLng == null) {
       try {
         const acRes = await fetch(
@@ -183,8 +198,13 @@ export default function QuotePage() {
                 lng?: number;
                 zip?: string;
                 formatted?: string;
+                hasStreetNumber?: boolean;
               };
-              if (typeof details.lat === "number" && typeof details.lng === "number") {
+              if (
+                typeof details.lat === "number" &&
+                typeof details.lng === "number" &&
+                details.hasStreetNumber === true
+              ) {
                 resolvedLat = details.lat;
                 resolvedLng = details.lng;
                 resolvedZip = details.zip ?? resolvedZip;
@@ -194,8 +214,22 @@ export default function QuotePage() {
           }
         }
       } catch {
-        /* silent — addr will lack coords; fallback UI handles it */
+        /* silent — addr will lack coords; the refusal below handles it */
       }
+    }
+
+    // Refuse to proceed when we couldn't resolve to an actual house. The
+    // customer typed text didn't match a street-level address, OR
+    // matched a street with no house number. Pushing them through the
+    // wizard from here would quote the wrong roof.
+    if (resolvedLat == null || resolvedLng == null) {
+      setSubmitting(false);
+      setSubmitError(
+        userPickedFromAutocomplete
+          ? "We couldn't load your address details. Please try again."
+          : "We couldn't find that exact address — please pick one of the suggestions or include a house number (e.g. 1234 Main St).",
+      );
+      return;
     }
 
     const addr: AddressInfo = {
@@ -254,6 +288,11 @@ export default function QuotePage() {
         let resolvedSqft: number | null = null;
         let resolvedPitch: string | null = null;
         let resolvedPolygon: Array<{ lat: number; lng: number }> | null = null;
+        // Tracks when the measured footprint exceeds the residential
+        // instant-quote band (>15k sqft). We surface this to the
+        // wizard so a commercial-scale property gets routed to a human
+        // reviewer instead of silently failing through every tier.
+        let oversizedFootprintSqft: number | null = null;
 
         // Solar findClosest (cheap, $0.010) fires in parallel with our SAM3
         // model — Solar gives us pitch + facet metadata regardless of which
@@ -300,7 +339,7 @@ export default function QuotePage() {
                 typeof sam3.footprintSqft === "number" && sam3.footprintSqft > 0
                   ? sam3.footprintSqft
                   : polygonAreaSqftLocal(poly);
-              if (footprintSqft >= 200 && footprintSqft <= 20_000) {
+              if (footprintSqft >= 200 && footprintSqft <= 15_000) {
                 resolvedPolygon = poly;
                 resolvedSqft = Math.round(footprintSqft * slope);
                 // Reconciler returned "footprint-only" / "footprint-occluded"
@@ -311,6 +350,11 @@ export default function QuotePage() {
                   sam3?.source === "footprint-occluded"
                     ? "wall"
                     : "eave";
+              } else if (footprintSqft > 15_000) {
+                // Commercial-scale roof. Capture the measurement but DON'T
+                // try to quote it instantly — surface a "connect with a
+                // rep" branch to the wizard instead.
+                oversizedFootprintSqft = footprintSqft;
               }
             }
           } catch {
@@ -332,7 +376,10 @@ export default function QuotePage() {
                 Array.isArray(mask?.latLng) && mask.latLng.length >= 3 ? mask.latLng : null;
               if (poly) {
                 const footprintSqft = polygonAreaSqftLocal(poly);
-                if (footprintSqft >= 200 && footprintSqft <= 20_000) {
+                if (footprintSqft > 15_000 && oversizedFootprintSqft == null) {
+                  oversizedFootprintSqft = footprintSqft;
+                }
+                if (footprintSqft >= 200 && footprintSqft <= 15_000) {
                   resolvedPolygon = poly;
                   // Solar mask traces eaves photogrammetrically — apply pitch
                   // slope (no overhang multiplier needed; mask already includes it)
@@ -358,7 +405,10 @@ export default function QuotePage() {
                 Array.isArray(ms?.polygon) && ms.polygon.length >= 3 ? ms.polygon : null;
               if (poly) {
                 const footprintSqft = polygonAreaSqftLocal(poly);
-                if (footprintSqft >= 200 && footprintSqft <= 20_000) {
+                if (footprintSqft > 15_000 && oversizedFootprintSqft == null) {
+                  oversizedFootprintSqft = footprintSqft;
+                }
+                if (footprintSqft >= 200 && footprintSqft <= 15_000) {
                   resolvedPolygon = poly;
                   // MS Buildings is ground-projected wall footprint — apply
                   // 1.06 eave overhang factor before pitch.
@@ -386,6 +436,13 @@ export default function QuotePage() {
         if (resolvedPitch) setPitch(resolvedPitch);
         if (resolvedPolygon) setRoofPolygon(resolvedPolygon);
         if (resolvedKind) setPolygonKind(resolvedKind);
+        // Surface oversized footprints when every tier rejected because
+        // the polygon was too big. If we managed to resolve a polygon
+        // within band (resolvedPolygon != null), the customer's roof
+        // wasn't the oversized one — don't flag it.
+        if (oversizedFootprintSqft != null && resolvedPolygon == null) {
+          setCommercialFootprintSqft(oversizedFootprintSqft);
+        }
 
         const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
         if (key) {
@@ -532,7 +589,14 @@ export default function QuotePage() {
       <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-10 sm:py-16 space-y-8">
         {!submitted && <Stepper current={stepIdx} />}
 
-        {step === "Roof" && !submitted && (
+        {step === "Roof" && !submitted && commercialFootprintSqft != null && (
+          <CommercialBranch
+            footprintSqft={commercialFootprintSqft}
+            address={address?.formatted}
+          />
+        )}
+
+        {step === "Roof" && !submitted && commercialFootprintSqft == null && (
           <RoofStep
             address={address}
             sqft={sqft}
@@ -619,6 +683,60 @@ export default function QuotePage() {
         )}
       </main>
       <PublicFooter />
+    </div>
+  );
+}
+
+/* ─── Commercial Branch ───────────────────────────────────────────────── */
+
+/**
+ * Rendered in place of RoofStep when the measured footprint indicates
+ * a commercial-scale property. Two design goals:
+ *   1. Be honest — we measured a big roof, instant quoting isn't
+ *      designed for it, here's what happens next.
+ *   2. Capture the lead — they came in, they expect a follow-up;
+ *      route them to a human rather than dumping them.
+ */
+function CommercialBranch({
+  footprintSqft,
+  address,
+}: {
+  footprintSqft: number;
+  address?: string;
+}) {
+  return (
+    <div className="lg-panel-strong rounded-3xl p-8 sm:p-10 space-y-6 max-w-2xl mx-auto text-center">
+      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber/10 border border-amber/30 text-amber text-[11px] font-mono uppercase tracking-[0.14em]">
+        Commercial-scale property
+      </div>
+      <h2 className="font-display text-[28px] sm:text-[36px] leading-tight tracking-tight font-semibold text-slate-50">
+        Your roof is bigger than our instant quote handles.
+      </h2>
+      <p className="text-[15px] sm:text-[16px] text-slate-300 leading-relaxed max-w-prose mx-auto">
+        We measured your property at approximately{" "}
+        <span className="font-mono tabular text-slate-50">
+          {Math.round(footprintSqft).toLocaleString()} sqft
+        </span>{" "}
+        of roof footprint
+        {address ? (
+          <>
+            {" "}at <span className="text-slate-50">{address}</span>
+          </>
+        ) : null}
+        . Properties above ~15,000 sqft typically have multiple roof
+        sections, mixed materials, and code requirements that need an
+        on-site assessment to price accurately — instant quotes set
+        wrong expectations on that scale.
+      </p>
+      <p className="text-[14px] text-slate-400 leading-relaxed max-w-prose mx-auto">
+        We&apos;ve captured your information. A Voxaris specialist will
+        be in touch within one business day to scope your project
+        directly. No instant number — but a real one, faster than the
+        usual commercial bid cycle.
+      </p>
+      <div className="pt-2 text-[11px] font-mono uppercase tracking-[0.14em] text-slate-500">
+        Estimate is non-binding · We don&apos;t sell your information
+      </div>
     </div>
   );
 }
@@ -868,10 +986,24 @@ function RoofStep({
             Roof pitch
           </div>
           <div className="font-display tabular text-[32px] font-semibold tracking-[-0.02em] mt-2 text-white/95">
-            {pitch ?? "Standard"}
+            {pitch ?? "6/12"}
+            {!pitch && (
+              <span className="ml-2 text-[12px] font-mono uppercase tracking-[0.12em] text-amber align-middle">
+                assumed
+              </span>
+            )}
           </div>
+          {/* Be explicit when the pitch couldn't be measured. Earlier
+              the label was "Estimated — confirmed at on-site quote",
+              which sounds like it was measured. The truth is we
+              defaulted to 6/12 (~26.6°) when Solar didn't return one,
+              and the range silently used that for slope math. Saying
+              so directly is the honest fix; widening the range to
+              absorb the uncertainty is the next step. */}
           <div className="text-[11.5px] text-white/45 mt-1">
-            {pitch ? "Auto-detected from satellite" : "Estimated — confirmed at on-site quote"}
+            {pitch
+              ? "Auto-detected from satellite imagery"
+              : "We couldn't measure pitch from the imagery — using a 6/12 assumption. Final pitch confirmed on-site."}
           </div>
         </div>
       </div>

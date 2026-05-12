@@ -87,16 +87,33 @@ export function BoltStyleHero({
    *  written consent the safest legal posture before any auto-call /
    *  auto-text follow-up. Default false → user must affirmatively check. */
   const [tcpaConsent, setTcpaConsent] = useState(false);
+  // Tracks whether the user attempted submit while form was invalid.
+  // Used to flip on accessible error microcopy only after a first try —
+  // showing it before any interaction would visually nag every visitor.
+  const [showValidationHint, setShowValidationHint] = useState(false);
 
-  const valid =
+  const fieldsValid =
     name.trim().length > 1 &&
     /\S+@\S+\.\S+/.test(email) &&
     phone.replace(/\D/g, "").length >= 7 &&
-    address.trim().length > 4 &&
-    tcpaConsent;
+    address.trim().length > 4;
+  const valid = fieldsValid && tcpaConsent;
+
+  // What's blocking submit? Used for the accessible aria-live message.
+  // Order matters — surface the most-likely-resolvable issue first
+  // (consent checkbox), not the most-recently-failed field.
+  const validationHint = !tcpaConsent && fieldsValid
+    ? "Check the consent box above to continue."
+    : !fieldsValid
+      ? "Please complete every field above to continue."
+      : null;
 
   const submit = () => {
-    if (!valid || submitting) return;
+    if (!valid) {
+      setShowValidationHint(true);
+      return;
+    }
+    if (submitting) return;
     onSubmit({
       name: name.trim(),
       email: email.trim(),
@@ -310,15 +327,19 @@ export function BoltStyleHero({
               </label>
             </div>
 
-            {/* Footer — submit button */}
+            {/* Footer — submit button.
+                Removed the "~5 seconds" claim — measured submit-to-estimate
+                time is 25-35s with cold start. Replaced with what's actually
+                true: estimates are non-binding and we don't sell data. */}
             <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.06]">
               <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-slate-300 hidden sm:flex items-center gap-2">
                 <Zap size={11} className="text-cy-300" />
-                <span>~5 seconds · we never sell your info</span>
+                <span>Non-binding estimate · we never sell your info</span>
               </div>
               <button
                 onClick={submit}
-                disabled={!valid || submitting}
+                disabled={submitting}
+                aria-disabled={!valid || submitting}
                 className={`ml-auto flex items-center gap-2 px-5 py-2.5 rounded-xl text-[14px] font-medium transition-all ${
                   valid && !submitting
                     ? accentHex
@@ -347,6 +368,19 @@ export function BoltStyleHero({
                 )}
               </button>
             </div>
+            {/* Accessible validation hint. Only renders once the user
+                has tried to submit (showValidationHint) and there's an
+                actual blocker. aria-live="polite" so screen readers
+                announce it without interrupting the user's flow. */}
+            {showValidationHint && validationHint && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="px-4 py-2.5 border-t border-amber/30 bg-amber/[0.06] text-[12px] text-amber font-medium"
+              >
+                {validationHint}
+              </div>
+            )}
           </div>
         </div>
 

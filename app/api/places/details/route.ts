@@ -27,13 +27,23 @@ export async function GET(req: Request) {
   if (!res.ok) {
     return NextResponse.json({ error: "places error", detail: data }, { status: res.status });
   }
-  const zip = (data.addressComponents as AddressComponent[] | undefined)?.find((c) =>
-    c.types?.includes("postal_code")
-  )?.shortText;
+  const components = data.addressComponents as AddressComponent[] | undefined;
+  const zip = components?.find((c) => c.types?.includes("postal_code"))?.shortText;
+  // street_number is the leading numeric part of the address ("1234" in
+  // "1234 Main St"). When Places returns details for a fallback Place ID
+  // (e.g. the user typed "Main St" and we autocompleted), this field is
+  // OFTEN MISSING — which means we've geocoded a street, not a house.
+  // Surface it so the caller can refuse the submission instead of
+  // silently quoting a nearby roof.
+  const streetNumber = components?.find((c) =>
+    c.types?.includes("street_number"),
+  )?.shortText ?? null;
   return NextResponse.json({
     formatted: data.formattedAddress,
     zip,
     lat: data.location?.latitude,
     lng: data.location?.longitude,
+    streetNumber,
+    hasStreetNumber: Boolean(streetNumber),
   });
 }

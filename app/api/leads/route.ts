@@ -108,9 +108,12 @@ export async function POST(req: Request) {
     );
   }
 
-  const leadId = `lead_${Date.now().toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 7)}`;
+  // Cryptographically random UUID (v4) — earlier scheme was
+  // `Date.now() + Math.random().toString(36).slice(2, 7)` which leaked
+  // ordering AND used Math.random (predictable). Anyone who saved two
+  // consecutive proposals could extrapolate the keyspace and read
+  // every customer's PII via /p/<id>. UUID v4 closes that vector.
+  const leadId = `lead_${crypto.randomUUID().replace(/-/g, "")}`;
   const submittedAt = new Date().toISOString();
 
   // ─── Supabase persistence ──────────────────────────────────────────

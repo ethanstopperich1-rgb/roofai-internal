@@ -133,6 +133,24 @@ function hasSupabaseSession(req: NextRequest): boolean {
 export function middleware(req: NextRequest): NextResponse {
   const { pathname } = req.nextUrl;
 
+  // Root-domain landing: redirect unauthenticated visitors to the
+  // customer-facing /quote page so a buyer pasting the bare URL
+  // (`pitch.voxaris.io/`) doesn't hit the staff-auth 503. Authenticated
+  // staff still land on the internal estimator at `/` via the redirect-
+  // skip below.
+  if (pathname === "/") {
+    if (hasSupabaseSession(req)) {
+      return NextResponse.next();
+    }
+    if (req.headers.get("authorization")?.startsWith("Basic ")) {
+      // Let Basic-Auth-armed staff through to the internal estimator;
+      // the protected-route logic below handles credential validation.
+      return NextResponse.next();
+    }
+    const dest = new URL("/quote", req.url);
+    return NextResponse.redirect(dest, 307);
+  }
+
   if (!isProtected(pathname)) {
     return NextResponse.next();
   }
