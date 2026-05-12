@@ -27,14 +27,28 @@ export default function OutputButtons({ estimate, onSaved }: Props) {
     const body = encodeURIComponent(buildSummaryText(estimate));
     window.location.href = `mailto:?subject=${subject}&body=${body}`;
   };
-  const save = () => {
+  /** Persist the estimate to BOTH localStorage (the local fallback /
+   *  rep history view) AND Supabase via /api/proposals (the cross-
+   *  device share-link path). The Supabase POST is fire-and-forget so
+   *  the UI still reports "saved" instantly; failure logs a warning
+   *  and the localStorage copy still works for the rep's own browser. */
+  const persist = () => {
     saveEstimate(estimate);
+    void fetch("/api/proposals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ estimate }),
+    }).catch((err) => console.warn("[output] supabase save failed:", err));
+  };
+
+  const save = () => {
+    persist();
     setSaved(true);
     setTimeout(() => setSaved(false), 1600);
     onSaved?.();
   };
   const shareLink = async () => {
-    saveEstimate(estimate);
+    persist();
     const url = `${window.location.origin}/p/${estimate.id}`;
     await navigator.clipboard.writeText(url);
     setLinked(true);

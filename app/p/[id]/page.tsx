@@ -13,8 +13,34 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    setEstimate(getEstimate(id) ?? null);
-    setLoaded(true);
+    // Try Supabase first — works cross-device (the original Cursor
+    // finding was that localStorage-only proposals never loaded on the
+    // customer's phone because they were saved on the rep's laptop).
+    // Falls back to localStorage on 404/503 so the rep's own preview
+    // still works AND so the page works without Supabase env wired up.
+    let cancelled = false;
+    fetch(`/api/proposals/${encodeURIComponent(id)}`)
+      .then(async (r) => {
+        if (cancelled) return;
+        if (r.ok) {
+          const data = (await r.json()) as { estimate?: Estimate };
+          if (data.estimate) {
+            setEstimate(data.estimate);
+            setLoaded(true);
+            return;
+          }
+        }
+        setEstimate(getEstimate(id) ?? null);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setEstimate(getEstimate(id) ?? null);
+        setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   if (!loaded) {
