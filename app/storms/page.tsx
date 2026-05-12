@@ -10,13 +10,6 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
-const DEMO_REGION = {
-  name: "Orlando, FL",
-  lat: 28.5384,
-  lng: -81.3792,
-  radiusMiles: 25,
-};
-
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
 
 export default function StormsPage() {
@@ -163,13 +156,7 @@ export default function StormsPage() {
             design, landing page URL.
           </p>
 
-          <LiveStormCard
-            lat={DEMO_REGION.lat}
-            lng={DEMO_REGION.lng}
-            regionName={DEMO_REGION.name}
-            radiusMiles={DEMO_REGION.radiusMiles}
-            googleMapsKey={GOOGLE_MAPS_KEY}
-          />
+          <LiveStormCard googleMapsKey={GOOGLE_MAPS_KEY} />
         </section>
 
         {/* CTA */}
