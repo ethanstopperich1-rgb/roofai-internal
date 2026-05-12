@@ -23,6 +23,12 @@ export async function register() {
       // Capture stack traces but no full-event sampling for server
       // routes (the default 0% would still capture explicit
       // `captureException` calls — which is what we want for now).
+      //
+      // Pilot recommendation: bump SENTRY_TRACES_SAMPLE_RATE to 0.15
+      // during the RSS pilot for diagnostic density; dial back to 0.05
+      // once we have a baseline. Set via env var, not by editing this
+      // default — keeps the code's conservative default cost-safe for
+      // partner / preview deploys without explicit telemetry budget.
       tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? "0.05"),
       // Environment tag so Vercel's preview deployments don't pollute
       // the production-error feed.

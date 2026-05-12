@@ -79,6 +79,26 @@ const PROTECTED_API_PREFIXES = [
   "/api/aerial",
 ];
 
+/**
+ * INTENTIONALLY PUBLIC (do NOT add these to PROTECTED_*):
+ *
+ *   /quote, /embed, /p/*       customer-facing surfaces (the entire reason
+ *                              the product exists)
+ *   /login, /auth/*            sign-in flow itself — gating /login behind
+ *                              auth would lock everyone out
+ *   /privacy, /terms           legal pages must be reachable without auth
+ *                              for TCPA + state-law compliance
+ *   /api/leads, /api/sms/*     public ingest endpoints (BotID + Twilio HMAC)
+ *   /api/places/*              address autocomplete used by /quote
+ *   /api/solar, /api/solar-mask, /api/sam3-roof, /api/microsoft-building,
+ *   /api/building, /api/storms, /api/hail-mrms, /api/weather  → /quote stack
+ *   /api/healthz               operator probe (gated by HEALTHZ_TOKEN if set)
+ *
+ * If a future PR adds an /api/<new> that /quote depends on, add it to the
+ * "intentionally public" comment in the file header — do not silently
+ * leave it ungated. Likewise, anything new and rep-only goes in
+ * PROTECTED_API_PREFIXES below.
+ */
 const PROTECTED_PAGE_PATHS = new Set<string>(["/"]);
 const PROTECTED_PAGE_PREFIXES = ["/history", "/admin", "/eval-trace", "/dashboard"];
 

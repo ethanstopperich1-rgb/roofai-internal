@@ -40,34 +40,20 @@ export const maxDuration = 90;
  */
 
 /**
- * Roboflow workflow URL. Defaults to the original `bradens-workspace`
- * test workflow. Override per-deploy with the env var
- *   ROBOFLOW_SAM3_WORKFLOW_URL=https://serverless.roboflow.com/infer/workflows/<workspace>/<workflow_id>
- * Required when:
- *   - You publish a new version of the workflow (Roboflow assigns a new ID)
- *   - You run on a different workspace
- *   - You move from `serverless.roboflow.com` to a dedicated endpoint
+ * Roboflow workflow config — workflow URL, prompt, and confidence floor.
+ * Centralized in lib/roboflow-workflow-config so app/api/healthz/route.ts
+ * shares the exact same URL when probing for the workflow's existence.
+ *
+ * Override at deploy time via:
+ *   ROBOFLOW_SAM3_WORKFLOW_URL   when the workflow is republished
+ *   ROBOFLOW_SAM3_PROMPT         when tuning segmentation prompt
+ *   ROBOFLOW_SAM3_CONFIDENCE     when tuning the mask confidence floor
  */
-const ROBOFLOW_WORKFLOW_URL =
-  process.env.ROBOFLOW_SAM3_WORKFLOW_URL ??
-  "https://serverless.roboflow.com/infer/workflows/bradens-workspace/sam3-roof-segmentation-test-1778124556737";
-
-/**
- * SAM3 segmentation prompt. Must match what the workflow expects — we
- * set both ends to "entire house roof" because that phrasing tells SAM3
- * to capture the full roof envelope including wings / additions / covered
- * porches, rather than just the central main section. The workflow's own
- * default ("main roof in the center of the image") was tuned for a
- * different use case. Override per-deploy via ROBOFLOW_SAM3_PROMPT.
- */
-const SAM3_PROMPT = process.env.ROBOFLOW_SAM3_PROMPT ?? "entire house roof";
-
-/**
- * Confidence floor passed into the workflow's `confidence` parameter.
- * Workflow default is 0.3 (per the deploy panel). Lower = more permissive
- * mask candidates; higher = stricter.
- */
-const SAM3_CONFIDENCE = Number(process.env.ROBOFLOW_SAM3_CONFIDENCE ?? "0.3");
+import {
+  SAM3_WORKFLOW_URL as ROBOFLOW_WORKFLOW_URL,
+  SAM3_PROMPT,
+  SAM3_CONFIDENCE,
+} from "@/lib/roboflow-workflow-config";
 
 interface Sam3CachedResult extends ReconciledRoof {
   /** When this run actually called Roboflow (vs served from cache). */

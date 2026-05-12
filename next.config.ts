@@ -61,10 +61,23 @@ const enhanced = withSentryConfig(withBotId(config), {
   // Disable source-map upload when running locally — otherwise Sentry's
   // build plugin prints a warning every `npm run dev`.
   silent: !process.env.CI,
-  // Tunnel /monitoring through our own domain so ad-blockers (uBlock,
-  // Brave Shields) don't strip Sentry events from the customer flow.
-  // Costs one extra Vercel function invocation per error; cheap.
-  tunnelRoute: "/monitoring",
+  // tunnelRoute deliberately UNSET. The auto-generated handler at
+  // /monitoring accepts unauthenticated POSTs and forwards them to
+  // Sentry. Each post = 1 Vercel function invocation, so a hostile
+  // script could fill billing with synthetic events.
+  //
+  // To re-enable safely after the pilot, do BOTH:
+  //   1. Add `/monitoring` to lib/ratelimit's "public" bucket
+  //   2. Verify the X-Sentry-Auth header pattern matches our DSN before
+  //      forwarding (requires a custom route handler since the auto-
+  //      generated one doesn't validate)
+  //
+  // Until then, browsers POST directly to Sentry. Users running content
+  // blockers (uBlock, Brave Shields) won't show up in error metrics,
+  // which is an acceptable trade vs. an unbounded invocation cost.
+  //
+  // tunnelRoute: "/monitoring",
+  //
   // Disable Sentry's automatic telemetry — we already track our own.
   telemetry: false,
 });

@@ -46,13 +46,18 @@ interface LeadPayload {
 /** TCPA disclosure text — the exact wording the customer agrees to.
  *  Pin this constant so any change to the consent text is tracked in
  *  git and survives consent audits. If the wording is updated, this
- *  string AND the rendered checkbox copy must change together. */
+ *  string AND the rendered checkbox copy in
+ *  `components/ui/bolt-style-chat.tsx` MUST change together — they're
+ *  the same legal disclosure and must remain byte-equivalent for the
+ *  audit trail to be defensible. Last updated 2026-05-12 to match the
+ *  /privacy + /terms links rolled out in commit d0a0293. */
 export const TCPA_CONSENT_TEXT =
   "By submitting this form, you consent to receive automated marketing " +
   "calls, texts, and emails from Voxaris and its partner contractors at " +
   "the phone number and email provided. Consent is not required to make " +
-  "a purchase. Message and data rates may apply. You may opt out at any " +
-  "time by replying STOP to texts or contacting us.";
+  "a purchase. Message frequency varies; message and data rates may apply. " +
+  "Reply STOP to opt out, HELP for help. See our Privacy Policy at " +
+  "/privacy and Terms of Service at /terms.";
 
 /**
  * POST /api/leads

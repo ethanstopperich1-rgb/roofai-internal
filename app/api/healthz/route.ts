@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseConfigured, createServiceRoleClient, supabaseServiceRoleConfigured } from "@/lib/supabase";
+import { SAM3_WORKFLOW_URL } from "@/lib/roboflow-workflow-config";
 
 export const runtime = "nodejs";
 // Tight enough that a hung dependency is obvious; long enough that
@@ -112,9 +113,9 @@ async function checkRoboflow(): Promise<CheckResult> {
   if (!process.env.ROBOFLOW_API_KEY) {
     return { status: "missing_config", reason: "ROBOFLOW_API_KEY unset" };
   }
-  const url =
-    process.env.ROBOFLOW_SAM3_WORKFLOW_URL ??
-    "https://serverless.roboflow.com/infer/workflows/bradens-workspace/sam3-roof-segmentation-test-1778124556737";
+  // Imported from lib/roboflow-workflow-config so the URL stays in sync
+  // with app/api/sam3-roof/route.ts (single source of truth).
+  const url = SAM3_WORKFLOW_URL;
   try {
     const { result, ms } = await timed(async () => {
       // GET is the only verb the workflow endpoint accepts for probe-
@@ -171,7 +172,36 @@ function checkOptional(envVar: string, label: string): CheckResult {
     : { status: "skipped", reason: `${label} not configured` };
 }
 
-export async function GET() {
+/** When HEALTHZ_TOKEN is set, the full per-component breakdown is only
+ *  returned to callers that supply ?token=<value> (or the X-Healthz-Token
+ *  header). Unauthed callers get a slim {status, timestamp} response.
+ *
+ *  Why: the full breakdown reveals our complete integration topology
+ *  (Roboflow workflow, Anthropic config, Sentry/Twilio/Replicate
+ *  presence). Useful for an attacker building a dependency map. The
+ *  slim response is enough for a load-balancer / Vercel deployment
+ *  protection probe; uptime monitors (BetterUptime, Cronitor) easily
+ *  add the header.
+ *
+ *  Backward-compatible: when HEALTHZ_TOKEN is unset, every caller sees
+ *  the full breakdown (matches the existing behavior). Set the env var
+ *  in production to enable the gate without redeploying code. */
+function authenticatesAsOperator(req: Request): boolean {
+  const expected = process.env.HEALTHZ_TOKEN;
+  if (!expected) return true; // backward-compat — no gate when unset
+  const url = new URL(req.url);
+  const given =
+    url.searchParams.get("token") ?? req.headers.get("x-healthz-token") ?? "";
+  if (!given || given.length !== expected.length) return false;
+  // Constant-time compare via XOR accumulator.
+  let mismatch = 0;
+  for (let i = 0; i < expected.length; i++) {
+    mismatch |= expected.charCodeAt(i) ^ given.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+export async function GET(req: Request) {
   // Required deps — if any of these is missing or broken, the tool
   // cannot deliver an estimate, so the route returns 503.
   const [supabase, roboflow] = await Promise.all([checkSupabase(), checkRoboflow()]);
@@ -193,6 +223,23 @@ export async function GET() {
   };
 
   const allRequiredOk = Object.values(required).every((c) => c.status === "ok");
+
+  // Slim public response when the token gate is active and the caller
+  // didn't authenticate. Loadbalancers + Vercel deployment protection
+  // only need the up/down signal; the full breakdown is for operators.
+  if (!authenticatesAsOperator(req)) {
+    return NextResponse.json(
+      {
+        status: allRequiredOk ? "ok" : "degraded",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        status: allRequiredOk ? 200 : 503,
+        headers: { "Cache-Control": "no-store, max-age=0" },
+      },
+    );
+  }
+
   const body = {
     status: allRequiredOk ? "ok" : "degraded",
     timestamp: new Date().toISOString(),
