@@ -804,6 +804,10 @@ function PublicFooter() {
             Terms
           </Link>
           <span className="text-white/25">·</span>
+          <Link href="/storms" className="hover:text-white/70 transition-colors">
+            For roofing operators
+          </Link>
+          <span className="text-white/25">·</span>
           <span>Estimates are non-binding</span>
         </div>
       </div>
