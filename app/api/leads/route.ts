@@ -4,6 +4,11 @@ import { rateLimit } from "@/lib/ratelimit";
 import { checkBotId } from "botid/server";
 import { sendSms, toE164, twilioConfigured } from "@/lib/twilio";
 import { attachLeadContext } from "@/lib/sms-conversation";
+import {
+  createServiceRoleClient,
+  resolveOfficeIdBySlug,
+  supabaseServiceRoleConfigured,
+} from "@/lib/supabase";
 
 export const runtime = "nodejs";
 
@@ -22,6 +27,10 @@ interface LeadPayload {
   estimateHigh?: number;
   source?: string;
   notes?: string;
+  /** Office slug — drives multi-tenant routing in Supabase. Customer
+   *  /quote sends this via the embed config / branded subdomain;
+   *  defaults to "voxaris" (the seed office). */
+  office?: string;
   /** TCPA consent — required. The client form gates the submit button
    *  but a direct POST could bypass it; we enforce server-side too. */
   tcpaConsent?: boolean;
@@ -103,6 +112,66 @@ export async function POST(req: Request) {
     .toString(36)
     .slice(2, 7)}`;
   const submittedAt = new Date().toISOString();
+
+  // ─── Supabase persistence ──────────────────────────────────────────
+  // Primary destination for the lead. When Supabase env vars aren't
+  // set (dev / preview), this silently no-ops and the legacy webhook
+  // flow below still fires. office slug → office_id lookup is cached
+  // 1h in resolveOfficeIdBySlug.
+  let supabaseLeadUuid: string | null = null;
+  if (supabaseServiceRoleConfigured()) {
+    try {
+      const officeSlug = body.office ?? "voxaris";
+      const officeId = await resolveOfficeIdBySlug(officeSlug);
+      if (!officeId) {
+        console.warn(`[leads] no active office for slug='${officeSlug}'`);
+      } else {
+        const supabase = createServiceRoleClient();
+        const { data, error } = await supabase
+          .from("leads")
+          .insert({
+            office_id: officeId,
+            public_id: leadId,
+            name: body.name.trim(),
+            email: body.email.trim().toLowerCase(),
+            phone: body.phone?.trim() || null,
+            address: body.address.trim(),
+            zip: body.zip ?? null,
+            lat: body.lat ?? null,
+            lng: body.lng ?? null,
+            estimated_sqft: body.estimatedSqft ?? null,
+            material: body.material ?? null,
+            selected_add_ons: body.selectedAddOns ?? null,
+            estimate_low: body.estimateLow ?? null,
+            estimate_high: body.estimateHigh ?? null,
+            source: body.source ?? null,
+            notes: body.notes ?? null,
+            tcpa_consent: true,
+            tcpa_consent_at: submittedAt,
+            tcpa_consent_text: TCPA_CONSENT_TEXT,
+          })
+          .select("id")
+          .single();
+        if (error) {
+          console.error("[leads] supabase insert failed:", error.message);
+        } else {
+          supabaseLeadUuid = data.id;
+          // Audit-trail row in consents — append-only, regulator-grade
+          // receipt of what disclosure the customer agreed to.
+          await supabase.from("consents").insert({
+            office_id: officeId,
+            lead_id: data.id,
+            consent_type: "tcpa",
+            disclosure_text: TCPA_CONSENT_TEXT,
+            email: body.email.trim().toLowerCase(),
+            phone: body.phone?.trim() || null,
+          });
+        }
+      }
+    } catch (err) {
+      console.error("[leads] supabase block threw:", err);
+    }
+  }
 
   // Optional CRM/Slack/Email webhook — keep silent failures on the customer
   // path. We log on the server but never fail the lead capture itself.
