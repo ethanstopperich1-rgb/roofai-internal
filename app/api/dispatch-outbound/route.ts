@@ -45,6 +45,7 @@ interface DispatchPayload {
   address: string;
   estimateLow?: number;
   estimateHigh?: number;
+  estimatedSqft?: number;
   material?: string;
   office?: string;
   agentName?: string; // optional override; defaults to "sydney"
@@ -127,6 +128,7 @@ export async function POST(req: Request) {
     address: body.address,
     estimateLow: body.estimateLow ?? null,
     estimateHigh: body.estimateHigh ?? null,
+    estimatedSqft: body.estimatedSqft ?? null,
     material: body.material ?? null,
     office: body.office ?? "voxaris",
   };

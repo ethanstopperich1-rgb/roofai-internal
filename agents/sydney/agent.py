@@ -107,37 +107,48 @@ def pick_opener() -> str:
     return OPENER_BUSINESS_HOURS if (is_weekday and is_business_hours) else OPENER_AFTER_HOURS
 
 
+def company_name_for_office(office_slug: object) -> str:
+    """Resolve the human-facing company name from the office slug.
+
+    Sydney is multi-tenant — for the demo on May 13, the same agent
+    answers for both 'voxaris' and 'nolands'. The voice should always
+    introduce the brand the homeowner submitted under, not the
+    underlying platform.
+    """
+    s = str(office_slug or "").strip().lower()
+    mapping = {
+        "voxaris": "Voxaris",
+        "nolands": "Noland's Roofing",
+        "noland": "Noland's Roofing",
+    }
+    return mapping.get(s, "Voxaris")
+
+
 def build_outbound_opener(lead: "dict[str, object]") -> str:
     """Personalized opener for OUTBOUND calls.
 
     Customer just submitted a quote on /quote — their phone is ringing
-    seconds later. We greet by first name, reference the address they
-    submitted, and quote the estimate range so the call feels like
-    continuity (not cold). Then ask permission for a 2-minute chat
-    so we honor the "consent to converse" pattern (TCPA-conservative).
+    seconds later. The opener does three things:
+      1. Greets by first name with energy
+      2. References "running your roof through our estimator a few
+         minutes ago" so the call feels like continuity, not cold
+      3. States intent — personal follow-up + schedule a PM inspection
+    Address confirmation happens on the FIRST LLM turn (instructed via
+    the system message attached to chat_ctx) so it lands right after
+    the customer's first response instead of all crammed into the
+    opener TTS playback.
     """
     name_raw = (lead.get("name") or "").strip()
     first_name = name_raw.split()[0] if name_raw else "there"
-    addr = (lead.get("address") or "").split(",")[0].strip()
-    est_low = lead.get("estimateLow")
-    est_high = lead.get("estimateHigh")
+    company = company_name_for_office(lead.get("office"))
 
-    msg = f"Hi {first_name}, this is Sydney from Noland's Roofing — "
-    msg += "thanks so much for requesting an estimate online. "
-    if addr:
-        msg += f"I'm calling about your roof at {addr}. "
-    if est_low and est_high:
-        try:
-            lo = f"${int(est_low):,}"
-            hi = f"${int(est_high):,}"
-            msg += f"Your estimate range came back at {lo} to {hi}. "
-        except (TypeError, ValueError):
-            pass
-    msg += (
-        "Is now a good time for a quick two-minute conversation about "
-        "scheduling your free inspection?"
+    return (
+        f"Hey {first_name}, this is Sydney with {company}. "
+        "Thanks so much for running your roof through our estimator a "
+        "few minutes ago. I wanted to personally follow up, answer any "
+        "questions you have, and see if we can get you on the schedule "
+        "for one of our project managers to come take a look."
     )
-    return msg
 
 
 class SydneyAgent(Agent):
@@ -487,23 +498,82 @@ async def entrypoint(ctx: JobContext) -> None:
     # The text is added to chat_ctx so the LLM still has it as the first
     # turn for subsequent context.
     if lead_context is not None:
-        # OUTBOUND mode: customer just submitted /quote, their phone is
-        # ringing. Greet by name, reference the estimate. Also inject the
-        # full lead context into chat_ctx as a system message so the LLM
-        # has the address, material preference, etc. for the rest of the
-        # conversation without us re-summarizing.
+        # OUTBOUND mode: customer just submitted /quote a few minutes ago,
+        # their phone is ringing now. Stage-1 opener is verbatim; the
+        # 5-stage script below drives the rest of the LLM's behavior.
         opener = build_outbound_opener(lead_context)
+        company = company_name_for_office(lead_context.get("office"))
+        _addr = lead_context.get("address") or ""
+        _est_low = lead_context.get("estimateLow")
+        _est_high = lead_context.get("estimateHigh")
+        _sqft = lead_context.get("estimatedSqft")
+        _squares = None
+        try:
+            if isinstance(_sqft, (int, float)) and _sqft > 0:
+                _squares = round(float(_sqft) / 100, 1)
+        except Exception:
+            _squares = None
+
         try:
             session.chat_ctx.add_message(
                 role="system",
                 content=(
-                    "OUTBOUND CALL CONTEXT — this customer just submitted "
-                    "a roof estimate on the Voxaris /quote page seconds "
-                    "ago. We are calling them, not the other way around. "
-                    f"Lead context: {_json.dumps(lead_context)}. "
-                    "Your job: confirm we have the right person, walk "
-                    "through the estimate range, and book a free "
-                    "inspection appointment. Stay warm and conversational."
+                    f"=== OUTBOUND CALL — 5-STAGE SCRIPT ===\n\n"
+                    f"You are Sydney, the AI sales assistant for {company}. "
+                    f"This customer just ran their roof through the {company} "
+                    "online estimator a few minutes ago. WE are calling THEM "
+                    "as a personal follow-up. Stay warm, energetic, and "
+                    "conversational. Use ONE thought per turn — don't stack "
+                    "questions.\n\n"
+                    f"LEAD CONTEXT (JSON): {_json.dumps(lead_context)}\n"
+                    + (f"PROPERTY ADDRESS to confirm: {_addr}\n" if _addr else "")
+                    + (
+                        f"ESTIMATE RANGE: ${int(_est_low):,} – ${int(_est_high):,}\n"
+                        if (isinstance(_est_low, (int, float)) and isinstance(_est_high, (int, float)))
+                        else ""
+                    )
+                    + (f"ROOF SIZE: ~{_squares} squares\n" if _squares else "")
+                    + "\n"
+                    "Stage 1 — Opening (DONE via verbatim TTS opener; do "
+                    "NOT repeat it).\n\n"
+                    "Stage 2 — Confirm address EARLY. After their first "
+                    "reply, say something like: 'Just to make sure I have "
+                    f"the right property — I'm showing {_addr or '[address]'}. "
+                    "Is that the correct address?' Wait for their confirm.\n\n"
+                    "Stage 3 — Qualification (BANT + Insurance). Use LIGHT, "
+                    "conversational questions. One at a time. Do not "
+                    "interview them.\n"
+                    "  - Timeline: 'How soon were you hoping to get this "
+                    "taken care of?'\n"
+                    "  - Insurance: 'Is this something you're looking to go "
+                    "through insurance for, or are you thinking cash/retail?'\n"
+                    "  - Authority: 'Are you the homeowner / decision maker "
+                    "on this?'\n"
+                    "  - Need/Budget (light touch): 'Roughly, what kind of "
+                    "budget range were you thinking, or are you still in "
+                    "the information-gathering stage?'\n\n"
+                    "Stage 4 — Value Bridge. Reference the estimator "
+                    "WITHOUT over-explaining: 'From what I can see on the "
+                    f"estimate you just ran, it looks like we're looking at "
+                    f"{_squares or '[X]'} squares with some complexity. I can "
+                    "have one of our project managers come out and walk "
+                    "through everything in person so you have a clear "
+                    "picture.'\n\n"
+                    "Stage 5 — Scheduling. CALL THE `check_availability` "
+                    "TOOL to get real slots — do NOT guess times. Offer two "
+                    "or three specific windows from the response. Once they "
+                    "pick one, read it back and call `book_inspection` to "
+                    "confirm. Then call `log_lead` after.\n\n"
+                    "RULES:\n"
+                    " - If they say 'now isn't great' or 'can you call back': "
+                    "ask the best time to reach them, log_lead with that, "
+                    "and end the call politely.\n"
+                    " - If they're already a customer / wrong number / "
+                    "vendor: log_lead with the appropriate lead_type and "
+                    "end the call.\n"
+                    " - Never invent prices. The estimator range is the "
+                    "only number you can quote.\n"
+                    " - Don't say 'AI', 'bot', 'agent' — you're Sydney.\n"
                 ),
             )
         except Exception as e:

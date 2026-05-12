@@ -293,4 +293,73 @@ async def log_lead(
     }
 
 
-ALL_TOOLS = [transfer_to_human, book_inspection, log_lead]
+# ─── check_availability — Stage 5 of the outbound script ─────────────────
+# Sydney's flow ends with: "Have her use a tool to check availability rather
+# than guessing." This tool returns the next 5 business days of slot windows
+# so Sydney can OFFER specific times ("I have Wednesday afternoon between
+# 1-4, or Friday morning") instead of asking the caller what works for them.
+#
+# Demo behavior: hard-coded calendar — most slots open, a few "taken" so the
+# response feels like a real calendar, not a script. Production will swap
+# this for a JobNimbus / Google Calendar query that hits the actual office
+# schedule. The mocked status flags ("mock_availability") let the LLM know
+# it's still synthetic.
+@function_tool
+async def check_availability(
+    office: Annotated[str, "One of: clermont, orange_city, bradenton, fort_myers"],
+    earliest_date: Annotated[
+        str,
+        "Earliest date the caller can do, in YYYY-MM-DD. Use today's date if they said 'as soon as possible' or didn't specify.",
+    ],
+) -> dict:
+    """Look up the next 5 business days of inspection slots for the office.
+
+    Call this AFTER you've qualified the caller (Stage 3) and given them
+    the value bridge (Stage 4). Use the returned `slots` array to OFFER
+    two or three specific times — don't ask 'what works for you?'.
+    """
+    import datetime as _dt
+
+    try:
+        start = _dt.date.fromisoformat(earliest_date)
+    except (ValueError, TypeError):
+        start = _dt.date.today()
+
+    # Build the next 5 business-day windows from `start`. Skip weekends.
+    slots: list[dict] = []
+    d = start
+    while len(slots) < 5:
+        if d.weekday() < 5:  # Mon=0..Fri=4
+            slots.append({
+                "date": d.isoformat(),
+                "day_name": d.strftime("%A"),
+                "windows": [
+                    {"window": "morning", "label": "9 AM – 12 PM", "status": "open"},
+                    {"window": "afternoon", "label": "1 PM – 4 PM", "status": "open"},
+                ],
+            })
+        d += _dt.timedelta(days=1)
+
+    # Add a touch of realistic friction so the calendar doesn't feel fake:
+    # the first slot's morning is "taken" (someone always books first thing).
+    if slots:
+        slots[0]["windows"][0]["status"] = "taken"
+    if len(slots) >= 3:
+        slots[2]["windows"][1]["status"] = "taken"  # third day afternoon
+
+    _log_tool_call("check_availability", {
+        "office": office,
+        "earliest_date": earliest_date,
+        "slots_returned": len(slots),
+        "mode": "mock",
+    })
+
+    return {
+        "status": "mock_availability",
+        "office": office,
+        "slots": slots,
+        "demo_mode": True,
+    }
+
+
+ALL_TOOLS = [transfer_to_human, check_availability, book_inspection, log_lead]

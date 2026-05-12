@@ -371,6 +371,7 @@ export async function POST(req: Request) {
         estimateHigh: body.estimateHigh,
         material: body.material,
         office: body.office ?? "voxaris",
+        estimatedSqft: body.estimatedSqft,
       }),
     })
       .then(async (r) => {
