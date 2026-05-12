@@ -35,6 +35,7 @@ from livekit.plugins import ai_coustics, silero  # noqa: F401  (noise_cancellati
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from tools import ALL_TOOLS
+import events as _events
 
 load_dotenv()
 
@@ -236,10 +237,50 @@ async def entrypoint(ctx: JobContext) -> None:
 
     duration_task = _asyncio.create_task(_enforce_call_duration_cap())
 
+    # ─── Fire call_started event to the dashboard ─────────────────────────
+    # Best-effort — failures don't block the call. The endpoint is idempotent
+    # (upserts on room_name) so a duplicate post on retry is fine.
+    AGENT_NAME = "sydney"
+    _call_started_iso = (
+        __import__("datetime")
+        .datetime.utcfromtimestamp(_time.time())
+        .isoformat() + "Z"
+    )
+    # SIP caller number from the participant's attributes when SIP, None for WebRTC.
+    _caller_number: str | None = None
+    for p in ctx.room.remote_participants.values():
+        attrs = getattr(p, "attributes", None) or {}
+        n = attrs.get("sip.phoneNumber") or attrs.get("sip.from") or None
+        if n:
+            _caller_number = n
+            break
+    _asyncio.create_task(_events.post({
+        "type": "call_started",
+        "agent_name": AGENT_NAME,
+        "room_name": ctx.room.name,
+        "started_at": _call_started_iso,
+        "caller_number": _caller_number,
+    }))
+
+    # Running totals — accumulated across session.on("session_usage_updated")
+    # so call_ended can report them.
+    _usage_totals = {
+        "llm_prompt_tokens": 0,
+        "llm_completion_tokens": 0,
+        "tts_chars": 0,
+        "stt_secs": 0.0,
+    }
+
     # Per-call usage telemetry + turn count enforcement.
     @session.on("session_usage_updated")
     def _on_usage(ev) -> None:  # type: ignore[no-untyped-def]
         u = getattr(ev, "usage", ev)
+        # Accumulate into _usage_totals so call_ended has the running total.
+        # The session emits deltas (not cumulative), so we add.
+        _usage_totals["llm_prompt_tokens"] += int(getattr(u, "llm_prompt_tokens", 0) or 0)
+        _usage_totals["llm_completion_tokens"] += int(getattr(u, "llm_completion_tokens", 0) or 0)
+        _usage_totals["tts_chars"] += int(getattr(u, "tts_characters_count", 0) or 0)
+        _usage_totals["stt_secs"] += float(getattr(u, "stt_audio_duration", 0.0) or 0.0)
         logger.info(
             "usage room=%s llm_in=%s llm_out=%s tts_chars=%s stt_secs=%s",
             ctx.room.name,
@@ -282,17 +323,83 @@ async def entrypoint(ctx: JobContext) -> None:
         ctx.shutdown()
 
     # Shutdown summary — runs whether the call ended cleanly or not. Logs
-    # the disconnect reason + cost-ceiling state for every call.
+    # the disconnect reason + cost-ceiling state for every call, AND posts
+    # the call_ended event to the dashboard.
     async def _on_shutdown() -> None:
         reason = str(getattr(ctx, "shutdown_reason", "unknown"))
         elapsed = _time.monotonic() - _call_start
         logger.info(
-            "shutdown room=%s reason=%s elapsed=%.1fs turns=%d",
+            "shutdown room=%s reason=%s elapsed=%.1fs turns=%d "
+            "llm_in=%d llm_out=%d tts_chars=%d stt_secs=%.1f",
             ctx.room.name, reason, elapsed, _user_turns,
+            _usage_totals["llm_prompt_tokens"],
+            _usage_totals["llm_completion_tokens"],
+            _usage_totals["tts_chars"],
+            _usage_totals["stt_secs"],
         )
         # Cancel the wall-clock timer if the call ended for any other reason.
         if not duration_task.done():
             duration_task.cancel()
+
+        # Map shutdown reason → outcome enum understood by /api/agent/events.
+        # The cap_* outcomes signal the duration / turn caps that we
+        # added in defense-in-depth above; other reasons fall through
+        # to "unknown" for now (refine once we have real call data).
+        outcome_map = {
+            "cap_duration": "cap_duration",
+            "cap_turns": "cap_turns",
+        }
+        outcome = outcome_map.get(reason, "unknown")
+
+        # LK Cloud Inference rough cost model — keep this in agent.py
+        # rather than in the API route so it travels with the prompt /
+        # provider config that drives the actual pricing.
+        # gpt-4o-mini: $0.15/M in, $0.60/M out
+        # deepgram nova-3: $0.0145/min ≈ $0.0002416/s
+        # cartesia sonic-3: ~$0.000065/char
+        cost = (
+            _usage_totals["llm_prompt_tokens"] * 0.15 / 1_000_000
+            + _usage_totals["llm_completion_tokens"] * 0.60 / 1_000_000
+            + _usage_totals["stt_secs"] * 0.000241666
+            + _usage_totals["tts_chars"] * 0.000065
+        )
+
+        # Pull transcript from the chat context. This is the LLM's view
+        # of the conversation, not a recorded audio transcript — good
+        # enough for dashboard summarization, accurate to what was said.
+        transcript_chunks: list[str] = []
+        try:
+            history = getattr(session, "chat_ctx", None)
+            items = getattr(history, "items", []) if history else []
+            for item in items:
+                role = getattr(item, "role", "") or ""
+                content = getattr(item, "content", "") or ""
+                if isinstance(content, list):
+                    content = " ".join(str(c) for c in content)
+                if role and content:
+                    transcript_chunks.append(f"{role}: {content}")
+        except Exception as e:
+            logger.warning("transcript collection failed: %s", e)
+        transcript = "\n".join(transcript_chunks) if transcript_chunks else None
+
+        # Fire-and-forget. Don't await — shutdown shouldn't block on a
+        # 5s HTTPS round-trip if our dashboard is down.
+        _asyncio.create_task(_events.post({
+            "type": "call_ended",
+            "agent_name": AGENT_NAME,
+            "room_name": ctx.room.name,
+            "ended_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "duration_sec": int(elapsed),
+            "turn_count": _user_turns,
+            "outcome": outcome,
+            "transcript": transcript,
+            "summary": None,
+            "llm_prompt_tokens": _usage_totals["llm_prompt_tokens"],
+            "llm_completion_tokens": _usage_totals["llm_completion_tokens"],
+            "tts_chars": _usage_totals["tts_chars"],
+            "stt_secs": int(_usage_totals["stt_secs"]),
+            "estimated_cost_usd": round(cost, 4),
+        }))
 
     ctx.add_shutdown_callback(_on_shutdown)
 
