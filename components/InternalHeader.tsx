@@ -16,7 +16,10 @@ export default function InternalHeader() {
     pathname.startsWith("/quote") ||
     pathname.startsWith("/p/") ||
     pathname.startsWith("/embed");
-  if (isCustomerRoute) return null;
+  // /dashboard renders its own chrome (sidebar + topbar) so the global
+  // staff header would double up — hide it there.
+  const isDashboardRoute = pathname === "/dashboard" || pathname.startsWith("/dashboard/");
+  if (isCustomerRoute || isDashboardRoute) return null;
 
   return (
     <header

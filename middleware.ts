@@ -80,7 +80,7 @@ const PROTECTED_API_PREFIXES = [
 ];
 
 const PROTECTED_PAGE_PATHS = new Set<string>(["/"]);
-const PROTECTED_PAGE_PREFIXES = ["/history", "/admin", "/eval-trace"];
+const PROTECTED_PAGE_PREFIXES = ["/history", "/admin", "/eval-trace", "/dashboard"];
 
 function isProtected(pathname: string): boolean {
   // Exact match on protected pages
