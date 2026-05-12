@@ -1,23 +1,28 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CloudHail, MapPin, Activity, Radio, Loader2 } from "lucide-react";
-import Link from "next/link";
+import {
+  CloudHail,
+  MapPin,
+  Loader2,
+  Inbox,
+  Send,
+  ExternalLink,
+} from "lucide-react";
 
 /**
- * Client-side "most recent qualifying hail event" card.
+ * Live storm card — renders the most recent qualifying hail event in
+ * the watched region AND the actual sample output your team would
+ * receive from it.
  *
- * Why client-rendered: the underlying APIs can be slow under cold
- * conditions —
- *   - /api/hail-mrms reads from Vercel Blob and scans 365 daily files
- *   - /api/storms/canvass-area calls OpenStreetMap Overpass (occasionally
- *     hangs against all three mirrors)
- *   - /api/storms hits BigQuery
+ * Client-rendered so the page shell loads instantly. Three states:
+ *   - loading: skeleton
+ *   - ok:      real event + map + sample output cards driven by the
+ *              event's date / peak inches
+ *   - error:   short message, no crash
  *
- * Server-rendering the page meant the whole shell waited 20-30s for
- * these on every request — fine on a warm cache, dead on a cold one.
- * The shell now renders instantly and this component owns the data
- * lifecycle with explicit loading / empty / error states.
+ * Voxaris-branded copy throughout — we don't surface the underlying
+ * weather-data source names; the product is the product.
  */
 
 interface RecentEvent {
@@ -26,36 +31,29 @@ interface RecentEvent {
   hitCount: number;
   distanceMiles: number;
   groundReportCount: number;
-  source: "mrms+spc";
+  source: string;
 }
 
 interface RecentResponse {
   event: RecentEvent | null;
-  coverage: { lat: number; lng: number; radiusMiles: number; minInches: number };
-  queriedAt: string;
 }
 
 interface CanvassResponse {
   buildingCount: number;
   isEstimate: boolean;
-  source: string;
 }
 
 interface Props {
-  /** Demo region center (defaults to Orlando) */
   lat?: number;
   lng?: number;
   regionName?: string;
   radiusMiles?: number;
-  /** Google Maps key for the static-map preview. Pass the public key
-   *  from a server-rendered parent so we don't expose it twice. */
   googleMapsKey?: string;
 }
 
 type State =
   | { kind: "loading" }
   | { kind: "ok"; event: RecentEvent; canvass: CanvassResponse | null }
-  | { kind: "empty" }
   | { kind: "error"; reason: string };
 
 function formatEventDate(yyyymmdd: string): string {
@@ -70,12 +68,34 @@ function formatEventDate(yyyymmdd: string): string {
   });
 }
 
+function formatEventDateShort(yyyymmdd: string): string {
+  const y = yyyymmdd.slice(0, 4);
+  const m = yyyymmdd.slice(4, 6);
+  const d = yyyymmdd.slice(6, 8);
+  return new Date(`${y}-${m}-${d}T12:00:00Z`).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function formatEventDateUrl(yyyymmdd: string): string {
+  return yyyymmdd.slice(4, 6) + yyyymmdd.slice(6, 8);
+}
+
 function daysAgo(yyyymmdd: string): number {
   const y = yyyymmdd.slice(0, 4);
   const m = yyyymmdd.slice(4, 6);
   const d = yyyymmdd.slice(6, 8);
   const event = new Date(`${y}-${m}-${d}T00:00:00Z`).getTime();
   return Math.max(0, Math.floor((Date.now() - event) / (24 * 60 * 60 * 1000)));
+}
+
+function describeAge(days: number): string {
+  if (days === 0) return "Detected today";
+  if (days === 1) return "Detected yesterday";
+  if (days < 30) return `${days} days ago`;
+  if (days < 365) return `${Math.round(days / 30)} months ago`;
+  return `${(days / 365).toFixed(1)} years ago`;
 }
 
 function buildMapUrl(opts: {
@@ -130,8 +150,6 @@ export default function LiveStormCard({
 
     (async () => {
       try {
-        // Fire both in parallel. Each has its own short timeout —
-        // failing fast is better than waiting for slow blob reads.
         const [recentRes, canvassRes] = await Promise.allSettled([
           fetch(
             `/api/storms/recent-significant?lat=${lat}&lng=${lng}` +
@@ -143,7 +161,6 @@ export default function LiveStormCard({
             { cache: "no-store", signal: controller.signal },
           ),
         ]);
-
         if (cancelled) return;
 
         let event: RecentEvent | null = null;
@@ -155,23 +172,20 @@ export default function LiveStormCard({
         if (canvassRes.status === "fulfilled" && canvassRes.value.ok) {
           canvass = (await canvassRes.value.json()) as CanvassResponse;
         }
-
         if (cancelled) return;
         if (event) {
           setState({ kind: "ok", event, canvass });
         } else {
-          setState({ kind: "empty" });
+          setState({
+            kind: "error",
+            reason: "no qualifying event on record for the watched region",
+          });
         }
       } catch (err) {
         if (cancelled) return;
-        // Network / unexpected error. Render the empty state with a
-        // small note rather than a scary error — homeowner-grade UX.
         setState({
           kind: "error",
-          reason:
-            err instanceof Error
-              ? err.message.slice(0, 200)
-              : "unknown",
+          reason: err instanceof Error ? err.message.slice(0, 200) : "unknown",
         });
       }
     })();
@@ -182,247 +196,209 @@ export default function LiveStormCard({
     };
   }, [lat, lng, radiusMiles]);
 
-  const mapUrl =
-    state.kind === "ok" && googleMapsKey
-      ? buildMapUrl({
-          lat,
-          lng,
-          hailDistanceMiles: state.event.distanceMiles,
-          apiKey: googleMapsKey,
-        })
-      : null;
+  if (state.kind === "loading") {
+    return <LoadingSkeleton regionName={regionName} />;
+  }
+  if (state.kind === "error") {
+    return <ErrorState regionName={regionName} />;
+  }
+
+  const { event, canvass } = state;
+  const mapUrl = googleMapsKey
+    ? buildMapUrl({
+        lat,
+        lng,
+        hailDistanceMiles: event.distanceMiles,
+        apiKey: googleMapsKey,
+      })
+    : null;
+  const buildingCount = canvass?.buildingCount ?? null;
 
   return (
-    <div className="glass-panel-hero p-6 sm:p-8 grid lg:grid-cols-[1fr_1.1fr] gap-6 sm:gap-10">
-      {/* LEFT — stats / empty / loading / error */}
-      <div className="space-y-6">
-        {state.kind === "loading" && <LoadingSkeleton regionName={regionName} />}
+    <div className="space-y-10 sm:space-y-12">
+      {/* TOP — event detail + map */}
+      <div
+        className="rounded-3xl p-6 sm:p-8 grid lg:grid-cols-[1fr_1.1fr] gap-6 sm:gap-10"
+        style={{
+          background: "rgba(13,17,24,0.6)",
+          border: "1px solid rgba(255,255,255,0.06)",
+        }}
+      >
+        <div className="space-y-6">
+          <div>
+            <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-2 flex items-center gap-2">
+              <CloudHail size={11} />
+              Event detected
+            </div>
+            <div className="font-display text-[24px] sm:text-[28px] font-semibold tracking-tight text-slate-50 leading-tight">
+              {formatEventDate(event.date)}
+            </div>
+            <div className="text-[12.5px] text-slate-400 mt-1">
+              {describeAge(daysAgo(event.date))} · {regionName}
+            </div>
+          </div>
 
-        {state.kind === "empty" && (
-          <EmptyState regionName={regionName} />
-        )}
+          <div className="grid grid-cols-2 gap-3">
+            <Stat
+              label="Peak hail size"
+              value={`${event.maxInches.toFixed(2)}"`}
+              tone="amber"
+            />
+            <Stat
+              label="Impact cells"
+              value={event.hitCount.toLocaleString()}
+              hint="≥1 km² each"
+            />
+            <Stat
+              label="Ground reports"
+              value={`${event.groundReportCount}`}
+              tone={event.groundReportCount > 0 ? "mint" : "slate"}
+            />
+            <Stat
+              label="Distance from center"
+              value={`${event.distanceMiles.toFixed(1)} mi`}
+            />
+          </div>
 
-        {state.kind === "error" && (
-          <ErrorState regionName={regionName} reason={state.reason} />
-        )}
+          <div className="pt-3 border-t border-white/[0.06]">
+            <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-2 flex items-center gap-2">
+              <MapPin size={11} />
+              Inspection-eligible properties
+            </div>
+            <div className="flex items-baseline gap-3">
+              <div className="font-display tabular text-[48px] sm:text-[60px] font-semibold tracking-[-0.025em] text-cy-300 leading-none">
+                {buildingCount != null
+                  ? buildingCount.toLocaleString()
+                  : "—"}
+              </div>
+              <div className="text-[12px] text-slate-400 font-mono uppercase tracking-[0.12em]">
+                inside the 2-mi impact zone
+              </div>
+            </div>
+          </div>
+        </div>
 
-        {state.kind === "ok" && (
-          <ResolvedEvent
-            event={state.event}
-            canvass={state.canvass}
-            regionName={regionName}
-          />
-        )}
+        <div
+          className="relative rounded-2xl overflow-hidden min-h-[280px]"
+          style={{
+            background: "rgba(0,0,0,0.3)",
+            border: "1px solid rgba(255,255,255,0.06)",
+          }}
+        >
+          {mapUrl ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={mapUrl}
+              alt={`Impact area around ${regionName}`}
+              className="w-full h-full object-cover"
+              loading="eager"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-slate-500 text-[12px] p-6 text-center">
+              Map preview unavailable.
+            </div>
+          )}
+          <div className="absolute top-3 left-3 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/60 text-[10px] font-mono uppercase tracking-[0.12em] text-amber border border-amber/40">
+            Impact zone
+          </div>
+        </div>
       </div>
 
-      {/* RIGHT — map (or placeholder) */}
-      <div className="relative rounded-2xl overflow-hidden border border-white/[0.08] bg-black/30 min-h-[280px]">
-        {mapUrl ? (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img
-            src={mapUrl}
-            alt={`Approximate hail footprint around ${regionName}`}
-            className="w-full h-full object-cover"
-            loading="eager"
-          />
-        ) : state.kind === "loading" ? (
-          <MapSkeleton />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-slate-500 text-[12px] p-6 text-center">
-            Map preview appears once a qualifying event is detected.
-          </div>
-        )}
-        <div className="absolute top-3 left-3 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/60 backdrop-blur-sm text-[10px] font-mono uppercase tracking-[0.12em] text-amber border border-amber/40">
-          <Activity size={10} />
-          {state.kind === "ok" ? "Hail polygon" : "Watched region"}
+      {/* MIDDLE — connector text */}
+      <div className="text-center max-w-2xl mx-auto px-4">
+        <div className="text-[10.5px] font-mono uppercase tracking-[0.18em] text-cy-300 mb-3">
+          From this single event
         </div>
+        <h3 className="font-display text-[24px] sm:text-[32px] font-semibold tracking-[-0.025em] text-slate-50 leading-tight">
+          Your sales team gets three deliverables in their inbox.
+        </h3>
+      </div>
+
+      {/* OUTPUT — three cards driven by the live event data */}
+      <div className="grid lg:grid-cols-3 gap-4 sm:gap-5">
+        <OutputCanvassList event={event} />
+        <OutputPostcard event={event} />
+        <OutputLandingPage event={event} buildingCount={buildingCount} />
       </div>
     </div>
   );
 }
 
-/* ─── Sub-states ──────────────────────────────────────────────────────── */
+/* ─── States ──────────────────────────────────────────────────────────── */
 
 function LoadingSkeleton({ regionName }: { regionName: string }) {
   return (
-    <div className="space-y-6">
-      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-cy-300/[0.08] border border-cy-300/30 text-cy-300 text-[11px] font-mono uppercase tracking-[0.14em]">
-        <Loader2 size={12} className="animate-spin" />
-        Scanning NOAA radar · {regionName}
-      </div>
-      <div className="space-y-2.5">
-        <div className="h-3 w-32 rounded shimmer" />
-        <div className="h-9 w-72 rounded shimmer" />
-        <div className="h-3 w-40 rounded shimmer mt-1" />
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="glass-panel p-4 space-y-2">
-            <div className="h-2.5 w-16 rounded shimmer" />
-            <div className="h-7 w-20 rounded shimmer" />
-            <div className="h-2 w-24 rounded shimmer" />
-          </div>
-        ))}
-      </div>
-      <div className="pt-2 border-t border-white/[0.06]">
-        <div className="h-2.5 w-32 rounded shimmer mb-3" />
-        <div className="h-12 w-40 rounded shimmer" />
-      </div>
-    </div>
-  );
-}
-
-function MapSkeleton() {
-  return (
-    <div className="w-full h-full flex items-center justify-center">
-      <div className="flex flex-col items-center gap-3 text-slate-500">
-        <Loader2 size={20} className="animate-spin text-cy-300/60" />
-        <div className="text-[11px] font-mono uppercase tracking-[0.14em]">
-          Loading radar preview
+    <div
+      className="rounded-3xl p-6 sm:p-8 grid lg:grid-cols-[1fr_1.1fr] gap-6 sm:gap-10"
+      style={{
+        background: "rgba(13,17,24,0.6)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div className="space-y-6">
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-cy-300/[0.06] border border-cy-300/25 text-cy-300 text-[11px] font-mono uppercase tracking-[0.14em]">
+          <Loader2 size={11} className="animate-spin" />
+          Scanning {regionName}
+        </div>
+        <div className="space-y-2.5">
+          <div className="h-2.5 w-32 rounded shimmer" />
+          <div className="h-9 w-72 rounded shimmer" />
+          <div className="h-2.5 w-40 rounded shimmer" />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {[0, 1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="rounded-xl p-4 space-y-2"
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.05)",
+              }}
+            >
+              <div className="h-2 w-16 rounded shimmer" />
+              <div className="h-7 w-20 rounded shimmer" />
+            </div>
+          ))}
         </div>
       </div>
+      <div
+        className="relative rounded-2xl overflow-hidden min-h-[280px] flex items-center justify-center"
+        style={{
+          background: "rgba(0,0,0,0.3)",
+          border: "1px solid rgba(255,255,255,0.06)",
+        }}
+      >
+        <Loader2 size={20} className="animate-spin text-cy-300/60" />
+      </div>
     </div>
   );
 }
 
-function EmptyState({ regionName }: { regionName: string }) {
+function ErrorState({ regionName }: { regionName: string }) {
   return (
-    <div className="space-y-4">
-      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-mint/[0.08] border border-mint/30 text-mint text-[11px] font-mono uppercase tracking-[0.14em]">
-        Quiet skies · last 90 days
-      </div>
-      <div className="font-display text-[24px] sm:text-[28px] font-semibold tracking-tight text-slate-100 leading-tight">
-        No qualifying hail events in the {regionName} area.
-      </div>
-      <p className="text-[14px] text-slate-400 leading-relaxed max-w-prose">
-        This is a feature, not a bug — we only surface events with
-        radar-estimated hail ≥1 inch, the size where roofing replacement
-        becomes a real conversation. The cron continues to scan daily;
-        the next significant event will appear here within 6 hours of
-        the radar pass.
-      </p>
-      <p className="text-[12.5px] text-slate-500 leading-relaxed">
-        Florida averages 12–18 hail days per year statewide; central
-        Florida specifically sees most activity Feb–May. Quiet windows
-        are normal.
-      </p>
-    </div>
-  );
-}
-
-function ErrorState({
-  regionName,
-  reason,
-}: {
-  regionName: string;
-  reason: string;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber/[0.08] border border-amber/30 text-amber text-[11px] font-mono uppercase tracking-[0.14em]">
-        <Radio size={12} />
+    <div
+      className="rounded-3xl p-8 text-center"
+      style={{
+        background: "rgba(13,17,24,0.6)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber/[0.08] border border-amber/30 text-amber text-[11px] font-mono uppercase tracking-[0.14em] mb-4">
         Storm data temporarily unavailable
       </div>
-      <div className="font-display text-[22px] sm:text-[26px] font-semibold tracking-tight text-slate-100 leading-tight">
-        We couldn&apos;t reach NOAA radar right now.
+      <div className="font-display text-[20px] sm:text-[24px] font-semibold tracking-tight text-slate-100 leading-tight max-w-prose mx-auto">
+        We&apos;re rebuilding the event index for {regionName}.
       </div>
-      <p className="text-[13.5px] text-slate-400 leading-relaxed max-w-prose">
-        The ingestion pipeline runs every 24 hours and the live demo
-        reads from the cached results. If you&apos;re seeing this, the
-        cache is being rebuilt — refresh in a few minutes.
-      </p>
-      <p className="text-[11.5px] text-slate-500 font-mono leading-relaxed">
-        Region: {regionName} · Reason: {reason}
+      <p className="text-[13px] text-slate-400 mt-3 leading-relaxed max-w-prose mx-auto">
+        The live preview reads from a daily-refreshed cache. Try
+        refreshing in a few minutes, or get in touch and we&apos;ll walk
+        you through the dashboard with a different territory.
       </p>
     </div>
   );
 }
 
-function ResolvedEvent({
-  event,
-  canvass,
-  regionName,
-}: {
-  event: RecentEvent;
-  canvass: CanvassResponse | null;
-  regionName: string;
-}) {
-  return (
-    <>
-      <div>
-        <div className="label flex items-center gap-2 mb-2">
-          <CloudHail size={12} />
-          Event date
-        </div>
-        <div className="font-display text-[24px] sm:text-[28px] font-semibold tracking-tight text-slate-50 leading-tight">
-          {formatEventDate(event.date)}
-        </div>
-        <div className="text-[12.5px] text-slate-400 mt-1">
-          {daysAgo(event.date) === 0
-            ? "Detected today"
-            : daysAgo(event.date) === 1
-              ? "Detected yesterday"
-              : `${daysAgo(event.date)} days ago`}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4">
-        <Stat
-          label="Peak MESH size"
-          value={`${event.maxInches.toFixed(2)}"`}
-          hint="radar-estimated hail"
-          tone="amber"
-        />
-        <Stat
-          label="Radar cells hit"
-          value={event.hitCount.toLocaleString()}
-          hint="≥1km² each"
-        />
-        <Stat
-          label="Ground reports"
-          value={`${event.groundReportCount}`}
-          hint="NOAA Storm Events"
-          tone={event.groundReportCount > 0 ? "mint" : "slate"}
-        />
-        <Stat
-          label="Distance from center"
-          value={`${event.distanceMiles.toFixed(1)} mi`}
-          hint={`from ${regionName}`}
-        />
-      </div>
-
-      <div className="pt-2 border-t border-white/[0.06]">
-        <div className="label flex items-center gap-2 mb-2">
-          <MapPin size={12} />
-          Canvass-eligible buildings
-        </div>
-        <div className="flex items-baseline gap-3">
-          <div className="font-display tabular text-[44px] sm:text-[56px] font-semibold tracking-[-0.02em] text-cy-300 leading-none">
-            {canvass ? canvass.buildingCount.toLocaleString() : "—"}
-          </div>
-          <div className="text-[12px] text-slate-400 font-mono uppercase tracking-[0.12em]">
-            inside 2-mi radius
-          </div>
-        </div>
-        <div className="text-[12px] text-slate-500 mt-2 leading-relaxed">
-          {canvass?.isEstimate
-            ? "Estimated from regional density (OSM mirrors temporarily unavailable). Real count refreshes within 24h."
-            : canvass
-              ? "Counted via OpenStreetMap Overpass. Address-level rows populate from your county parcel feed at activation."
-              : "Building count temporarily unavailable."}
-        </div>
-      </div>
-
-      <div className="text-[11.5px] text-slate-500 leading-relaxed pt-2">
-        Source: NOAA MRMS MESH 1km radar grid, cross-referenced with
-        NOAA Storm Events Local Storm Reports.{" "}
-        <Link href="/methodology" className="text-cy-300 hover:underline">
-          How we measure →
-        </Link>
-      </div>
-    </>
-  );
-}
+/* ─── Output cards (driven by the live event) ─────────────────────────── */
 
 function Stat({
   label,
@@ -441,18 +417,217 @@ function Stat({
     mint: "text-mint",
   };
   return (
-    <div className="glass-panel p-4">
-      <div className="label text-[10px]">{label}</div>
+    <div
+      className="rounded-xl p-4"
+      style={{
+        background: "rgba(255,255,255,0.025)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500">
+        {label}
+      </div>
       <div
-        className={`font-display tabular text-[24px] sm:text-[28px] font-semibold tracking-[-0.02em] mt-1.5 leading-none ${tones[tone]}`}
+        className={`font-display tabular text-[24px] sm:text-[26px] font-semibold tracking-[-0.02em] mt-1.5 leading-none ${tones[tone]}`}
       >
         {value}
       </div>
       {hint && (
-        <div className="text-[11px] font-mono uppercase tracking-[0.12em] text-slate-500 mt-2">
+        <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 mt-2">
           {hint}
         </div>
       )}
+    </div>
+  );
+}
+
+function OutputCanvassList({ event }: { event: RecentEvent }) {
+  // Score formula = peak inches × 0.6 + (5 - distance) × 0.5, capped.
+  // Generates deterministic-looking but masked addresses tied to the
+  // event. Marked as "sample" in the footer.
+  const score = Math.min(
+    9.9,
+    event.maxInches * 4.5 + Math.max(0, 5 - event.distanceMiles) * 0.6,
+  );
+  const rows = [
+    { addr: "•••• Glasstone Ct, Apopka FL", score: score },
+    { addr: "•••• Brittany Bay, Apopka FL", score: score - 0.2 },
+    { addr: "•••• Citrus Tree Ln, Apopka FL", score: score - 0.4 },
+    { addr: "•••• Westmoreland Ave, Orlando FL", score: score - 0.6 },
+    { addr: "•••• Honeywood Pl, Apopka FL", score: score - 0.8 },
+  ];
+  return (
+    <div
+      className="rounded-2xl p-6 flex flex-col"
+      style={{
+        background: "rgba(13,17,24,0.6)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <Inbox size={13} className="text-cy-300" />
+        <span className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-400">
+          Canvass list
+        </span>
+      </div>
+      <div className="font-display text-[17px] font-semibold tracking-tight text-slate-50 mb-1">
+        Ranked targets
+      </div>
+      <div className="text-[11.5px] text-slate-500 mb-4">
+        Generated from the {formatEventDateShort(event.date)} event
+      </div>
+      <div className="space-y-1.5 mb-4 flex-1">
+        {rows.map((r, i) => (
+          <div
+            key={i}
+            className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg"
+            style={{
+              background: "rgba(255,255,255,0.025)",
+              border: "1px solid rgba(255,255,255,0.05)",
+            }}
+          >
+            <span className="text-[12px] text-slate-300 truncate font-mono">
+              {r.addr}
+            </span>
+            <span
+              className="text-[10px] font-mono uppercase tracking-[0.08em] px-2 py-0.5 rounded-full flex-shrink-0"
+              style={{
+                background: "rgba(243,177,75,0.10)",
+                border: "1px solid rgba(243,177,75,0.34)",
+                color: "#f3b14b",
+              }}
+            >
+              {r.score.toFixed(1)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 pt-3 border-t border-white/[0.06]">
+        Sample · Real addresses appear at activation
+      </div>
+    </div>
+  );
+}
+
+function OutputPostcard({ event }: { event: RecentEvent }) {
+  return (
+    <div
+      className="rounded-2xl p-6 flex flex-col"
+      style={{
+        background: "rgba(13,17,24,0.6)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <Send size={13} className="text-cy-300" />
+        <span className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-400">
+          Direct mail
+        </span>
+      </div>
+      <div className="font-display text-[17px] font-semibold tracking-tight text-slate-50 mb-1">
+        Ready-to-mail postcard
+      </div>
+      <div className="text-[11.5px] text-slate-500 mb-4">
+        Pre-filled with the {formatEventDateShort(event.date)} event
+      </div>
+      <div
+        className="rounded-xl p-5 flex-1 flex flex-col justify-between"
+        style={{
+          background:
+            "linear-gradient(135deg, rgba(103,220,255,0.10), rgba(95,227,176,0.06))",
+          border: "1px solid rgba(103,220,255,0.20)",
+        }}
+      >
+        <div>
+          <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-cy-300 mb-2">
+            Hail event · {formatEventDateShort(event.date)}
+          </div>
+          <div className="font-display text-[19px] font-semibold tracking-tight text-slate-50 leading-tight">
+            We measured {event.maxInches.toFixed(1)}-inch hail at your
+            address.
+          </div>
+          <p className="text-[12px] text-slate-300 mt-3 leading-relaxed">
+            Your neighborhood was inside the storm footprint. A free
+            inspection from a local crew confirms whether your roof took
+            damage.
+          </p>
+        </div>
+        <div className="mt-4 pt-3 border-t border-white/[0.08] text-[10.5px] font-mono text-cy-300 tabular">
+          storm.acme-roofing.com/{formatEventDateUrl(event.date)}-•••••
+        </div>
+      </div>
+      <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 pt-3 mt-4 border-t border-white/[0.06]">
+        $0.85 / postcard at scale
+      </div>
+    </div>
+  );
+}
+
+function OutputLandingPage({
+  event,
+  buildingCount,
+}: {
+  event: RecentEvent;
+  buildingCount: number | null;
+}) {
+  return (
+    <div
+      className="rounded-2xl p-6 flex flex-col"
+      style={{
+        background: "rgba(13,17,24,0.6)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <ExternalLink size={13} className="text-cy-300" />
+        <span className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-400">
+          Per-event landing
+        </span>
+      </div>
+      <div className="font-display text-[17px] font-semibold tracking-tight text-slate-50 mb-1">
+        Pre-filled estimate flow
+      </div>
+      <div className="text-[11.5px] text-slate-500 mb-4">
+        One per event · auto-generated
+      </div>
+      <div
+        className="rounded-xl p-5 flex-1 space-y-3"
+        style={{
+          background: "rgba(0,0,0,0.3)",
+          border: "1px solid rgba(255,255,255,0.06)",
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-mint pulse-dot" />
+          <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-mint">
+            Address matched
+          </span>
+        </div>
+        <div className="font-display text-[16px] font-semibold tracking-tight text-slate-50 leading-tight">
+          Welcome — your home is in the {formatEventDateShort(event.date)}{" "}
+          hail footprint.
+        </div>
+        <div className="text-[12px] text-slate-400 leading-relaxed">
+          Peak hail size: {event.maxInches.toFixed(1)}&Prime;
+          {buildingCount != null && (
+            <>
+              {" "}· {buildingCount.toLocaleString()} homes in your
+              impact zone
+            </>
+          )}
+        </div>
+        <div className="pt-2">
+          <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 mb-1.5">
+            One-click intake
+          </div>
+          <div className="text-[12.5px] text-cy-300 font-medium">
+            Schedule a free inspection →
+          </div>
+        </div>
+      </div>
+      <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 pt-3 mt-4 border-t border-white/[0.06]">
+        Routes into your existing estimate flow
+      </div>
     </div>
   );
 }

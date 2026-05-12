@@ -69,7 +69,11 @@ export async function GET(req: Request) {
     const mrmsRes = await fetch(
       `${origin}/api/hail-mrms?lat=${lat}&lng=${lng}` +
         `&radiusMiles=${Math.min(5, radiusMiles)}` +
-        `&yearsBack=1&minInches=${minInches}`,
+        // 3-year backfill — central FL has documented ≥1" hail events
+        // every 6-12 months on average; widening the window keeps the
+        // live demo card populated with concrete data instead of an
+        // empty state on quiet quarters.
+        `&yearsBack=3&minInches=${minInches}`,
       { cache: "no-store", signal: AbortSignal.timeout(10_000) },
     );
     if (mrmsRes.ok) {
@@ -80,22 +84,15 @@ export async function GET(req: Request) {
     console.warn("[recent-significant] MRMS fetch failed:", err);
   }
 
-  // Filter to the trailing 90 days. MRMS returns full backfill window;
-  // the demo page only wants "recent and actionable."
-  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-  const toDate = (yyyymmdd: string) => {
-    const y = yyyymmdd.slice(0, 4);
-    const m = yyyymmdd.slice(4, 6);
-    const d = yyyymmdd.slice(6, 8);
-    return new Date(`${y}-${m}-${d}T00:00:00Z`);
-  };
-  const recentMrms = mrmsEvents.filter((e) => toDate(e.date) >= ninetyDaysAgo);
-
-  // Pick the most recent by date — not the largest. The demo wants
-  // freshness; a 2.5" event from 80 days ago reads as stale next to a
-  // 1.1" event from yesterday.
-  recentMrms.sort((a, b) => (a.date < b.date ? 1 : -1));
-  const topEvent = recentMrms[0] ?? null;
+  // Pick the most recent qualifying event from the full available
+  // window. Earlier we filtered to ≤90 days for "freshness," but the
+  // demo page needs SOMETHING real to show — and central FL has
+  // documented hail events every 6-12 months on average. Widening to
+  // the full backfill ensures the live card always renders concrete
+  // data; the UI surfaces the days-ago count so a stale event is
+  // visibly stale rather than hidden.
+  mrmsEvents.sort((a, b) => (a.date < b.date ? 1 : -1));
+  const topEvent = mrmsEvents[0] ?? null;
 
   // Cross-reference with NOAA Storm Events for the same day to surface
   // the ground-report count. Optional — we don't fail the route on
