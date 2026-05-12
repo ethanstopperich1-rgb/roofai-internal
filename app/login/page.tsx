@@ -14,7 +14,7 @@
  */
 
 import { useState } from "react";
-import { Mail, Loader2, ArrowRight, Check, ShieldCheck, Sparkles } from "lucide-react";
+import { Mail, Loader2, ArrowRight, Check, ShieldCheck } from "lucide-react";
 import { createBrowserClient, supabaseConfigured } from "@/lib/supabase";
 
 export default function LoginPage() {
@@ -57,15 +57,14 @@ export default function LoginPage() {
   return (
     <div className="lg-env min-h-screen flex flex-col items-center justify-center px-4 py-12 relative">
       {/* Wordmark above the card — gives the page a brand "anchor" */}
-      <div className="mb-8 flex flex-col items-center gap-3">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-2xl bg-gradient-to-br from-cy-300/80 to-violet-300/60 flex items-center justify-center shadow-[0_8px_28px_-8px_rgba(125,211,252,0.55)]">
-            <Sparkles className="w-4 h-4 text-[#051019]" />
-          </div>
-          <span className="iridescent-text font-semibold tracking-tight text-[22px]">
-            Voxaris AI
-          </span>
-        </div>
+      <div className="mb-9 flex flex-col items-center gap-3">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/brand/logo-wordmark-alpha.png"
+          alt="Voxaris Pitch"
+          className="h-14 sm:h-16 w-auto select-none drop-shadow-[0_8px_28px_rgba(125,211,252,0.18)]"
+          draggable={false}
+        />
         <div className="glass-eyebrow">Operator Console</div>
       </div>
 

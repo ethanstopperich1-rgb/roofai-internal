@@ -13,7 +13,6 @@ import {
   ShieldCheck,
   Menu,
   X,
-  Sparkles,
   Radio,
 } from "lucide-react";
 
@@ -52,12 +51,15 @@ export default function DashboardChrome({ children }: { children: ReactNode }) {
     <div className="relative min-h-screen flex flex-col lg:flex-row">
       {/* Mobile top bar */}
       <div className="lg:hidden sticky top-0 z-30 px-4 py-3 flex items-center justify-between border-b border-white/[0.06] bg-[rgba(8,11,17,0.72)] backdrop-blur-xl">
-        <div className="flex items-center gap-2">
-          <div className="h-7 w-7 rounded-xl bg-gradient-to-br from-cy-300/80 to-violet-300/60 flex items-center justify-center">
-            <Sparkles className="w-3.5 h-3.5 text-[#051019]" />
-          </div>
-          <span className="iridescent-text font-semibold tracking-tight text-base">Voxaris AI</span>
-        </div>
+        <Link href="/dashboard" className="flex items-center">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/brand/logo-wordmark-alpha.png"
+            alt="Voxaris Pitch"
+            className="h-7 w-auto select-none"
+            draggable={false}
+          />
+        </Link>
         <button
           type="button"
           aria-label={drawerOpen ? "Close menu" : "Open menu"}
@@ -179,21 +181,20 @@ function SidebarContent({
       <Link
         href="/dashboard"
         onClick={onNavigate}
-        className="hidden lg:flex items-center gap-2.5 px-1"
+        className="hidden lg:flex flex-col items-start gap-1.5 px-1"
       >
-        <div className="h-9 w-9 rounded-2xl bg-gradient-to-br from-cy-300/80 to-violet-300/60 flex items-center justify-center shadow-[0_8px_28px_-8px_rgba(125,211,252,0.45)]">
-          <Sparkles className="w-4 h-4 text-[#051019]" />
-        </div>
-        <div className="flex flex-col leading-tight">
-          <span className="iridescent-text font-semibold tracking-tight text-[17px]">
-            Voxaris AI
-          </span>
-          <span className="text-[10px] font-mono tabular uppercase tracking-[0.16em] text-white/40">
-            Operator Console
-          </span>
-        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/brand/logo-wordmark-alpha.png"
+          alt="Voxaris Pitch"
+          className="h-9 w-auto select-none drop-shadow-[0_6px_18px_rgba(125,211,252,0.18)]"
+          draggable={false}
+        />
+        <span className="text-[10px] font-mono tabular uppercase tracking-[0.18em] text-white/40 pl-0.5">
+          Operator Console
+        </span>
       </Link>
-      <div className="hidden lg:block glass-divider mt-1" />
+      <div className="hidden lg:block glass-divider mt-2" />
 
       <nav className="flex flex-col gap-1">
         {NAV.map((item) => {
