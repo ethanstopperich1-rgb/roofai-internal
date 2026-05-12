@@ -10,6 +10,7 @@ import {
   FileText,
   BarChart3,
   Settings as SettingsIcon,
+  ShieldCheck,
   Menu,
   X,
 } from "lucide-react";
@@ -27,6 +28,7 @@ const NAV = [
   { href: "/dashboard/proposals", label: "Proposals", icon: FileText, match: "prefix" as const },
   { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3, match: "prefix" as const },
   { href: "/dashboard/settings", label: "Settings", icon: SettingsIcon, match: "prefix" as const },
+  { href: "/dashboard/admin", label: "Admin", icon: ShieldCheck, match: "prefix" as const },
 ];
 
 function isActive(pathname: string, item: (typeof NAV)[number]): boolean {
