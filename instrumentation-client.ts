@@ -11,6 +11,19 @@
 
 import * as Sentry from "@sentry/nextjs";
 
+/**
+ * Sentry's Next.js SDK instruments client-side router transitions
+ * (link clicks, programmatic navigations) for performance traces +
+ * error attribution. The SDK requires us to export this hook from the
+ * client instrumentation file so it can wire into the App Router's
+ * transition lifecycle. Without the export, every build emits a loud
+ * `ACTION REQUIRED` warning and the navigation traces don't fire.
+ *
+ * Safe to export unconditionally — when NEXT_PUBLIC_SENTRY_DSN is
+ * unset the underlying capture function is a no-op.
+ */
+export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;
+
 const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
 
 if (dsn) {

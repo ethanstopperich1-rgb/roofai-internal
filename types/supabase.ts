@@ -343,6 +343,146 @@ export type Database = {
         }
         Relationships: []
       }
+      // ─── ADDED BY MIGRATIONS 0004 + 0005 ─────────────────────────────
+      // These three table types were added by hand to keep the build
+      // green pending a real Supabase types regeneration. After you
+      // apply migrations 0004_sms_opt_outs.sql and 0005_canvass_targets.sql
+      // to the live DB, regenerate via:
+      //   mcp__supabase__generate_typescript_types({ project_id: "htfhelquuvndfwfwqjmd" })
+      // and these hand-rolled definitions will be replaced with the
+      // exact shape the DB emits.
+      sms_opt_outs: {
+        Row: {
+          phone_e164: string
+          office_id: string | null
+          opted_out_at: string
+          source: string
+          keyword: string | null
+          opted_in_at: string | null
+        }
+        Insert: {
+          phone_e164: string
+          office_id?: string | null
+          opted_out_at?: string
+          source?: string
+          keyword?: string | null
+          opted_in_at?: string | null
+        }
+        Update: {
+          phone_e164?: string
+          office_id?: string | null
+          opted_out_at?: string
+          source?: string
+          keyword?: string | null
+          opted_in_at?: string | null
+        }
+        Relationships: []
+      }
+      storm_events: {
+        Row: {
+          id: string
+          region_name: string
+          center_lat: number
+          center_lng: number
+          radius_miles: number
+          event_date: string
+          peak_inches: number
+          hit_count: number
+          ground_reports: number
+          source: string
+          detected_at: string
+          office_id: string | null
+        }
+        Insert: {
+          id?: string
+          region_name: string
+          center_lat: number
+          center_lng: number
+          radius_miles: number
+          event_date: string
+          peak_inches: number
+          hit_count: number
+          ground_reports?: number
+          source?: string
+          detected_at?: string
+          office_id?: string | null
+        }
+        Update: {
+          id?: string
+          region_name?: string
+          center_lat?: number
+          center_lng?: number
+          radius_miles?: number
+          event_date?: string
+          peak_inches?: number
+          hit_count?: number
+          ground_reports?: number
+          source?: string
+          detected_at?: string
+          office_id?: string | null
+        }
+        Relationships: []
+      }
+      canvass_targets: {
+        Row: {
+          id: string
+          office_id: string
+          storm_event_id: string
+          address_line: string | null
+          city: string | null
+          state: string | null
+          zip: string | null
+          lat: number
+          lng: number
+          score: number
+          distance_miles: number | null
+          status: string
+          contacted_at: string | null
+          responded_at: string | null
+          lead_id: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          office_id: string
+          storm_event_id: string
+          address_line?: string | null
+          city?: string | null
+          state?: string | null
+          zip?: string | null
+          lat: number
+          lng: number
+          score?: number
+          distance_miles?: number | null
+          status?: string
+          contacted_at?: string | null
+          responded_at?: string | null
+          lead_id?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          office_id?: string
+          storm_event_id?: string
+          address_line?: string | null
+          city?: string | null
+          state?: string | null
+          zip?: string | null
+          lat?: number
+          lng?: number
+          score?: number
+          distance_miles?: number | null
+          status?: string
+          contacted_at?: string | null
+          responded_at?: string | null
+          lead_id?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
