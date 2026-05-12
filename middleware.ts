@@ -106,10 +106,42 @@ function unauthorizedResponse(): NextResponse {
   });
 }
 
+/**
+ * Detect a valid Supabase Auth session by sniffing the cookies. The
+ * actual cookie name is `sb-<project_ref>-auth-token` — we match the
+ * pattern rather than the literal so the middleware doesn't need to
+ * know the project ref. A cookie alone doesn't prove the session is
+ * still VALID (the JWT inside could be expired), but it's a strong
+ * enough signal at the middleware layer; downstream Server Components
+ * still verify via supabase.auth.getUser() before reading data.
+ *
+ * This is a deliberate trade-off: the alternative (calling getUser()
+ * inside middleware) would add a network round-trip + a Supabase API
+ * call to every protected request — too expensive. We accept that an
+ * expired cookie temporarily slips past the middleware gate; the
+ * Server Component fallback catches it within a single request.
+ */
+function hasSupabaseSession(req: NextRequest): boolean {
+  for (const c of req.cookies.getAll()) {
+    if (c.name.startsWith("sb-") && c.name.endsWith("-auth-token")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function middleware(req: NextRequest): NextResponse {
   const { pathname } = req.nextUrl;
 
   if (!isProtected(pathname)) {
+    return NextResponse.next();
+  }
+
+  // Supabase session — preferred path once auth migration is rolled
+  // out. When the user has a valid session cookie, skip Basic Auth
+  // entirely. Lets reps move to magic-link login without removing the
+  // Basic Auth fallback (yet).
+  if (hasSupabaseSession(req)) {
     return NextResponse.next();
   }
 
