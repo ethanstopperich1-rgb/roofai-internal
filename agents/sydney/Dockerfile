@@ -19,7 +19,7 @@ RUN pip install -r requirements.txt
 RUN python -c "from livekit.plugins import silero; silero.VAD.load()" || true
 RUN python -c "from livekit.plugins.turn_detector.multilingual import MultilingualModel; MultilingualModel()" || true
 
-COPY agent.py tools.py ./
+COPY agent.py tools.py events.py setup_sip.py ./
 COPY prompts/ ./prompts/
 
 CMD ["python", "agent.py", "start"]
