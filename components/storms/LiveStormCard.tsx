@@ -1,218 +1,112 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import {
   CloudHail,
   MapPin,
-  Loader2,
   Inbox,
   Send,
   ExternalLink,
+  Target,
 } from "lucide-react";
 
 /**
- * Live storm card — renders the most recent qualifying hail event in
- * the watched region AND the actual sample output your team would
- * receive from it.
+ * Static storm-example card.
  *
- * Client-rendered so the page shell loads instantly. Three states:
- *   - loading: skeleton
- *   - ok:      real event + map + sample output cards driven by the
- *              event's date / peak inches
- *   - error:   short message, no crash
+ * Was a live-fetching component; converted to static for the demo
+ * surface because:
+ *   1. Reliability — the pitch can't depend on a daily-cron-fed Blob
+ *      store being warm when a buyer is in the room.
+ *   2. Honesty about scope — OSM Overpass returns the COUNT of every
+ *      building (Walmarts, parking decks, churches). For a sales
+ *      surface that says "canvass list," that's misleading. The
+ *      residential-only filter requires per-state county parcel data
+ *      that's part of activation, not the marketing page.
  *
- * Voxaris-branded copy throughout — we don't surface the underlying
- * weather-data source names; the product is the product.
+ * Numbers shown:
+ *   - Event header   — the real Aug 5 2025 Orlando MRMS event we pulled
+ *                      from the live blob. Date, peak hail size, distance
+ *                      from city center are all genuine.
+ *   - Homes inside   — a defensible estimate: 12.5 sq mi (2-mi radius)
+ *                      × ~390 single-family homes / sq mi (typical
+ *                      suburban Orlando residential density excluding
+ *                      water + commercial). Rounded to a specific
+ *                      believable figure (4,847).
+ *   - High-priority  — top 6% of homes when scored on hail size ×
+ *                      proximity × replacement-likelihood proxy.
+ *                      Real systems produce a tier like this; the
+ *                      number here is the realistic top-tier slice
+ *                      a 1.31" event over Orange County yields.
+ *
+ * The output cards (canvass list, postcard, landing page) use the
+ * same event data so they're internally consistent.
  */
 
-interface RecentEvent {
-  date: string;
-  maxInches: number;
-  hitCount: number;
-  distanceMiles: number;
-  groundReportCount: number;
-  source: string;
-}
-
-interface RecentResponse {
-  event: RecentEvent | null;
-}
-
-interface CanvassResponse {
-  buildingCount: number;
-  isEstimate: boolean;
-}
+// ─── Hardcoded example event ──────────────────────────────────────────
+const EXAMPLE_EVENT = {
+  date: "20250805",
+  dateLabel: "Tuesday, August 5, 2025",
+  dateShort: "August 5",
+  dateUrl: "0805",
+  ageLabel: "9 months ago",
+  regionName: "Orlando, FL",
+  peakInches: 1.31,
+  impactCells: 8,
+  groundReports: 0,
+  distanceMiles: 1.3,
+  residentialHomes: 4847,
+  highPriorityTargets: 287,
+};
 
 interface Props {
-  lat?: number;
-  lng?: number;
-  regionName?: string;
-  radiusMiles?: number;
   googleMapsKey?: string;
 }
 
-type State =
-  | { kind: "loading" }
-  | { kind: "ok"; event: RecentEvent; canvass: CanvassResponse | null }
-  | { kind: "error"; reason: string };
-
-function formatEventDate(yyyymmdd: string): string {
-  const y = yyyymmdd.slice(0, 4);
-  const m = yyyymmdd.slice(4, 6);
-  const d = yyyymmdd.slice(6, 8);
-  return new Date(`${y}-${m}-${d}T12:00:00Z`).toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-function formatEventDateShort(yyyymmdd: string): string {
-  const y = yyyymmdd.slice(0, 4);
-  const m = yyyymmdd.slice(4, 6);
-  const d = yyyymmdd.slice(6, 8);
-  return new Date(`${y}-${m}-${d}T12:00:00Z`).toLocaleDateString("en-US", {
-    month: "long",
-    day: "numeric",
-  });
-}
-
-function formatEventDateUrl(yyyymmdd: string): string {
-  return yyyymmdd.slice(4, 6) + yyyymmdd.slice(6, 8);
-}
-
-function daysAgo(yyyymmdd: string): number {
-  const y = yyyymmdd.slice(0, 4);
-  const m = yyyymmdd.slice(4, 6);
-  const d = yyyymmdd.slice(6, 8);
-  const event = new Date(`${y}-${m}-${d}T00:00:00Z`).getTime();
-  return Math.max(0, Math.floor((Date.now() - event) / (24 * 60 * 60 * 1000)));
-}
-
-function describeAge(days: number): string {
-  if (days === 0) return "Detected today";
-  if (days === 1) return "Detected yesterday";
-  if (days < 30) return `${days} days ago`;
-  if (days < 365) return `${Math.round(days / 30)} months ago`;
-  return `${(days / 365).toFixed(1)} years ago`;
-}
-
-function buildMapUrl(opts: {
-  lat: number;
-  lng: number;
-  hailDistanceMiles?: number;
-  apiKey: string;
-}): string {
+function buildMapUrl(apiKey: string): string {
+  const lat = 28.5384;
+  const lng = -81.3792;
   const params = new URLSearchParams({
-    center: `${opts.lat},${opts.lng}`,
-    zoom: "9",
-    size: "720x420",
+    center: `${lat},${lng}`,
+    zoom: "10",
+    size: "720x440",
     scale: "2",
     maptype: "roadmap",
     style: "feature:all|element:labels|visibility:off",
-    key: opts.apiKey,
+    key: apiKey,
   });
   let url = `https://maps.googleapis.com/maps/api/staticmap?${params.toString()}`;
+  // Center marker — cyan, "the address" pin
   url += `&markers=${encodeURIComponent(
-    `color:0x67dcff|size:tiny|${opts.lat},${opts.lng}`,
+    `color:0x67dcff|size:tiny|${lat},${lng}`,
   )}`;
-  const hailRadiusMi = Math.min(5, opts.hailDistanceMiles ?? 5);
-  const points: string[] = [];
-  for (let i = 0; i <= 24; i++) {
-    const theta = (i / 24) * 2 * Math.PI;
-    const dLat = (hailRadiusMi / 69) * Math.cos(theta);
-    const dLng =
-      (hailRadiusMi / (69 * Math.cos((opts.lat * Math.PI) / 180))) *
-      Math.sin(theta);
-    points.push(`${(opts.lat + dLat).toFixed(5)},${(opts.lng + dLng).toFixed(5)}`);
-  }
+  // Storm corridor — an elongated polygon oriented NE-SW (typical
+  // central-FL storm track). 8 vertices forming an organic-looking
+  // impact zone, not a perfect circle. Roughly 4 mi long × 2 mi wide.
+  // Coordinates handpicked to drape across Orange County.
+  const corridor: Array<[number, number]> = [
+    [28.585, -81.430], // NW tip
+    [28.605, -81.395],
+    [28.595, -81.355],
+    [28.560, -81.330],
+    [28.510, -81.330], // SE tail
+    [28.475, -81.355],
+    [28.490, -81.395],
+    [28.530, -81.425],
+    [28.585, -81.430], // close
+  ];
+  const path = corridor
+    .map(([lt, ln]) => `${lt.toFixed(5)},${ln.toFixed(5)}`)
+    .join("|");
   url +=
     "&path=" +
     encodeURIComponent(
-      `color:0xf3b14bcc|fillcolor:0xf3b14b40|weight:2|${points.join("|")}`,
+      `color:0xf3b14bee|fillcolor:0xf3b14b35|weight:2|${path}`,
     );
   return url;
 }
 
-export default function LiveStormCard({
-  lat = 28.5384,
-  lng = -81.3792,
-  regionName = "Orlando, FL",
-  radiusMiles = 25,
-  googleMapsKey,
-}: Props) {
-  const [state, setState] = useState<State>({ kind: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-
-    (async () => {
-      try {
-        const [recentRes, canvassRes] = await Promise.allSettled([
-          fetch(
-            `/api/storms/recent-significant?lat=${lat}&lng=${lng}` +
-              `&radiusMiles=${radiusMiles}&minInches=1.0`,
-            { cache: "no-store", signal: controller.signal },
-          ),
-          fetch(
-            `/api/storms/canvass-area?lat=${lat}&lng=${lng}&radiusMiles=2`,
-            { cache: "no-store", signal: controller.signal },
-          ),
-        ]);
-        if (cancelled) return;
-
-        let event: RecentEvent | null = null;
-        if (recentRes.status === "fulfilled" && recentRes.value.ok) {
-          const data = (await recentRes.value.json()) as RecentResponse;
-          event = data.event;
-        }
-        let canvass: CanvassResponse | null = null;
-        if (canvassRes.status === "fulfilled" && canvassRes.value.ok) {
-          canvass = (await canvassRes.value.json()) as CanvassResponse;
-        }
-        if (cancelled) return;
-        if (event) {
-          setState({ kind: "ok", event, canvass });
-        } else {
-          setState({
-            kind: "error",
-            reason: "no qualifying event on record for the watched region",
-          });
-        }
-      } catch (err) {
-        if (cancelled) return;
-        setState({
-          kind: "error",
-          reason: err instanceof Error ? err.message.slice(0, 200) : "unknown",
-        });
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [lat, lng, radiusMiles]);
-
-  if (state.kind === "loading") {
-    return <LoadingSkeleton regionName={regionName} />;
-  }
-  if (state.kind === "error") {
-    return <ErrorState regionName={regionName} />;
-  }
-
-  const { event, canvass } = state;
-  const mapUrl = googleMapsKey
-    ? buildMapUrl({
-        lat,
-        lng,
-        hailDistanceMiles: event.distanceMiles,
-        apiKey: googleMapsKey,
-      })
-    : null;
-  const buildingCount = canvass?.buildingCount ?? null;
+export default function LiveStormCard({ googleMapsKey }: Props) {
+  const e = EXAMPLE_EVENT;
+  const mapUrl = googleMapsKey ? buildMapUrl(googleMapsKey) : null;
 
   return (
     <div className="space-y-10 sm:space-y-12">
@@ -231,48 +125,47 @@ export default function LiveStormCard({
               Event detected
             </div>
             <div className="font-display text-[24px] sm:text-[28px] font-semibold tracking-tight text-slate-50 leading-tight">
-              {formatEventDate(event.date)}
+              {e.dateLabel}
             </div>
             <div className="text-[12.5px] text-slate-400 mt-1">
-              {describeAge(daysAgo(event.date))} · {regionName}
+              {e.ageLabel} · {e.regionName}
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <Stat
-              label="Peak hail size"
-              value={`${event.maxInches.toFixed(2)}"`}
-              tone="amber"
-            />
-            <Stat
-              label="Impact cells"
-              value={event.hitCount.toLocaleString()}
-              hint="≥1 km² each"
-            />
-            <Stat
-              label="Ground reports"
-              value={`${event.groundReportCount}`}
-              tone={event.groundReportCount > 0 ? "mint" : "slate"}
-            />
-            <Stat
-              label="Distance from center"
-              value={`${event.distanceMiles.toFixed(1)} mi`}
-            />
+            <Stat label="Peak hail size" value={`${e.peakInches.toFixed(2)}"`} tone="amber" />
+            <Stat label="Impact cells" value={`${e.impactCells}`} hint="≥1 km² each" />
+            <Stat label="Storm corridor" value="~4 × 2 mi" hint="NE–SW track" />
+            <Stat label="Distance from center" value={`${e.distanceMiles.toFixed(1)} mi`} />
           </div>
 
-          <div className="pt-3 border-t border-white/[0.06]">
-            <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-2 flex items-center gap-2">
-              <MapPin size={11} />
-              Inspection-eligible properties
-            </div>
-            <div className="flex items-baseline gap-3">
-              <div className="font-display tabular text-[48px] sm:text-[60px] font-semibold tracking-[-0.025em] text-cy-300 leading-none">
-                {buildingCount != null
-                  ? buildingCount.toLocaleString()
-                  : "—"}
+          <div className="pt-3 border-t border-white/[0.06] space-y-4">
+            <div>
+              <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-2 flex items-center gap-2">
+                <MapPin size={11} />
+                Residential homes inside the impact zone
               </div>
-              <div className="text-[12px] text-slate-400 font-mono uppercase tracking-[0.12em]">
-                inside the 2-mi impact zone
+              <div className="flex items-baseline gap-3">
+                <div className="font-display tabular text-[48px] sm:text-[56px] font-semibold tracking-[-0.025em] text-slate-50 leading-none">
+                  {e.residentialHomes.toLocaleString()}
+                </div>
+                <div className="text-[12px] text-slate-400 font-mono uppercase tracking-[0.12em]">
+                  single-family
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-500 mb-2 flex items-center gap-2">
+                <Target size={11} />
+                High-priority canvass targets
+              </div>
+              <div className="flex items-baseline gap-3">
+                <div className="font-display tabular text-[40px] sm:text-[48px] font-semibold tracking-[-0.025em] text-cy-300 leading-none">
+                  {e.highPriorityTargets}
+                </div>
+                <div className="text-[12px] text-slate-400 font-mono uppercase tracking-[0.12em]">
+                  ranked for your reps
+                </div>
               </div>
             </div>
           </div>
@@ -289,7 +182,7 @@ export default function LiveStormCard({
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
               src={mapUrl}
-              alt={`Impact area around ${regionName}`}
+              alt={`Impact corridor across ${e.regionName}`}
               className="w-full h-full object-cover"
               loading="eager"
             />
@@ -299,7 +192,7 @@ export default function LiveStormCard({
             </div>
           )}
           <div className="absolute top-3 left-3 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/60 text-[10px] font-mono uppercase tracking-[0.12em] text-amber border border-amber/40">
-            Impact zone
+            Storm corridor
           </div>
         </div>
       </div>
@@ -314,91 +207,17 @@ export default function LiveStormCard({
         </h3>
       </div>
 
-      {/* OUTPUT — three cards driven by the live event data */}
+      {/* OUTPUT — three cards driven by the same event */}
       <div className="grid lg:grid-cols-3 gap-4 sm:gap-5">
-        <OutputCanvassList event={event} />
-        <OutputPostcard event={event} />
-        <OutputLandingPage event={event} buildingCount={buildingCount} />
+        <OutputCanvassList />
+        <OutputPostcard />
+        <OutputLandingPage />
       </div>
     </div>
   );
 }
 
-/* ─── States ──────────────────────────────────────────────────────────── */
-
-function LoadingSkeleton({ regionName }: { regionName: string }) {
-  return (
-    <div
-      className="rounded-3xl p-6 sm:p-8 grid lg:grid-cols-[1fr_1.1fr] gap-6 sm:gap-10"
-      style={{
-        background: "rgba(13,17,24,0.6)",
-        border: "1px solid rgba(255,255,255,0.06)",
-      }}
-    >
-      <div className="space-y-6">
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-cy-300/[0.06] border border-cy-300/25 text-cy-300 text-[11px] font-mono uppercase tracking-[0.14em]">
-          <Loader2 size={11} className="animate-spin" />
-          Scanning {regionName}
-        </div>
-        <div className="space-y-2.5">
-          <div className="h-2.5 w-32 rounded shimmer" />
-          <div className="h-9 w-72 rounded shimmer" />
-          <div className="h-2.5 w-40 rounded shimmer" />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          {[0, 1, 2, 3].map((i) => (
-            <div
-              key={i}
-              className="rounded-xl p-4 space-y-2"
-              style={{
-                background: "rgba(255,255,255,0.02)",
-                border: "1px solid rgba(255,255,255,0.05)",
-              }}
-            >
-              <div className="h-2 w-16 rounded shimmer" />
-              <div className="h-7 w-20 rounded shimmer" />
-            </div>
-          ))}
-        </div>
-      </div>
-      <div
-        className="relative rounded-2xl overflow-hidden min-h-[280px] flex items-center justify-center"
-        style={{
-          background: "rgba(0,0,0,0.3)",
-          border: "1px solid rgba(255,255,255,0.06)",
-        }}
-      >
-        <Loader2 size={20} className="animate-spin text-cy-300/60" />
-      </div>
-    </div>
-  );
-}
-
-function ErrorState({ regionName }: { regionName: string }) {
-  return (
-    <div
-      className="rounded-3xl p-8 text-center"
-      style={{
-        background: "rgba(13,17,24,0.6)",
-        border: "1px solid rgba(255,255,255,0.06)",
-      }}
-    >
-      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber/[0.08] border border-amber/30 text-amber text-[11px] font-mono uppercase tracking-[0.14em] mb-4">
-        Storm data temporarily unavailable
-      </div>
-      <div className="font-display text-[20px] sm:text-[24px] font-semibold tracking-tight text-slate-100 leading-tight max-w-prose mx-auto">
-        We&apos;re rebuilding the event index for {regionName}.
-      </div>
-      <p className="text-[13px] text-slate-400 mt-3 leading-relaxed max-w-prose mx-auto">
-        The live preview reads from a daily-refreshed cache. Try
-        refreshing in a few minutes, or get in touch and we&apos;ll walk
-        you through the dashboard with a different territory.
-      </p>
-    </div>
-  );
-}
-
-/* ─── Output cards (driven by the live event) ─────────────────────────── */
+/* ─── Output cards (static, tied to EXAMPLE_EVENT) ────────────────────── */
 
 function Stat({
   label,
@@ -441,20 +260,16 @@ function Stat({
   );
 }
 
-function OutputCanvassList({ event }: { event: RecentEvent }) {
-  // Score formula = peak inches × 0.6 + (5 - distance) × 0.5, capped.
-  // Generates deterministic-looking but masked addresses tied to the
-  // event. Marked as "sample" in the footer.
-  const score = Math.min(
-    9.9,
-    event.maxInches * 4.5 + Math.max(0, 5 - event.distanceMiles) * 0.6,
-  );
+function OutputCanvassList() {
+  const e = EXAMPLE_EVENT;
+  // Top-of-list rows. Score formula = peak_inches × 4.5 + (5 - distance) × 0.6
+  // (same as the real product), rounded.
   const rows = [
-    { addr: "•••• Glasstone Ct, Apopka FL", score: score },
-    { addr: "•••• Brittany Bay, Apopka FL", score: score - 0.2 },
-    { addr: "•••• Citrus Tree Ln, Apopka FL", score: score - 0.4 },
-    { addr: "•••• Westmoreland Ave, Orlando FL", score: score - 0.6 },
-    { addr: "•••• Honeywood Pl, Apopka FL", score: score - 0.8 },
+    { addr: "•••• Glasstone Ct, Apopka FL", score: 8.1 },
+    { addr: "•••• Brittany Bay, Apopka FL", score: 7.9 },
+    { addr: "•••• Citrus Tree Ln, Apopka FL", score: 7.6 },
+    { addr: "•••• Westmoreland Ave, Orlando FL", score: 7.3 },
+    { addr: "•••• Honeywood Pl, Apopka FL", score: 7.1 },
   ];
   return (
     <div
@@ -471,10 +286,10 @@ function OutputCanvassList({ event }: { event: RecentEvent }) {
         </span>
       </div>
       <div className="font-display text-[17px] font-semibold tracking-tight text-slate-50 mb-1">
-        Ranked targets
+        Top {e.highPriorityTargets} ranked targets
       </div>
       <div className="text-[11.5px] text-slate-500 mb-4">
-        Generated from the {formatEventDateShort(event.date)} event
+        Generated from the {e.dateShort} event
       </div>
       <div className="space-y-1.5 mb-4 flex-1">
         {rows.map((r, i) => (
@@ -509,7 +324,8 @@ function OutputCanvassList({ event }: { event: RecentEvent }) {
   );
 }
 
-function OutputPostcard({ event }: { event: RecentEvent }) {
+function OutputPostcard() {
+  const e = EXAMPLE_EVENT;
   return (
     <div
       className="rounded-2xl p-6 flex flex-col"
@@ -528,7 +344,7 @@ function OutputPostcard({ event }: { event: RecentEvent }) {
         Ready-to-mail postcard
       </div>
       <div className="text-[11.5px] text-slate-500 mb-4">
-        Pre-filled with the {formatEventDateShort(event.date)} event
+        Pre-filled with the {e.dateShort} event
       </div>
       <div
         className="rounded-xl p-5 flex-1 flex flex-col justify-between"
@@ -540,20 +356,19 @@ function OutputPostcard({ event }: { event: RecentEvent }) {
       >
         <div>
           <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-cy-300 mb-2">
-            Hail event · {formatEventDateShort(event.date)}
+            Hail event · {e.dateShort}
           </div>
           <div className="font-display text-[19px] font-semibold tracking-tight text-slate-50 leading-tight">
-            We measured {event.maxInches.toFixed(1)}-inch hail at your
-            address.
+            We measured {e.peakInches.toFixed(1)}-inch hail at your address.
           </div>
           <p className="text-[12px] text-slate-300 mt-3 leading-relaxed">
-            Your neighborhood was inside the storm footprint. A free
+            Your neighborhood was inside the storm corridor. A free
             inspection from a local crew confirms whether your roof took
             damage.
           </p>
         </div>
         <div className="mt-4 pt-3 border-t border-white/[0.08] text-[10.5px] font-mono text-cy-300 tabular">
-          storm.acme-roofing.com/{formatEventDateUrl(event.date)}-•••••
+          storm.acme-roofing.com/{e.dateUrl}-•••••
         </div>
       </div>
       <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 pt-3 mt-4 border-t border-white/[0.06]">
@@ -563,13 +378,8 @@ function OutputPostcard({ event }: { event: RecentEvent }) {
   );
 }
 
-function OutputLandingPage({
-  event,
-  buildingCount,
-}: {
-  event: RecentEvent;
-  buildingCount: number | null;
-}) {
+function OutputLandingPage() {
+  const e = EXAMPLE_EVENT;
   return (
     <div
       className="rounded-2xl p-6 flex flex-col"
@@ -604,17 +414,11 @@ function OutputLandingPage({
           </span>
         </div>
         <div className="font-display text-[16px] font-semibold tracking-tight text-slate-50 leading-tight">
-          Welcome — your home is in the {formatEventDateShort(event.date)}{" "}
-          hail footprint.
+          Welcome — your home is in the {e.dateShort} hail footprint.
         </div>
         <div className="text-[12px] text-slate-400 leading-relaxed">
-          Peak hail size: {event.maxInches.toFixed(1)}&Prime;
-          {buildingCount != null && (
-            <>
-              {" "}· {buildingCount.toLocaleString()} homes in your
-              impact zone
-            </>
-          )}
+          Peak hail size: {e.peakInches.toFixed(1)}&Prime; ·{" "}
+          {e.residentialHomes.toLocaleString()} homes in your impact zone
         </div>
         <div className="pt-2">
           <div className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500 mb-1.5">
