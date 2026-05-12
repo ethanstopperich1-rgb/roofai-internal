@@ -81,7 +81,10 @@ async function checkSupabase(): Promise<CheckResult> {
   try {
     const { ms } = await timed(async () => {
       const sb = createServiceRoleClient();
-      const { error } = await withTimeout(5000, () =>
+      // Wrap the PostgrestFilterBuilder in an async arrow so withTimeout
+      // sees a real Promise<{data, error}> rather than the builder type
+      // (which is thenable but not strictly Promise-typed).
+      const { error } = await withTimeout(5000, async () =>
         sb.from("offices").select("id", { count: "exact", head: true }).limit(1),
       );
       if (error) throw new Error(error.message);
