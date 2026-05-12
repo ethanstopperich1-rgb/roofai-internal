@@ -1,39 +1,32 @@
 import { NextResponse } from "next/server";
 import { rateLimit } from "@/lib/ratelimit";
 import { getCached, setCached } from "@/lib/cache";
+import { scanHailEvents, type HailEvent } from "@/lib/hail-mrms";
 
 export const runtime = "nodejs";
-// Capped at 15s — the page hydrates this client-side and we want it
-// to either return data or fail fast so the UI flips to empty/error
-// state. The upstream /api/hail-mrms internally has a 60s ceiling but
-// in practice resolves in <3s once warm; if it's cold we'd rather
-// show "data temporarily unavailable" than hang the demo.
-export const maxDuration = 15;
+export const maxDuration = 30;
 
 /**
  * GET /api/storms/recent-significant?lat=..&lng=..&radiusMiles=25&minInches=1.0
  *
- * Returns the SINGLE most recent significant hail event in the area,
- * cross-referenced across:
- *   - MRMS radar (the granular layer, sub-1km cells)
- *   - NOAA Storm Events / Local Storm Reports (the ground-truth /
- *     legal-defensibility layer)
+ * Returns the SINGLE most recent qualifying hail event for the watched
+ * region.
  *
- * Used by the /storms demo page to surface a live example.
+ * Architecture note (2026-05-12 fix): previously this route did an
+ * internal HTTP fetch to /api/hail-mrms and to /api/storms to assemble
+ * the answer. The internal fetches silently failed in production —
+ * recent-significant ran, hail-mrms returned 6 valid events, but the
+ * roundtrip back inside the same Vercel function project consistently
+ * dropped on us. /storms ended up rendering an empty state on a live
+ * Orange-County demo with real data sitting in Blob.
  *
- * Defensibility: every claim returned here ties to an upstream source
- * (MRMS source name in metadata; SPC report URLs when available).
- * Never returns a value the upstream didn't return.
- *
- * Response shape:
- *   {
- *     event: { date, maxInches, hitCount, distanceMiles,
- *              groundReportCount, source: "mrms+spc" } | null,
- *     coverage: { region, lat, lng, radiusMiles },
- *     queriedAt: ISO,
- *   }
- * Returns event: null when no event ≥ minInches in the last 90 days.
+ * Refactored to call `scanHailEvents()` from lib/hail-mrms.ts
+ * directly. No HTTP roundtrip, no rate-limit-via-self-fetch, no
+ * silent timeout. NOAA Storm Events ground-report cross-reference is
+ * still an HTTP fetch to /api/storms (separate BigQuery route) — that
+ * one is optional, fails gracefully to 0 reports.
  */
+
 export async function GET(req: Request) {
   const __rl = await rateLimit(req, "standard");
   if (__rl) return __rl;
@@ -48,57 +41,45 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
   }
 
-  // Cache key includes the radius + threshold in the scope string so
-  // queries with different parameters don't collide on the same lat/lng.
-  const scope = `storms-recent-r${radiusMiles}-m${minInches.toFixed(1)}`;
+  // `v2` suffix added when this route was refactored to call
+  // scanHailEvents() directly. The old cache holds `event: null`
+  // results from when the internal HTTP fetch was failing — bumping
+  // the scope invalidates those entries so the fix takes effect
+  // immediately instead of after the 6h TTL.
+  const scope = `storms-recent-v2-r${radiusMiles}-m${minInches.toFixed(1)}`;
   const cached = await getCached<unknown>(scope, lat, lng);
   if (cached) return NextResponse.json(cached);
 
-  const origin = new URL(req.url).origin;
-
-  // Pull MRMS (radar, daily-fresh, granular) — primary signal.
-  // 90-day window matches the "this hit recently and is actionable for
-  // canvassing" definition. Anything older has likely been worked.
-  let mrmsEvents: Array<{
-    date: string;
-    maxInches: number;
-    hitCount: number;
-    distanceMiles: number;
-  }> = [];
+  // Direct in-process scan. radiusMiles is capped at 5 here because
+  // the cell-level MRMS scan uses a per-cell distance filter — beyond
+  // 5 miles you get into "anywhere in central FL" territory, which
+  // dilutes the "this event hit your watched region" signal. The
+  // route's incoming radiusMiles is for the ground-report cross-ref
+  // which uses point-level NOAA data.
+  let events: HailEvent[] = [];
   try {
-    const mrmsRes = await fetch(
-      `${origin}/api/hail-mrms?lat=${lat}&lng=${lng}` +
-        `&radiusMiles=${Math.min(5, radiusMiles)}` +
-        // 3-year backfill — central FL has documented ≥1" hail events
-        // every 6-12 months on average; widening the window keeps the
-        // live demo card populated with concrete data instead of an
-        // empty state on quiet quarters.
-        `&yearsBack=3&minInches=${minInches}`,
-      { cache: "no-store", signal: AbortSignal.timeout(10_000) },
-    );
-    if (mrmsRes.ok) {
-      const data = (await mrmsRes.json()) as { events?: typeof mrmsEvents };
-      mrmsEvents = data.events ?? [];
-    }
+    const result = await scanHailEvents({
+      lat,
+      lng,
+      radiusMiles: Math.min(5, radiusMiles),
+      yearsBack: 3,
+      minInches,
+    });
+    events = result.events;
   } catch (err) {
-    console.warn("[recent-significant] MRMS fetch failed:", err);
+    console.warn("[recent-significant] hail scan failed:", err);
   }
 
-  // Pick the most recent qualifying event from the full available
-  // window. Earlier we filtered to ≤90 days for "freshness," but the
-  // demo page needs SOMETHING real to show — and central FL has
-  // documented hail events every 6-12 months on average. Widening to
-  // the full backfill ensures the live card always renders concrete
-  // data; the UI surfaces the days-ago count so a stale event is
-  // visibly stale rather than hidden.
-  mrmsEvents.sort((a, b) => (a.date < b.date ? 1 : -1));
-  const topEvent = mrmsEvents[0] ?? null;
+  // Sort newest first (scanHailEvents already does this, but defensive).
+  events.sort((a, b) => (a.date < b.date ? 1 : -1));
+  const topEvent = events[0] ?? null;
 
-  // Cross-reference with NOAA Storm Events for the same day to surface
-  // the ground-report count. Optional — we don't fail the route on
-  // BigQuery being unconfigured.
+  // Cross-reference with NOAA Storm Events for ground-report count.
+  // Stays a soft HTTP fetch because BigQuery doesn't belong inline in
+  // a hot read path. Fails gracefully to 0 reports.
   let groundReportCount = 0;
   if (topEvent) {
+    const origin = new URL(req.url).origin;
     try {
       const stormsRes = await fetch(
         `${origin}/api/storms?lat=${lat}&lng=${lng}` +
@@ -109,7 +90,6 @@ export async function GET(req: Request) {
         const data = (await stormsRes.json()) as {
           events?: Array<{ event_type?: string; date?: string | null }>;
         };
-        // Match same-day hail reports. SPC dates are ISO; MRMS are YYYYMMDD.
         const targetDay =
           topEvent.date.slice(0, 4) + "-" +
           topEvent.date.slice(4, 6) + "-" +
@@ -121,7 +101,7 @@ export async function GET(req: Request) {
         ).length;
       }
     } catch (err) {
-      console.warn("[recent-significant] storms fetch failed:", err);
+      console.warn("[recent-significant] ground-report fetch failed:", err);
     }
   }
 
@@ -140,7 +120,6 @@ export async function GET(req: Request) {
     queriedAt: new Date().toISOString(),
   };
 
-  // Cached via shared cache layer (6 hour Redis TTL applies).
   await setCached(scope, lat, lng, result);
   return NextResponse.json(result);
 }
