@@ -113,12 +113,13 @@ export default function LoginPage() {
               <span className="glass-eyebrow mb-2 inline-flex">Work email</span>
               <div className="relative mt-1.5">
                 <Mail
-                  size={15}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 text-cy-300/70 pointer-events-none"
+                  size={16}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-cy-300/70 pointer-events-none z-10"
                 />
                 <input
                   type="email"
-                  className="glass-input pl-11"
+                  className="glass-input"
+                  style={{ paddingLeft: "2.85rem" }}
                   placeholder="you@voxaris.io"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
