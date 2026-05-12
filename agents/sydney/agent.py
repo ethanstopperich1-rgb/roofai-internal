@@ -56,6 +56,11 @@ SYSTEM_PROMPT = PROMPT_PATH.read_text(encoding="utf-8")
 # Cartesia "Southern Woman" voice ID. Confirmed by client.
 CARTESIA_VOICE_ID = "f9836c6e-a0bd-460e-9d3c-f7299fa60f94"
 
+# Sydney TTS speed. 1.0 = natural pace. Demo callers reported 1.15 as
+# "way too fast" — pulled back to a more conversational 0.95. Override
+# per-deploy via SYDNEY_TTS_SPEED env var without editing code.
+SYDNEY_TTS_SPEED = float(os.environ.get("SYDNEY_TTS_SPEED", "0.95"))
+
 # Verbatim openers — fed straight to TTS via session.say() so we skip the
 # LLM round-trip on the first response. Matches the pattern in Noland's
 # system prompt and saves ~1-2s of first-response latency.
@@ -165,12 +170,12 @@ async def entrypoint(ctx: JobContext) -> None:
         inference.TTS(
             model="cartesia/sonic-3",
             voice=CARTESIA_VOICE_ID,
-            extra_kwargs={"speed": 1.15},
+            extra_kwargs={"speed": SYDNEY_TTS_SPEED},
         ),
         inference.TTS(
             model="cartesia/sonic-2",
             voice=CARTESIA_VOICE_ID,
-            extra_kwargs={"speed": 1.15},
+            extra_kwargs={"speed": SYDNEY_TTS_SPEED},
         ),
         inference.TTS(model="rime/arcana", voice="luna"),
     ])
