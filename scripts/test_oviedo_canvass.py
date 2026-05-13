@@ -310,27 +310,34 @@ def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> Permit
 
     # Try a few selector variants — the actual portal markup is what
     # we'll discover via debug screenshots. Each variant fails fast.
+    # Selectors verified against the real Seminole portal markup
+    # captured in /tmp/oviedo_debug/*_after_dropdown.html:
+    #   StreetNumberTextBox / StreetNameTextBox / ZipCode / SubmitButton
+    # CRITICAL: do NOT match `Search` substring — there's a
+    # SearchImageButton that's a form-COLLAPSE toggle, not the search
+    # button. Clicking it hides the form. Earlier run did exactly
+    # that, which is why every row came back "no permits returned."
     selectors_num = [
+        "input[id$='StreetNumberTextBox']",
+        "input[name$='StreetNumberTextBox']",
         "input[id*='StreetNumber']",
-        "input[name*='StreetNumber']",
-        "input[id*='houseNumber']",
-        "input[id*='HouseNum']",
-        "#txtAddressNumber",
-        "#StreetNumber",
     ]
     selectors_name = [
+        "input[id$='StreetNameTextBox']",
+        "input[name$='StreetNameTextBox']",
         "input[id*='StreetName']",
-        "input[name*='StreetName']",
-        "input[id*='streetName']",
-        "#txtAddressName",
-        "#StreetName",
+    ]
+    selectors_zip = [
+        "input[id$='_ZipCode']",
+        "input[name$='ZipCode']",
+        "input[id*='ZipCode']",
     ]
     selectors_submit = [
-        "input[id*='Search']",
-        "input[id*='Submit']",
-        "button[type='submit']",
+        # Exact-ID match first — most reliable
+        "input[id$='SubmitButton']",
+        "input[name$='SubmitButton']",
+        "input[type='submit'][value='Submit']",
         "input[type='submit']",
-        "#btnSearch",
     ]
 
     filled_num = False
@@ -356,6 +363,18 @@ def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> Permit
             continue
     if not filled_name:
         return PermitFinding(None, None, None, None, "", portal_error="no_street_name_input")
+
+    # Zip code — best-effort. If the portal requires it (some configs
+    # do) the search will fail silently without it. If it doesn't,
+    # filling it just narrows results, which is fine.
+    if addr.zip:
+        for s in selectors_zip:
+            try:
+                if page.locator(s).count() > 0:
+                    page.fill(s, addr.zip, timeout=2_000)
+                    break
+            except Exception:
+                continue
 
     clicked = False
     for s in selectors_submit:
