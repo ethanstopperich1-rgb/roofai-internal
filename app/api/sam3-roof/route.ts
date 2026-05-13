@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import { rateLimit } from "@/lib/ratelimit";
 import { fetchSatelliteImage } from "@/lib/satellite-tile";
 import {
   reconcileRoofPolygon,
   type ReconciledRoof,
 } from "@/lib/reconcile-roof-polygon";
-import { getCached, setCached } from "@/lib/cache";
+import { getCached, setCached, CACHE_TTL } from "@/lib/cache";
 import { polygonAreaSqft } from "@/lib/polygon";
-import { fetchBuildingPolygon } from "@/lib/buildings";
+import { fetchBuildingPolygon, type BuildingPolygon } from "@/lib/buildings";
 import type { SolarSummary } from "@/types/estimate";
 import type { SolarMaskPolygon } from "@/lib/solar-mask";
 // fetchBuildingPolygon is used here ONLY as a tile-centering aid when
@@ -392,6 +393,13 @@ type ResolvedCenter = {
    *  "no-osm" when we didn't call OSM (no houseNumber and Solar
    *  succeeded). "no-result" when OSM had no candidate. */
   osmAddrMatch: "matched" | "no-match" | "no-result" | "no-osm";
+  /** When the resolved centre came from OSM (source starts with "osm-"),
+   *  this is the underlying polygon. Callers pass it to the reconciler
+   *  as `gisPolygonOverride` to avoid a duplicate Overpass call. Null
+   *  when Solar / Solar mask / address-fallback won — in those paths
+   *  the reconciler does its own GIS lookup so the cross-check uses an
+   *  independent data source (e.g. MS Buildings in TN). */
+  osmPolygon: BuildingPolygon | null;
 };
 
 /** Solar findClosest returns the closest building to the query point.
@@ -489,6 +497,7 @@ async function resolveBuildingCenter(
       solarSuggestedDriftM: null,
       solarMaskDriftM: null,
       osmAddrMatch: "matched",
+      osmPolygon: osmEarly,
     };
   }
   const osmAddrMatchState: ResolvedCenter["osmAddrMatch"] =
@@ -515,6 +524,7 @@ async function resolveBuildingCenter(
       solarSuggestedDriftM: solarDriftM,
       solarMaskDriftM: null,
       osmAddrMatch: osmAddrMatchState,
+      osmPolygon: null,
     };
   }
 
@@ -531,6 +541,7 @@ async function resolveBuildingCenter(
         solarSuggestedDriftM: solarDriftM,
         solarMaskDriftM: null,
         osmAddrMatch: osmAddrMatchState,
+        osmPolygon: osmEarly,
       };
     }
     return {
@@ -542,6 +553,7 @@ async function resolveBuildingCenter(
       solarSuggestedDriftM: solarDriftM,
       solarMaskDriftM: null,
       osmAddrMatch: osmAddrMatchState,
+      osmPolygon: null,
     };
   }
 
@@ -569,6 +581,7 @@ async function resolveBuildingCenter(
         solarSuggestedDriftM: null,
         solarMaskDriftM,
         osmAddrMatch: osmAddrMatchState,
+        osmPolygon: null,
       };
     }
     // Mask drifted — fall through to OSM / widened tile, same shape as
@@ -593,6 +606,7 @@ async function resolveBuildingCenter(
       solarSuggestedDriftM: null,
       solarMaskDriftM,
       osmAddrMatch: osmAddrMatchState,
+      osmPolygon: osmLate,
     };
   }
 
@@ -607,13 +621,29 @@ async function resolveBuildingCenter(
     solarSuggestedDriftM: null,
     solarMaskDriftM,
     osmAddrMatch: osmAddrMatchState,
+    osmPolygon: null,
   };
 }
+
+/** Sentinel cached in `solar-unavailable` scope to remember "Solar has
+ *  no coverage for this lat/lng." Saves the 8s direct-API timeout on
+ *  every subsequent request for the same address. 7-day TTL — Google
+ *  rolls out Solar coverage slowly. */
+type SolarUnavailableSentinel = { __unavailable: true; checkedAt: string };
 
 /** Solar findClosest with cache-first → direct fallback, returning both
  *  the centre and a stable source label. Split out from
  *  resolveBuildingCenter so the parent can run it concurrently with
- *  the OSM lookup via Promise.all-style parallelism. */
+ *  the OSM lookup via Promise.all-style parallelism.
+ *
+ *  Cache strategy:
+ *    - Positive cache hit via `/api/solar`'s SolarSummary (populated
+ *      whenever the page also called /api/solar in parallel — common).
+ *    - Negative cache via the `solar-unavailable` scope. When Solar
+ *      returns NOT_FOUND or a non-2xx for this address, we stamp a
+ *      sentinel and skip the 8s direct call for 7 days. Before this
+ *      negative cache, every estimate for an uncovered region (rural
+ *      US, international, post-cache-expiry) paid the full timeout. */
 async function fetchSolarFindClosest(
   lat: number,
   lng: number,
@@ -631,9 +661,37 @@ async function fetchSolarFindClosest(
       solarSource: "solar-buildingCenter",
     };
   }
+  // Negative cache check — did we already learn Solar can't serve this lat/lng?
+  const negCached = await getCached<SolarUnavailableSentinel>(
+    "solar-unavailable",
+    lat,
+    lng,
+  ).catch(() => null);
+  if (negCached?.__unavailable) {
+    return { solarCenter: null, solarSource: "solar-buildingCenter-direct" };
+  }
   const solarKey =
     process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
   if (!solarKey) return { solarCenter: null, solarSource: "solar-buildingCenter-direct" };
+
+  // Helper that stamps the unavailable sentinel and returns the
+  // null result. Centralised so every "no Solar" exit path caches.
+  const stampUnavailable = async (): Promise<{
+    solarCenter: null;
+    solarSource: "solar-buildingCenter-direct";
+  }> => {
+    await setCached<SolarUnavailableSentinel>(
+      "solar-unavailable",
+      lat,
+      lng,
+      { __unavailable: true, checkedAt: new Date().toISOString() },
+      CACHE_TTL.weekly,
+    ).catch(() => {
+      /* cache failure is non-fatal */
+    });
+    return { solarCenter: null, solarSource: "solar-buildingCenter-direct" };
+  };
+
   try {
     const url =
       `https://solar.googleapis.com/v1/buildingInsights:findClosest` +
@@ -643,7 +701,14 @@ async function fetchSolarFindClosest(
       cache: "no-store",
       signal: AbortSignal.timeout(8_000),
     });
-    if (!res.ok) return { solarCenter: null, solarSource: "solar-buildingCenter-direct" };
+    if (!res.ok) {
+      // 404 NOT_FOUND is the most common Solar response for uncovered
+      // regions. 403 / 429 are quota or rate problems — we still cache
+      // negatively to avoid hammering the broken state, but the 7d TTL
+      // is long enough that quota issues would have self-resolved
+      // anyway (Solar quota resets daily).
+      return await stampUnavailable();
+    }
     const data = (await res.json()) as {
       center?: { latitude?: number; longitude?: number };
     };
@@ -656,10 +721,14 @@ async function fetchSolarFindClosest(
         solarSource: "solar-buildingCenter-direct",
       };
     }
+    // 2xx but no center field — equivalent to "no building found here."
+    return await stampUnavailable();
   } catch {
-    // fall through
+    // Network error / timeout — DON'T negative-cache; transient. Next
+    // request gets a fresh attempt. (Mirrors the policy in
+    // fetchBuildingPolygon for Overpass mirror failures.)
+    return { solarCenter: null, solarSource: "solar-buildingCenter-direct" };
   }
-  return { solarCenter: null, solarSource: "solar-buildingCenter-direct" };
 }
 
 export async function GET(req: Request) {
@@ -678,8 +747,22 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const lat = Number(searchParams.get("lat"));
   const lng = Number(searchParams.get("lng"));
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
+  // Strict validation: isFinite alone allows lat=999, lng=-9999 — which
+  // would forward malformed coordinates to Google Solar (8s timeout
+  // before NOT_FOUND) and Overpass (slow scan within a useless bbox).
+  // Bound to real earth ranges so abusive inputs short-circuit at 400.
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
+    return NextResponse.json(
+      { error: "lat & lng required (lat ∈ [-90, 90], lng ∈ [-180, 180])" },
+      { status: 400 },
+    );
   }
 
   // Optional ?address= — full formatted address from the geocoder. We only
@@ -687,7 +770,14 @@ export async function GET(req: Request) {
   // extract just that (digits with an optional letter suffix, e.g.
   // "1234A 17½"). Falls through silently when address is absent or doesn't
   // start with a number (e.g. POI names, ranches without a street number).
-  const addressParam = searchParams.get("address") ?? "";
+  //
+  // Length cap: real formatted addresses top out around 150 chars (e.g.
+  // long county-name suffixes like "Unincorporated Pinellas County, FL").
+  // 250 is generous headroom; anything past that is junk / abuse and
+  // gets clipped before we trim/regex it. Bounds memory + regex cost.
+  const ADDRESS_PARAM_MAX_LEN = 250;
+  const addressParamRaw = searchParams.get("address") ?? "";
+  const addressParam = addressParamRaw.slice(0, ADDRESS_PARAM_MAX_LEN);
   const houseNumberMatch = addressParam.trim().match(/^(\d+[A-Za-z]?)/);
   const houseNumber = houseNumberMatch ? houseNumberMatch[1] : undefined;
 
@@ -807,6 +897,7 @@ export async function GET(req: Request) {
         solarSuggestedDriftM: null,
         solarMaskDriftM: null,
         osmAddrMatch: "no-osm",
+        osmPolygon: null,
       }
     : await resolveBuildingCenter(lat, lng, houseNumber);
   // Structured single-line log so it's greppable in Vercel logs:
@@ -833,6 +924,44 @@ export async function GET(req: Request) {
       `osm_addr_match=${tileCenter.osmAddrMatch} ` +
       `house_number=${houseNumber ?? "n/a"}`,
   );
+
+  // ─── Sentry telemetry ────────────────────────────────────────────────
+  // Breadcrumb captures the full diagnostic payload on every estimate.
+  // Breadcrumbs are free — they're only sent to Sentry if a subsequent
+  // error fires in this request. Cheap insurance for error
+  // contextualization without per-event cost.
+  //
+  // Tags are attached to the current scope and become queryable
+  // dimensions in the Sentry UI. We pick a small set — only the fields
+  // we'd actually want to filter or group by when debugging a regression
+  // ("show me all estimates from the last 24h where tile_center_source
+  // landed on solar-mask-centroid"). Each tag adds to event size, so
+  // resist the temptation to add everything.
+  Sentry.addBreadcrumb({
+    category: "sam3-roof",
+    message: "tile-center-resolved",
+    level: "info",
+    data: {
+      tile_center_source: tileCenter.source,
+      zoom: tileCenter.zoomHint,
+      drift_from_addr_m: Number(tileCenter.driftFromAddressM.toFixed(1)),
+      solar_suggested_drift_m: tileCenter.solarSuggestedDriftM,
+      solar_mask_drift_m: tileCenter.solarMaskDriftM,
+      osm_addr_match: tileCenter.osmAddrMatch,
+      house_number: houseNumber ?? null,
+      addr_lat: Number(lat.toFixed(6)),
+      addr_lng: Number(lng.toFixed(6)),
+    },
+  });
+  Sentry.setTag("sam3.tile_center_source", tileCenter.source);
+  Sentry.setTag("sam3.zoom_hint", String(tileCenter.zoomHint));
+  Sentry.setTag("sam3.osm_addr_match", tileCenter.osmAddrMatch);
+  Sentry.setTag("sam3.had_solar_drift",
+    tileCenter.solarSuggestedDriftM != null &&
+      tileCenter.solarSuggestedDriftM > SOLAR_DRIFT_THRESHOLD_M ? "yes" : "no");
+  Sentry.setTag("sam3.had_mask_drift",
+    tileCenter.solarMaskDriftM != null &&
+      tileCenter.solarMaskDriftM > SOLAR_DRIFT_THRESHOLD_M ? "yes" : "no");
 
   // ─── Fetch the satellite tile ─────────────────────────────────────────
   const tileZoom = tileCenter.zoomHint;
@@ -1130,6 +1259,18 @@ export async function GET(req: Request) {
   // not the geocoded address. Without this, SAM3 polygons on setback
   // houses would falsely fail "wrong building" because they're correctly
   // 30m from the road-side address.
+  // De-dup OSM lookup: when resolveBuildingCenter already fetched the
+  // OSM polygon for tile-centering (any source starting with "osm-"),
+  // pass it through to the reconciler as gisPolygonOverride so it skips
+  // its own Overpass round-trip. Without the override, the reconciler
+  // would call fetchBuildingPolygon a second time for the same address —
+  // free thanks to the in-memory + Redis cache layer added today, but
+  // still cleaner to pass the data through explicitly.
+  //
+  // When OSM was NOT the centering source (Solar / mask / address won),
+  // leave `gisPolygonOverride` undefined so the reconciler does its own
+  // MS-Buildings → OSM cascade. This preserves MS-Buildings preference
+  // in the TN bbox where it has better hand-curated coverage than OSM.
   const reconciled = await reconcileRoofPolygon({
     lat,
     lng,
@@ -1137,6 +1278,9 @@ export async function GET(req: Request) {
     referenceLng: tileCenter.lng,
     sam3Polygon: sam3LatLng,
     houseNumber,
+    gisPolygonOverride: tileCenter.osmPolygon
+      ? { polygon: tileCenter.osmPolygon.latLng, source: "osm" }
+      : undefined,
   });
 
   if (!reconciled) {
@@ -1144,6 +1288,21 @@ export async function GET(req: Request) {
     // Sentinel pattern matches /api/microsoft-building, /api/solar-mask.
     if (!skipCache) {
       await setCached<Sam3CachedResult | null>("sam3-roof", lat, lng, null);
+    }
+    // Capture a sampled message to Sentry so we can track 404 rate
+    // without sending one event per failure (would burn the quota on
+    // any address-typo storm or known no-coverage region). 10% sample
+    // is enough to spot rate spikes from week-to-week — Sentry's
+    // Issues view groups by message + tags, so a 3× jump shows up as
+    // 3× event count even with the sampling applied uniformly.
+    if (Math.random() < 0.1) {
+      Sentry.captureMessage("sam3-roof returned no polygon", {
+        level: "warning",
+        tags: {
+          "sam3.outcome": "no_polygon",
+          "sam3.workflow_error": workflowError ?? "none",
+        },
+      });
     }
     return NextResponse.json(
       {
@@ -1173,6 +1332,13 @@ export async function GET(req: Request) {
       `sqft=${result.footprintSqft} ratio=${result.diagnostics.areaRatio?.toFixed(2) ?? "n/a"} ` +
       `iou=${result.diagnostics.iou?.toFixed(2) ?? "n/a"} reason="${result.reason}"`,
   );
+
+  // Tag the final reconciler outcome so we can correlate tile-centering
+  // decisions with end-result polygon source in Sentry (e.g. "when
+  // tile_center_source=osm-addr-matched, what % of estimates ended at
+  // result.source=sam3 vs footprint-occluded?"). Helps tune the drift
+  // threshold and addr-match preference over time.
+  Sentry.setTag("sam3.result_source", result.source);
 
   return NextResponse.json(result);
 }

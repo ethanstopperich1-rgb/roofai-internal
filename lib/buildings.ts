@@ -9,7 +9,18 @@
  * Data is hand-traced by OSM contributors, so where it exists it's
  * usually accurate to within a few feet. Way more reliable than a
  * vision model trying to find a building in noisy aerial imagery.
+ *
+ * Cached via lib/cache.ts:
+ *   - Positive results: 30 days (OSM data rarely revised)
+ *   - Negative results: 24 hours (give new OSM contributions a chance
+ *     to fix coverage gaps for previously-empty addresses)
+ *
+ * Important: cache key embeds houseNumber, so different houseNumbers
+ * for the same (lat, lng) get separate entries — they produce different
+ * rankings via the addr:housenumber short-circuit.
  */
+
+import { getCached, setCached, CACHE_TTL } from "@/lib/cache";
 
 const OVERPASS_ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
@@ -195,6 +206,23 @@ async function queryOverpass(
   }
 }
 
+/** Sentinel value stored in the cache when an Overpass lookup returned
+ *  no usable building for a (lat, lng, houseNumber). Distinguishes
+ *  "we've never checked" (cache miss → `null` from getCached) from
+ *  "we checked recently and there's nothing" (negative cache hit).
+ *  Stored under a shorter TTL than positive results because new OSM
+ *  contributions can fill in coverage gaps over time. */
+const OSM_NEGATIVE_SENTINEL = { __empty: true as const };
+type OsmCacheEntry = BuildingPolygon | typeof OSM_NEGATIVE_SENTINEL;
+
+/** Cache scope helper. Embed the houseNumber in the scope string so
+ *  different houseNumbers for the same (lat, lng) get separate cache
+ *  entries — they produce different rankings via the addr:housenumber
+ *  short-circuit. */
+function osmCacheScope(houseNumber?: string): string {
+  return houseNumber ? `osm-bldg:hn-${houseNumber}` : "osm-bldg:no-hn";
+}
+
 export async function fetchBuildingPolygon(opts: {
   lat: number;
   lng: number;
@@ -203,8 +231,27 @@ export async function fetchBuildingPolygon(opts: {
    *  matches short-circuit ranking — that's the strongest single signal
    *  short of parcel data that we've found the right building. */
   houseNumber?: string;
+  /** Bypass cache for testing or when the caller explicitly needs a
+   *  fresh lookup (e.g. diagnostic mode in the SAM3 route). */
+  bypassCache?: boolean;
 }): Promise<BuildingPolygon | null> {
-  const { lat, lng, houseNumber } = opts;
+  const { lat, lng, houseNumber, bypassCache = false } = opts;
+
+  // ─── Cache lookup ────────────────────────────────────────────────────
+  // Positive results cache for 30 days — OSM footprints are hand-traced
+  // and rarely revised. Negative results (sentinel) cache for 24 hours,
+  // shorter window because new OSM contributions can fix our coverage
+  // gap, and we'd rather pay an extra Overpass call now-and-then than
+  // permanently lock in "no coverage" for an address that just got
+  // tagged.
+  const cacheScope = osmCacheScope(houseNumber);
+  if (!bypassCache) {
+    const cached = await getCached<OsmCacheEntry>(cacheScope, lat, lng);
+    if (cached !== null) {
+      if ("__empty" in cached) return null;
+      return cached;
+    }
+  }
   const query = `
     [out:json][timeout:${QUERY_TIMEOUT_S}];
     (
@@ -219,7 +266,24 @@ export async function fetchBuildingPolygon(opts: {
     data = await queryOverpass(endpoint, query);
     if (data) break;
   }
-  if (!data || !Array.isArray(data.elements) || data.elements.length === 0) {
+  if (!data) {
+    // Every mirror failed (network / 5xx / timeout). DON'T cache this —
+    // it's a transient outage, not a permanent "no coverage" signal.
+    // The next request gets a fresh shot at the mirrors.
+    return null;
+  }
+  if (!Array.isArray(data.elements) || data.elements.length === 0) {
+    // Overpass answered cleanly: there are no buildings at this address.
+    // Cache as a negative result so we don't repeat the round-trip.
+    await setCached(
+      cacheScope,
+      lat,
+      lng,
+      OSM_NEGATIVE_SENTINEL as OsmCacheEntry,
+      CACHE_TTL.daily,
+    ).catch(() => {
+      /* cache failure is non-fatal */
+    });
     return null;
   }
 
@@ -253,7 +317,20 @@ export async function fetchBuildingPolygon(opts: {
         : false,
     });
   }
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    // Overpass returned ways but every one was filtered out (too small,
+    // not a way, missing geometry). Treat as negative.
+    await setCached(
+      cacheScope,
+      lat,
+      lng,
+      OSM_NEGATIVE_SENTINEL as OsmCacheEntry,
+      CACHE_TTL.daily,
+    ).catch(() => {
+      /* cache failure is non-fatal */
+    });
+    return null;
+  }
 
   // Selection logic — engineered for rural parcels with outbuildings.
   //
@@ -356,11 +433,26 @@ export async function fetchBuildingPolygon(opts: {
   // `best` is assigned in every branch above (addrMatch / containers /
   // two-stage). The non-null assertion silences TS narrowing across the
   // `else if` chain.
-  return {
+  const result: BuildingPolygon = {
     latLng: best!.polygon,
     source: "osm",
     osmId: best!.osmId,
     addrMatched: best!.addrMatch,
     kind: best!.kind,
   };
+  // Cache positive result for 30 days. OSM building polygons rarely
+  // change; even when a contributor revises geometry, the change is
+  // usually a few-vertex tweak that doesn't affect our centring or
+  // GIS cross-check. The reconciler still has the IoU floor to catch
+  // genuinely wrong polygons.
+  await setCached(
+    cacheScope,
+    lat,
+    lng,
+    result as OsmCacheEntry,
+    CACHE_TTL.monthly,
+  ).catch(() => {
+    /* cache failure is non-fatal */
+  });
+  return result;
 }
