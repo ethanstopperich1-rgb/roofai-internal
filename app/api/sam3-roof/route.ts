@@ -397,10 +397,25 @@ type ResolvedCenter = {
    *    "address-solar-drift-fallback" | "address-mask-drift-fallback"
    *    "address" */
   source: string;
-  /** Zoom level the satellite tile should be fetched at. Lower means a
-   *  wider ground frame — used when we're not confident the building
-   *  centre is correct, so the SAM3 picker still has a chance to find
-   *  the right structure even if our centre is off. */
+  /** Zoom level the satellite tile should be fetched at. Lower means
+   *  a wider ground frame. Policy (revised 2026-05-13 alongside the
+   *  Roboflow prompt change to "residential house roof"):
+   *
+   *    zoom 20 (84m frame, tighter) — reserved for high-confidence
+   *      centres where we KNOW the centre is the addressed building:
+   *        - click-override (rep tapped the building)
+   *        - osm-addr-matched (OSM hand-tagged addr:housenumber)
+   *        - vision-primary-residence (Claude vision identified residence ≥0.7)
+   *
+   *    zoom 19 (168m frame, wider) — everything else. We're not sure
+   *      the centre is on the right building, so SAM3 needs the
+   *      neighbouring buildings in frame to be able to pick the
+   *      residence semantically via its prompt. Cypress Rdg failure
+   *      mode: pin lands in garage, Solar agrees with pin (low
+   *      drift), zoom 20 cropped the actual house OUT of frame.
+   *      Zoom 19 = 168m wide at FL latitude = both garage and the
+   *      ~60m-south house fit comfortably, and SAM3's "residential
+   *      house roof" prompt now filters outbuildings semantically. */
   zoomHint: 19 | 20;
   /** Distance (m) from the geocoded address to the resolved centre.
    *  Surfaced in logs to spot-check pipeline behaviour over time. */
@@ -657,7 +672,15 @@ async function resolveBuildingCenter(
       lat: solarCenter.lat,
       lng: solarCenter.lng,
       source: solarSource,
-      zoomHint: 20,
+      // Zoom 19 instead of 20: Solar agreed with the pin's drift gate
+      // but Solar's "closest building" can still be the wrong one when
+      // pin lands on an outbuilding (rural setback parcels — pin in
+      // garage, house ~60m south). The new Roboflow prompt
+      // ("residential house roof") filters outbuildings semantically,
+      // so as long as the house is IN FRAME, SAM3 picks it. zoom 19
+      // = 168m frame at FL latitude, contains house + outbuildings on
+      // any normal residential parcel.
+      zoomHint: 19,
       driftFromAddressM: solarDriftM,
       solarSuggestedDriftM: solarDriftM,
       solarMaskDriftM: null,
@@ -677,7 +700,11 @@ async function resolveBuildingCenter(
         lat: c.lat,
         lng: c.lng,
         source: "osm-centroid-after-solar-drift",
-        zoomHint: 20,
+        // Zoom 19 — see solar-buildingCenter rationale above. OSM
+        // gave us a centroid but we got here because Solar drifted,
+        // signalling at least one signal was wrong about which
+        // building is the residence. Wider frame is safer.
+        zoomHint: 19,
         driftFromAddressM: metersBetween(lat, lng, c.lat, c.lng),
         solarSuggestedDriftM: solarDriftM,
         solarMaskDriftM: null,
@@ -723,7 +750,11 @@ async function resolveBuildingCenter(
         lat: c.lat,
         lng: c.lng,
         source: "solar-mask-centroid",
-        zoomHint: 20,
+        // Zoom 19 — mask is from the same Google building-detection as
+        // findClosest, so the "could be the wrong building" risk
+        // applies. Wider frame lets SAM3's house-aware prompt pick
+        // the actual residence even if mask centred on a shed.
+        zoomHint: 19,
         driftFromAddressM: solarMaskDriftM,
         solarSuggestedDriftM: null,
         solarMaskDriftM,
@@ -751,7 +782,13 @@ async function resolveBuildingCenter(
         solarMaskDriftM !== null
           ? "osm-centroid-after-mask-drift"
           : "osm-centroid-no-solar",
-      zoomHint: 20,
+      // Zoom 19 for both branches. We're here because Solar was
+      // absent or its mask drifted — both are uncertainty signals.
+      // OSM gave us a centroid but OSM without addr-match is
+      // "largest residence-shape near the pin" which can still be
+      // wrong on multi-building parcels. Wider frame + house-aware
+      // prompt is the safer combination.
+      zoomHint: 19,
       driftFromAddressM: metersBetween(lat, lng, c.lat, c.lng),
       solarSuggestedDriftM: null,
       solarMaskDriftM,
@@ -769,7 +806,11 @@ async function resolveBuildingCenter(
     lat,
     lng,
     source: solarMaskDriftM !== null ? "address-mask-drift-fallback" : "address",
-    zoomHint: solarMaskDriftM !== null ? 19 : 20,
+    // Zoom 19 in both branches. The bare "address" path means every
+    // refinement signal failed — vision, OSM, Solar, mask all gave
+    // nothing usable. Geocoder pin alone is the weakest possible
+    // anchor; wider frame + residence prompt is essential.
+    zoomHint: 19,
     driftFromAddressM: 0,
     solarSuggestedDriftM: null,
     solarMaskDriftM,
