@@ -1049,14 +1049,38 @@ function RoofStep({
             <Loader2 size={16} className="animate-spin mr-2" aria-hidden /> Measuring your roof…
           </div>
         ) : address?.lat != null && address?.lng != null ? (
-          <EditableRoofMap
-            lat={address.lat}
-            lng={address.lng}
-            initialPolygon={roofPolygon}
-            onPolygonChanged={onPolygonEdited}
-            onClickPick={onClickPick}
-            pickingLoading={pickingLoading}
-          />
+          <>
+            <EditableRoofMap
+              lat={address.lat}
+              lng={address.lng}
+              initialPolygon={roofPolygon}
+              onPolygonChanged={onPolygonEdited}
+              onClickPick={onClickPick}
+              pickingLoading={pickingLoading}
+            />
+            {/* Click-pick re-trace overlay. Fires when the customer
+                hits "Wrong roof?" and taps a new building — the
+                /api/sam3-roof re-run takes 5-30s and the customer
+                otherwise sees the old (wrong) polygon hang on-screen
+                while Roboflow works. Same "Re-tracing your roof…"
+                language as the EditableRoofMap inline pill, just
+                full-area for unambiguous state. Stays positioned
+                absolute over the map (not full-screen) so the
+                customer can still see the satellite imagery
+                underneath — they tapped somewhere and the spinner
+                confirms we're acting on it. */}
+            {pickingLoading && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 text-white/85 text-[13px] font-medium"
+                style={{ background: "rgba(7,9,13,0.78)" }}
+              >
+                <Loader2 size={22} className="animate-spin text-cy-300" aria-hidden />
+                Re-tracing your roof…
+              </div>
+            )}
+          </>
         ) : satelliteUrl ? (
           <img
             src={satelliteUrl}

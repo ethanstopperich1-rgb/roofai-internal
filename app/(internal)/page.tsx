@@ -1645,10 +1645,17 @@ function HomePageInner() {
       {!shown && <EmptyState />}
 
       {/* ─── Quantum-pulse loader: full-screen overlay while polygon resolution
-           is still in flight. Stays up until BOTH:
+           is still in flight. Stays up until ALL of:
              1. Solar + Vision metadata fetches complete (visionLoading)
              2. SAM3 settles — either successfully traces a polygon, or
                 fails and the Solar-mask fallback completes (sam3InFlight)
+             3. Click-pick re-trace settles (pickingLoading) — when the rep
+                taps "Wrong building? Click to pick", the route re-runs
+                Roboflow on the new centre and that call also takes
+                5-30s. Without this gate, the rep saw the old polygon
+                hang on-screen while Roboflow worked, then flicker to
+                the new one — confusing UX. Showing the same overlay as
+                initial load makes the state unambiguous.
            Without the sam3InFlight gate, the overlay would clear at ~3s
            (when vision finishes) but SAM3 would still be cold-starting
            Roboflow for another 5-30s. Reps were seeing the satellite
@@ -1656,7 +1663,7 @@ function HomePageInner() {
            then the real SAM3 polygon flicker in late — making them
            assume SAM3 had failed. Holding the overlay through SAM3's
            full settle window eliminates that flicker. */}
-      {(visionLoading || sam3InFlight) && (
+      {(visionLoading || sam3InFlight || pickingLoading) && (
         <div
           // No backdrop-blur — the filter forces full-page recomposite every
           // frame, which thrashes against Cesium's WebGL canvas underneath
@@ -1667,7 +1674,13 @@ function HomePageInner() {
           aria-live="polite"
         >
           <QuantumPulseLoader
-            text={sam3InFlight && !visionLoading ? "Tracing roof" : "Generating"}
+            text={
+              pickingLoading
+                ? "Re-tracing roof"
+                : sam3InFlight && !visionLoading
+                  ? "Tracing roof"
+                  : "Generating"
+            }
           />
         </div>
       )}
