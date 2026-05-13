@@ -157,6 +157,11 @@ class SydneyAgent(Agent):
         super().__init__(instructions=SYSTEM_PROMPT, tools=ALL_TOOLS)
 
 
+def _session_chat_ctx(session: AgentSession):
+    """AgentSession renamed `chat_ctx` → `history` in livekit-agents 1.5+."""
+    return getattr(session, "history", None) or getattr(session, "chat_ctx", None)
+
+
 def prewarm(proc: JobProcess) -> None:
     """Prewarm hook — runs ONCE per worker process at startup.
 
@@ -547,7 +552,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # enough for dashboard summarization, accurate to what was said.
         transcript_chunks: list[str] = []
         try:
-            history = getattr(session, "chat_ctx", None)
+            history = _session_chat_ctx(session)
             items = getattr(history, "items", []) if history else []
             for item in items:
                 role = getattr(item, "role", "") or ""
@@ -620,7 +625,10 @@ async def entrypoint(ctx: JobContext) -> None:
             _squares = None
 
         try:
-            session.chat_ctx.add_message(
+            _ctx = _session_chat_ctx(session)
+            if _ctx is None:
+                raise AttributeError("AgentSession has no history/chat_ctx")
+            _ctx.add_message(
                 role="system",
                 content=(
                     f"=== OUTBOUND CALL — 6-STAGE SCRIPT ===\n\n"
