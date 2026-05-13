@@ -17,7 +17,12 @@ function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
-/** One-line summary for timeline chips (no raw PII). */
+/** One-line summary for timeline chips (no raw PII).
+ *
+ * Sydney's tool payloads carry only non-PII operational fields (the
+ * date / office / lead_type enums); raw name / phone / email / address
+ * are SHA-256 hashed before they leave the agent. So everything we
+ * surface here is safe to render to the rep dashboard. */
 export function summarizeToolEvent(e: Event): string {
   const tool = e.type.replace(/^tool_fired:/, "");
   const p = asRecord(e.payload);
@@ -31,7 +36,39 @@ export function summarizeToolEvent(e: Event): string {
     if (typeof err === "string" && err) parts.push(err);
     return `transfer → ${parts.join(" · ")}`;
   }
+  if (tool === "book_inspection") {
+    const date = typeof p.date === "string" ? p.date : null;
+    const win = typeof p.time_window === "string" ? p.time_window : null;
+    const office = typeof p.office === "string" ? p.office : null;
+    const service = typeof p.service_type === "string" ? p.service_type : null;
+    const parts: string[] = [];
+    if (date) parts.push(date);
+    if (win) parts.push(win);
+    if (service) parts.push(prettifyEnum(service));
+    if (office) parts.push(`@ ${prettifyEnum(office)}`);
+    return parts.length ? `Booked · ${parts.join(" · ")}` : "Booked inspection";
+  }
+  if (tool === "log_lead") {
+    const kind = typeof p.lead_type === "string" ? p.lead_type : null;
+    return kind ? `Lead logged · ${prettifyEnum(kind)}` : "Lead logged";
+  }
+  if (tool === "check_availability") {
+    const office = typeof p.office === "string" ? p.office : null;
+    const earliest = typeof p.earliest_date === "string" ? p.earliest_date : null;
+    if (office && earliest) return `Checked availability · ${prettifyEnum(office)} from ${earliest}`;
+    if (office) return `Checked availability · ${prettifyEnum(office)}`;
+    return "Checked availability";
+  }
   return tool;
+}
+
+function prettifyEnum(raw: string): string {
+  return raw
+    .replace(/[_-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
 }
 
 export function transferDiagnostics(events: Event[]): {

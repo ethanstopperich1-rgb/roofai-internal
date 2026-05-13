@@ -48,13 +48,30 @@ _TWILIO_PATH_HINT = (
 
 
 async def _emit_tool_fired(tool: str, summary: dict[str, Any]) -> None:
-    """Best-effort dashboard row in `events` — never blocks tool return."""
+    """Best-effort dashboard row in `events` — never blocks tool return.
+
+    Also records a semantic outcome for the current room (book_inspection
+    → 'booked', etc.) so agent.py's shutdown can set call_ended.outcome
+    to something useful instead of the default 'unknown'.
+    """
     ctx = agents.get_job_context()
     if ctx is None:
         return
     try:
         import events as _events
         from datetime import datetime
+
+        # Map the tool name to a call-outcome enum. Tools that aren't an
+        # outcome signal in themselves (check_availability) intentionally
+        # don't have an entry — they shouldn't promote the outcome.
+        _TOOL_TO_OUTCOME = {
+            "book_inspection": "booked",
+            "transfer_to_human": "transferred",
+            "log_lead": "logged_lead",
+        }
+        outcome = _TOOL_TO_OUTCOME.get(tool)
+        if outcome:
+            _events.record_outcome(ctx.room.name, outcome)
 
         summary = {**summary, "twilio_path_hint": _TWILIO_PATH_HINT}
         await _events.post(
@@ -316,7 +333,7 @@ async def book_inspection(
     # Redacted log — full PII (name/phone/email/address/notes) is sent
     # straight to CRM when wired; cloud logs only get structural metadata
     # plus hashes for correlation.
-    _log_tool_call("book_inspection", {
+    redacted = {
         "mode": "mock",
         "name_hash": _hash_fragment(name),
         "phone_hash": _hash_fragment(phone),
@@ -327,7 +344,13 @@ async def book_inspection(
         "office": office,
         "service_type": service_type,
         "notes_len": len(notes or ""),
-    })
+    }
+    _log_tool_call("book_inspection", redacted)
+    # Dashboard event — the same redacted payload (no raw PII) lands in
+    # public.events so the call drawer's event timeline can render the
+    # appointment date/time/office/service_type at a glance. Was missing
+    # before this commit — every booking just vanished into cloud logs.
+    await _emit_tool_fired("book_inspection", redacted)
     # status: "mock_booked" — NOT "booked" — so the LLM can detect demo
     # mode and avoid telling a real caller they're confirmed when no
     # JobNimbus record exists. Confirmation prefixed MOCK- for the same
@@ -356,7 +379,7 @@ async def log_lead(
     you collected contact info but did not book an appointment (outside service
     area, warranty handoff, vendor / wrong number, DNC request, etc.).
     """
-    _log_tool_call("log_lead", {
+    redacted = {
         "mode": "mock",
         "name_hash": _hash_fragment(name),
         "phone_hash": _hash_fragment(phone),
@@ -364,7 +387,12 @@ async def log_lead(
         "address_hash": _hash_fragment(address),
         "notes_len": len(notes or ""),
         "lead_type": lead_type,
-    })
+    }
+    _log_tool_call("log_lead", redacted)
+    # Dashboard event — see the same comment on book_inspection above.
+    # Without this emission, "Sydney logged a lead" only existed in cloud
+    # logs, never in the call drawer event timeline.
+    await _emit_tool_fired("log_lead", redacted)
     # status: "mock_logged" — NOT "logged" — see book_inspection comment.
     return {
         "status": "mock_logged",

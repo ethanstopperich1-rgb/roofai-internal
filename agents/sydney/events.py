@@ -76,3 +76,45 @@ async def post(payload: dict[str, Any]) -> None:
         await asyncio.to_thread(_post_sync, payload)
     except Exception as e:
         logger.warning("agent-events post wrapper failed: %s", e)
+
+
+# ─── In-memory outcome tracking ───────────────────────────────────────
+#
+# Tools fire from a different code path than agent.py's shutdown
+# callback, so the agent can't directly observe which tool ran. The
+# shared store below lets tools record their semantic outcome under
+# the room name; agent.py's _on_shutdown reads it to set
+# call_ended.outcome. Without this every call ended as "unknown" in
+# the dashboard — even calls where Sydney clearly booked an inspection.
+
+# Priority order (higher = stronger signal). When multiple tools fire
+# in the same call (e.g. log_lead AFTER book_inspection), the highest
+# priority wins.
+_OUTCOME_PRIORITY = {
+    "booked": 40,
+    "transferred": 30,
+    "logged_lead": 20,
+    "wrong_number": 10,
+    "no_show": 10,
+}
+
+# room_name → outcome string. Cleared by agent.py on call_ended so
+# memory doesn't grow unbounded across the worker's lifetime.
+_outcomes: dict[str, str] = {}
+
+
+def record_outcome(room_name: str, outcome: str) -> None:
+    """Record the strongest outcome observed for this room. Only stores
+    the highest-priority value across repeat calls."""
+    if not room_name or not outcome:
+        return
+    existing = _outcomes.get(room_name)
+    if existing and _OUTCOME_PRIORITY.get(existing, 0) >= _OUTCOME_PRIORITY.get(outcome, 0):
+        return
+    _outcomes[room_name] = outcome
+
+
+def pop_outcome(room_name: str) -> str | None:
+    """Read + clear the outcome for this room. Called once per call by
+    the agent shutdown handler."""
+    return _outcomes.pop(room_name, None)

@@ -440,6 +440,12 @@ async def entrypoint(ctx: JobContext) -> None:
         "stt_secs": 0.0,
     }
 
+    # Track the highest-priority outcome tool that fired during this call.
+    # Priority order: booked > transferred > logged_lead > unknown. The
+    # shutdown callback reads this to set the call_ended.outcome field
+    # so the dashboard pill says something useful instead of "unknown".
+    _outcome_signals: list[str] = []
+
     # Per-call usage telemetry + turn count enforcement.
     @session.on("session_usage_updated")
     def _on_usage(ev) -> None:  # type: ignore[no-untyped-def]
@@ -510,15 +516,20 @@ async def entrypoint(ctx: JobContext) -> None:
         if not duration_task.done():
             duration_task.cancel()
 
-        # Map shutdown reason → outcome enum understood by /api/agent/events.
-        # The cap_* outcomes signal the duration / turn caps that we
-        # added in defense-in-depth above; other reasons fall through
-        # to "unknown" for now (refine once we have real call data).
+        # Outcome resolution order:
+        #   1. A tool fired during the call set a semantic outcome
+        #      ("booked", "transferred", "logged_lead") via
+        #      events.record_outcome — strongest signal of what happened.
+        #   2. Otherwise, if shutdown was triggered by our cap-* guard
+        #      rails (duration / turn limits), surface that.
+        #   3. Else "unknown" — the caller hung up without Sydney
+        #      firing an outcome-bearing tool.
+        recorded_outcome = _events.pop_outcome(ctx.room.name)
         outcome_map = {
             "cap_duration": "cap_duration",
             "cap_turns": "cap_turns",
         }
-        outcome = outcome_map.get(reason, "unknown")
+        outcome = recorded_outcome or outcome_map.get(reason, "unknown")
 
         # One-line operator telemetry for the dashboard (Twilio is downstream
         # of LiveKit on the SIP trunk; SIP codes on tool rows matter for triage).
