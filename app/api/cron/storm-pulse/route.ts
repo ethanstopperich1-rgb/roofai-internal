@@ -40,7 +40,17 @@ const WATCHED_REGIONS = [
   { name: "Lakeland, FL", lat: 28.0395, lng: -81.9498, radiusMiles: 25 },
 ];
 
-const MIN_HAIL_INCHES = 1.0;
+// MIN_HAIL_INCHES = 0.5 — Noland's reports closing deals on
+// half-inch hail events. Conventional industry threshold is 0.75-1.0",
+// but FL roofs are aged + UV-degraded enough that a 0.5" event is
+// often the trigger for a claim that was already brewing (granule
+// loss, marginal age, prior storm damage). First-roofer-at-the-door
+// also wins relationships independent of actual damage.
+//
+// If MRMS produces too much noise at this threshold (false positives
+// = wasted truck rolls), tune up to 0.75. Per-office override goes
+// on the offices table when the multi-tenant feature ships.
+const MIN_HAIL_INCHES = 0.5;
 const CANVASS_RADIUS_MILES = 2.0;
 
 function authorized(req: Request): boolean {

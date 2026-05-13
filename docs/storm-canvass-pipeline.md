@@ -184,7 +184,9 @@ sortable; higher = canvass first.
 **Must-pass filters** (gate, applied BEFORE scoring):
 - Land use = single-family residential
 - Inside hail corridor (ST_DWithin enforces this)
-- Hail size ≥ 0.75-1.0"
+- Hail size ≥ 0.5" (Noland's reports closing on 0.5"; conventional
+  industry floor is 0.75-1.0" but aged FL roofs convert lower —
+  configurable via `MIN_HAIL_INCHES` in storm-pulse)
 
 **Additive over the hail × proximity base:**
 

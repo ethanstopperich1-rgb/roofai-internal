@@ -22,7 +22,8 @@
  *   MUST-PASS FILTERS (gate, not scored — drop everything else):
  *     • Land use = single-family residential
  *     • Inside hail corridor (ST_DWithin already enforces this)
- *     • Hail size ≥ 0.75-1.0" in that cell
+ *     • Hail size ≥ 0.5" in that cell (Noland's converts at 0.5";
+ *       gated on MIN_HAIL_INCHES in app/api/cron/storm-pulse)
  *
  *   HOT-LEAD SCORING (additive over the hail × proximity base):
  *     Roof Permit Recency
