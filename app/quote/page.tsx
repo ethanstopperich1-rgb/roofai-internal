@@ -141,12 +141,25 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
   // disables both action buttons while this is true so the customer
   // can't fire multiple expensive Roboflow inferences accidentally.
   const [pickingLoading, setPickingLoading] = useState(false);
-  // Commercial-scale flag — flipped on when the measured roof exceeds
-  // the residential instant-quote band (>15k sqft). The wizard pivots
-  // to a "Talk to a Voxaris rep" branch instead of running the customer
-  // through a polygon-failure cascade. Honest UX: we measured your roof
-  // and it's bigger than this product is designed for; here's what
-  // happens next.
+  // Commercial-scale flag — flipped on when the measured polygon
+  // footprint exceeds the residential instant-quote band (>20k sqft).
+  // The wizard pivots to a "Talk to a Voxaris rep" branch instead of
+  // running the customer through a polygon-failure cascade. Honest UX:
+  // we measured your roof and it's bigger than this product is
+  // designed for; here's what happens next.
+  //
+  // The 20k upper limit matches the internal rep tool's
+  // `passesAbsoluteSize` gate (app/(internal)/page.tsx:577). Before
+  // the alignment /quote rejected anything over 15k, which silently
+  // dropped legitimate SAM3 traces of large estates AND of cases
+  // where SAM3 picked the wrong building (a 5,000 sqft pole barn
+  // traces in the 4-6k band; SAM3 over-traces of complex compounds
+  // can clear 15k). On the rep side those traces are accepted and
+  // reviewed; on /quote they were falling through to Solar mask or
+  // MS Buildings even though SAM3's trace was actually the best
+  // available auto-detect. Customers now see SAM3's polygon for
+  // 15-20k footprints; the Wrong-roof / Draw-outline buttons let
+  // them correct over-traces themselves.
   const [commercialFootprintSqft, setCommercialFootprintSqft] = useState<number | null>(null);
   const [material, setMaterial] = useState<Material>("asphalt-architectural");
   const [addOns, setAddOns] = useState<SimpleAddon[]>(QUOTE_ADDONS);
@@ -375,7 +388,7 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
                 typeof sam3.footprintSqft === "number" && sam3.footprintSqft > 0
                   ? sam3.footprintSqft
                   : polygonAreaSqftLocal(poly);
-              if (footprintSqft >= 200 && footprintSqft <= 15_000) {
+              if (footprintSqft >= 200 && footprintSqft <= 20_000) {
                 resolvedPolygon = poly;
                 resolvedSqft = Math.round(footprintSqft * slope);
                 // Reconciler returned "footprint-only" / "footprint-occluded"
@@ -386,7 +399,7 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
                   sam3?.source === "footprint-occluded"
                     ? "wall"
                     : "eave";
-              } else if (footprintSqft > 15_000) {
+              } else if (footprintSqft > 20_000) {
                 // Commercial-scale roof. Capture the measurement but DON'T
                 // try to quote it instantly — surface a "connect with a
                 // rep" branch to the wizard instead.
@@ -412,10 +425,10 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
                 Array.isArray(mask?.latLng) && mask.latLng.length >= 3 ? mask.latLng : null;
               if (poly) {
                 const footprintSqft = polygonAreaSqftLocal(poly);
-                if (footprintSqft > 15_000 && oversizedFootprintSqft == null) {
+                if (footprintSqft > 20_000 && oversizedFootprintSqft == null) {
                   oversizedFootprintSqft = footprintSqft;
                 }
-                if (footprintSqft >= 200 && footprintSqft <= 15_000) {
+                if (footprintSqft >= 200 && footprintSqft <= 20_000) {
                   resolvedPolygon = poly;
                   // Solar mask traces eaves photogrammetrically — apply pitch
                   // slope (no overhang multiplier needed; mask already includes it)
@@ -441,10 +454,10 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
                 Array.isArray(ms?.polygon) && ms.polygon.length >= 3 ? ms.polygon : null;
               if (poly) {
                 const footprintSqft = polygonAreaSqftLocal(poly);
-                if (footprintSqft > 15_000 && oversizedFootprintSqft == null) {
+                if (footprintSqft > 20_000 && oversizedFootprintSqft == null) {
                   oversizedFootprintSqft = footprintSqft;
                 }
-                if (footprintSqft >= 200 && footprintSqft <= 15_000) {
+                if (footprintSqft >= 200 && footprintSqft <= 20_000) {
                   resolvedPolygon = poly;
                   // MS Buildings is ground-projected wall footprint — apply
                   // 1.06 eave overhang factor before pitch.
