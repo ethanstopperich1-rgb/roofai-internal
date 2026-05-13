@@ -23,6 +23,7 @@
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.37.0",
     "@vercel/blob": "^2.3.3",
+    "@vercel/functions": "^3.5.1",
     "ai": "^6.0.177",
     "botid": "^1.5.11",
     "cesium": "^1.141.0",
