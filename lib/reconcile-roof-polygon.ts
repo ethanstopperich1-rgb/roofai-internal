@@ -61,36 +61,64 @@ export interface ReconciledRoof {
  *  conservative midpoint that under-quotes by <2% in most cases. */
 const EAVE_OVERHANG_FACTOR = 1.06;
 
-/** SAM3 polygon area must be within [0.65, 1.50] × footprint to be trusted
- *  WHEN IoU is below TRUSTED_IOU_THRESHOLD. When IoU clears the threshold,
- *  the area band is widened (high IoU proves the polygons describe the
- *  same building, so a slightly tight or generous trace is fine).
+/** SAM3 polygon area must be within these bounds × footprint to be
+ *  trusted WHEN IoU is below TRUSTED_IOU_THRESHOLD. When IoU clears the
+ *  threshold, the area band is widened (high IoU proves the polygons
+ *  describe the same building, so a slightly tight or generous trace
+ *  is fine).
  *
- *  Loosened from 0.85 (2026-05-07) after a real Orlando test produced
- *  a SAM3 polygon at ratio=0.83 with IoU=0.71 that was clearly the
- *  correct building — but got demoted to GIS substitute. SAM3 traces
- *  actual roof eaves; MS Buildings traces wall footprints PLUS attached
- *  porches/lanais/garages; the resulting ratio is often <0.85 even on
- *  correctly-traced FL houses with covered patios. */
-const SAM3_AREA_RATIO_MIN = 0.65;
-const SAM3_AREA_RATIO_MAX = 1.5;
+ *  Loosened sequence:
+ *    0.85 → 0.65 (2026-05-07): Orlando test with ratio=0.83/IoU=0.71
+ *      was clearly correct but got demoted. SAM3 traces eaves; MS
+ *      traces wall footprint PLUS attached porches/lanais/garages;
+ *      ratio often <0.85 on correctly-traced FL houses.
+ *    0.65 → 0.50 (2026-05-13): the Roboflow prompt change to
+ *      "residential house roof" + zoom-19 fallback combo means SAM3
+ *      polygons now trace house roofs more aggressively, often
+ *      under-tracing relative to GIS wall+porch footprints (5385
+ *      Henley class: Roboflow trace was perfect, but reconciler
+ *      rejected it because GIS-with-porches was >2× larger). Lower
+ *      MIN to 0.50 to accept those under-traces; raise MAX to 1.8
+ *      to accept SAM3 polygons that include eaves on multi-section
+ *      roofs whose GIS footprint missed an attached wing. */
+const SAM3_AREA_RATIO_MIN = 0.5;
+const SAM3_AREA_RATIO_MAX = 1.8;
 
 /** When SAM3 and the GIS footprint overlap by at least this much (IoU),
  *  we trust SAM3 over the area-ratio gate. High IoU proves the two
  *  polygons describe the same building geometrically — area differences
- *  reflect SAM3 tracing roof material and GIS tracing wall footprint. */
-const TRUSTED_IOU_THRESHOLD = 0.5;
+ *  reflect SAM3 tracing roof material and GIS tracing wall footprint.
+ *
+ *  Lowered 0.5 → 0.35 (2026-05-13). SAM3 + GIS describing the same
+ *  building reliably exceed 0.35; below that they're typically
+ *  different buildings, not just different aspects of the same one. */
+const TRUSTED_IOU_THRESHOLD = 0.35;
 
 /** Below this IoU, SAM3 and the GIS footprint don't meaningfully overlap.
  *  That's a textbook wrong-building signal — even when the area ratio
  *  looks fine, SAM3 is tracing a roof in a different place than the
  *  building footprint we have for this address. Reject regardless of
- *  area, regardless of centroid proximity. */
-const ZERO_OVERLAP_IOU = 0.15;
+ *  area, regardless of centroid proximity.
+ *
+ *  Lowered 0.15 → 0.05 (2026-05-13). 0.15 was rejecting cases where
+ *  SAM3 (eaves) and GIS (wall+porch) overlapped at 0.10-0.14 on the
+ *  same building — common on FL ranches with deep lanais. 0.05
+ *  catches truly-zero-overlap (different buildings entirely) while
+ *  allowing the eaves-vs-walls geometric mismatch. */
+const ZERO_OVERLAP_IOU = 0.05;
 
-/** SAM3 centroid must be within this distance of the geocoded address.
- *  Beyond this, SAM3 is almost certainly tracing the wrong building. */
-const CATASTROPHIC_DRIFT_M = 15;
+/** SAM3 centroid must be within this distance of the geocoded-or-resolved
+ *  address reference. Beyond this, SAM3 is almost certainly tracing the
+ *  wrong building.
+ *
+ *  Loosened 15m → 40m (2026-05-13). The geocoded pin can be 20-40m off
+ *  on rural setback parcels (Google's geocoder snaps to the driveway
+ *  entrance, not the house). A correctly-traced setback house can have
+ *  its centroid 25-35m from the pin and that's STILL the right building.
+ *  15m was rejecting those. 40m matches SOLAR_DRIFT_THRESHOLD_M in
+ *  route.ts for consistency — same "we don't trust the pin to within
+ *  ±40m" framing across the pipeline. */
+const CATASTROPHIC_DRIFT_M = 40;
 
 /** Hard sanity bounds — anything outside this band is rejected outright. */
 const MIN_FOOTPRINT_SQFT = 200;

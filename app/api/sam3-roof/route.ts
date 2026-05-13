@@ -1069,8 +1069,8 @@ export async function GET(req: Request) {
 
   // Cache scope versioning: the SAM3 cascade has changed materially
   // (vision-based residence detection, drift gates, OSM addr-match
-  // priority, zoom-aware fallbacks). Cached responses from the
-  // pre-vision era are stale by construction — they'd return the
+  // priority, zoom-aware fallbacks). Cached responses from older
+  // pipeline versions are stale by construction — they'd return the
   // wrong building for cases the new cascade now handles correctly.
   // Bumping the scope string forces all old entries to become
   // unreachable; they'll naturally expire under their 6h TTL.
@@ -1079,7 +1079,20 @@ export async function GET(req: Request) {
   // is selected. NOT on prompt tweaks / threshold tunes that produce
   // similar polygons — those are fine to serve from cache during the
   // 6h overlap window.
-  const CACHE_SCOPE = "sam3-roof-v3";
+  //
+  // v4 bump rationale (2026-05-13, pre-demo): three behaviour changes
+  // shipped today combine to produce materially different polygons
+  // from v3:
+  //   1. Roboflow prompt changed (UI side) to "residential house roof"
+  //      — semantically filters outbuildings on rural setback parcels.
+  //   2. Default zoom dropped to 19 for all low-confidence sources
+  //      (commit 57857a8) — wider frame, different SAM3 input image.
+  //   3. Reconciler gates loosened (CATASTROPHIC_DRIFT_M, ZERO_OVERLAP_IOU,
+  //      SAM3_AREA_RATIO_MIN/MAX, TRUSTED_IOU_THRESHOLD) — SAM3 polygons
+  //      that v3 rejected and substituted with GIS will now flow through.
+  // Cached v3 polygons taken on the old Roboflow prompt + tighter zoom
+  // + stricter gates aren't representative of the new pipeline. Flush.
+  const CACHE_SCOPE = "sam3-roof-v4";
 
   if (!skipCache) {
     const cached = await getCached<Sam3CachedResult | null>(CACHE_SCOPE, lat, lng);
