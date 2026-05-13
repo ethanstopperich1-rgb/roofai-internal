@@ -34,7 +34,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     isOnDemoRoute(),
   ]);
   return (
-    <div className="theme-terminal theme-nothing min-h-screen text-white">
+    <div className="theme-terminal min-h-screen text-white">
       {isDemo && <DemoBanner activeRole={role} />}
       <DashboardChrome
         offices={DEMO_OFFICES}
