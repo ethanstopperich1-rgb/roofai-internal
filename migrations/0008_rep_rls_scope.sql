@@ -27,7 +27,7 @@ create policy leads_select_office on public.leads
     -- manager/staff: same-office, all rows
     or (
       office_id = public.current_office_id()
-      and public.current_user_role() in ('manager', 'staff', 'admin', 'owner')
+      and public.current_user_role() in ('manager', 'staff', 'admin', 'owner', 'viewer')
     )
     -- rep: same-office AND assigned to me
     or (
@@ -45,7 +45,7 @@ create policy leads_update_office on public.leads
     public.is_admin()
     or (
       office_id = public.current_office_id()
-      and public.current_user_role() in ('manager', 'staff')
+      and public.current_user_role() in ('manager', 'staff', 'viewer')
     )
     or (
       office_id = public.current_office_id()
@@ -57,7 +57,7 @@ create policy leads_update_office on public.leads
     public.is_admin()
     or (
       office_id = public.current_office_id()
-      and public.current_user_role() in ('manager', 'staff')
+      and public.current_user_role() in ('manager', 'staff', 'viewer')
     )
     or (
       office_id = public.current_office_id()
@@ -77,7 +77,7 @@ create policy calls_select_office on public.calls
     public.is_admin()
     or (
       office_id = public.current_office_id()
-      and public.current_user_role() in ('manager', 'staff', 'admin', 'owner')
+      and public.current_user_role() in ('manager', 'staff', 'admin', 'owner', 'viewer')
     )
     or (
       office_id = public.current_office_id()
@@ -100,7 +100,7 @@ create policy proposals_select_office on public.proposals
     public.is_admin()
     or (
       office_id = public.current_office_id()
-      and public.current_user_role() in ('manager', 'staff', 'admin', 'owner')
+      and public.current_user_role() in ('manager', 'staff', 'admin', 'owner', 'viewer')
     )
     or (
       office_id = public.current_office_id()

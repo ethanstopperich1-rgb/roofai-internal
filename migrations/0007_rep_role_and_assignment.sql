@@ -27,9 +27,15 @@
 alter table public.users
   drop constraint if exists users_role_check;
 
+-- 'viewer' is a legacy value retained for forward compatibility with
+-- rows that were created against the pre-0007 check constraint
+-- ('admin', 'rep', 'viewer'). The app's role normalizer maps 'viewer'
+-- to 'staff' so it has no visible behavioral difference, but we keep
+-- the value valid here so the migration is non-destructive for any
+-- historical row.
 alter table public.users
   add constraint users_role_check
-  check (role in ('rep', 'staff', 'manager', 'admin', 'owner'));
+  check (role in ('rep', 'staff', 'manager', 'admin', 'owner', 'viewer'));
 
 -- ─── leads.assigned_to ────────────────────────────────────────────────
 

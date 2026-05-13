@@ -133,8 +133,17 @@ export interface DashboardUser {
 }
 
 const ROLE_VALUES: DashboardRole[] = ["rep", "staff", "manager", "admin", "owner"];
+// Legacy alias map — historical DBs had a `viewer` role from the pre-0007
+// check constraint. It behaves identically to "staff" in the app, but the
+// raw value remains valid in the DB to keep the migration non-destructive.
+const ROLE_ALIASES: Record<string, DashboardRole> = {
+  viewer: "staff",
+};
 function normalizeRole(raw: string | null | undefined): DashboardRole {
-  if (raw && (ROLE_VALUES as string[]).includes(raw)) return raw as DashboardRole;
+  if (!raw) return "staff";
+  if ((ROLE_VALUES as string[]).includes(raw)) return raw as DashboardRole;
+  const aliased = ROLE_ALIASES[raw];
+  if (aliased) return aliased;
   return "staff";
 }
 
