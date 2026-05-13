@@ -33,17 +33,11 @@ export default function LeadsTable({
 }) {
   const [leads, setLeads] = useState(initial);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [materialFilter, setMaterialFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [query, setQuery] = useState<string>("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
-  const materials = useMemo(() => {
-    const s = new Set<string>();
-    for (const l of leads) if (l.material) s.add(l.material);
-    return Array.from(s).sort();
-  }, [leads]);
   const sources = useMemo(() => {
     const s = new Set<string>();
     for (const l of leads) if (l.source) s.add(l.source);
@@ -62,7 +56,6 @@ export default function LeadsTable({
     () =>
       leads.filter((l) => {
         if (statusFilter !== "all" && l.status !== statusFilter) return false;
-        if (materialFilter !== "all" && l.material !== materialFilter) return false;
         if (sourceFilter !== "all" && l.source !== sourceFilter) return false;
         if (!normalizedQuery) return true;
         const hay = [
@@ -83,7 +76,7 @@ export default function LeadsTable({
         }
         return false;
       }),
-    [leads, statusFilter, materialFilter, sourceFilter, normalizedQuery, normalizedPhoneQuery],
+    [leads, statusFilter, sourceFilter, normalizedQuery, normalizedPhoneQuery],
   );
 
   const openLead = openId ? leads.find((l) => l.id === openId) ?? null : null;
@@ -133,15 +126,6 @@ export default function LeadsTable({
           options={[
             { value: "all", label: "All statuses" },
             ...LEAD_STATUSES.map((s) => ({ value: s, label: statusStyle(s).label })),
-          ]}
-        />
-        <Select
-          label="Material"
-          value={materialFilter}
-          onChange={setMaterialFilter}
-          options={[
-            { value: "all", label: "All materials" },
-            ...materials.map((m) => ({ value: m, label: m })),
           ]}
         />
         <Select
