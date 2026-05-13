@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Eye, ListChecks, Send, ArrowRight, CloudHail } from "lucide-react";
 import LiveStormCard from "@/components/storms/LiveStormCard";
+import PublicHeader from "@/components/ui/public-header";
+import PublicFooter from "@/components/ui/public-footer";
 
 export const metadata: Metadata = {
   title: "Storm Intelligence · Voxaris",
@@ -15,46 +17,33 @@ const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
 export default function StormsPage() {
   return (
     <div className="min-h-screen relative" style={{ background: "#07090d" }}>
-      {/* Header */}
-      <header
-        className="relative z-30 border-b border-white/[0.06]"
-        style={{
-          background: "rgba(7,9,13,0.85)",
-        }}
-      >
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 sm:h-20 flex items-center justify-between">
-          <Link href="/quote" className="flex items-center gap-3 min-w-0">
-            <span className="font-display text-[20px] sm:text-[24px] font-semibold tracking-tight text-slate-50">
-              Voxaris
-            </span>
-            <span
-              className="text-[10px] font-mono uppercase tracking-[0.14em] px-2 py-0.5 rounded-full"
-              style={{
-                background: "rgba(103,220,255,0.08)",
-                border: "1px solid rgba(103,220,255,0.28)",
-                color: "#b3edff",
-              }}
-            >
-              Storm Intelligence
-            </span>
-          </Link>
-          <nav className="hidden md:flex items-center gap-6 text-[13px] text-slate-300">
-            <Link href="/quote" className="hover:text-white transition-colors">
-              Homeowner quote
-            </Link>
-            <a
-              href="mailto:hello@voxaris.io?subject=Storm%20Intelligence%20—%20activate%20my%20territory"
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium transition"
-              style={{
-                background: "linear-gradient(180deg, #67dcff, #18a6d6)",
-                color: "#051019",
-              }}
-            >
-              Talk to us <ArrowRight size={14} />
-            </a>
-          </nav>
-        </div>
-      </header>
+      {/* Shared PublicHeader. Previously /storms rolled its own header
+          with a TEXT wordmark (just the word "Voxaris" in a span) —
+          inconsistent with every other public page which uses the
+          logo image. PublicHeader uses the canonical wordmark image
+          everywhere. The chip stays storm-themed (cyan, matches the
+          page accent), and we keep the page-specific CTA ("Talk to us"
+          → mailto) in the rightSlot. */}
+      <PublicHeader
+        chip="Storm Intelligence"
+        chipClassName="hidden md:inline-flex items-center text-[10px] font-mono uppercase tracking-[0.14em] px-2 py-0.5 rounded-full"
+        nav={[
+          { label: "Homeowner quote", href: "/quote" },
+          { label: "How it works", href: "#example" },
+        ]}
+        rightSlot={
+          <a
+            href="mailto:hello@voxaris.io?subject=Storm%20Intelligence%20—%20activate%20my%20territory"
+            className="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium transition justify-self-end"
+            style={{
+              background: "linear-gradient(180deg, #67dcff, #18a6d6)",
+              color: "#051019",
+            }}
+          >
+            Talk to us <ArrowRight size={14} />
+          </a>
+        }
+      />
 
       <main className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 py-12 sm:py-20 space-y-20 sm:space-y-28">
         {/* HERO — outcome first, no glow */}
@@ -183,16 +172,7 @@ export default function StormsPage() {
         </section>
       </main>
 
-      <footer className="relative z-10 border-t border-white/[0.06]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-wrap items-center justify-between gap-y-3 gap-x-6 text-[11.5px] text-slate-500 font-mono">
-          <span>© {new Date().getFullYear()} Voxaris · Storm Intelligence</span>
-          <div className="flex items-center gap-x-4 gap-y-2 flex-wrap">
-            <Link href="/privacy" className="hover:text-slate-300">Privacy</Link>
-            <span className="text-slate-700">·</span>
-            <Link href="/terms" className="hover:text-slate-300">Terms</Link>
-          </div>
-        </div>
-      </footer>
+      <PublicFooter />
     </div>
   );
 }

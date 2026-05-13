@@ -13,6 +13,8 @@ import {
 import Link from "next/link";
 import { BoltStyleHero, type QuoteHeroFormValues } from "@/components/ui/bolt-style-chat";
 import NavHeader from "@/components/ui/nav-header";
+import PublicHeader from "@/components/ui/public-header";
+import PublicFooter from "@/components/ui/public-footer";
 import {
   StatsStrip,
   HowItWorks,
@@ -596,7 +598,14 @@ export default function QuotePage() {
   // background environment (layered radial washes behind the glass panels).
   return (
     <div className="min-h-screen flex flex-col relative z-[1] lg-env">
-      <PublicHeader />
+      <PublicHeader
+        chip="Quick Quote"
+        nav={[
+          { label: "Quote", href: "/quote" },
+          { label: "How It Works", href: "/quote#how" },
+          { label: "FAQ", href: "/quote#faq" },
+        ]}
+      />
       <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-10 sm:py-16 space-y-8">
         {!submitted && <Stepper current={stepIdx} />}
 
@@ -755,82 +764,11 @@ function CommercialBranch({
 
 /* ─── Header / Footer ─────────────────────────────────────────────────── */
 
-function PublicHeader() {
-  return (
-    <header
-      className="relative z-30"
-      style={{
-        background:
-          "linear-gradient(180deg, rgba(8,11,17,0.55) 0%, rgba(8,11,17,0.25) 100%)",
-        backdropFilter: "blur(40px) saturate(1.5)",
-        WebkitBackdropFilter: "blur(40px) saturate(1.5)",
-        borderBottom: "1px solid rgba(255,255,255,0.08)",
-        boxShadow: "inset 0 -1px 0 rgba(255,255,255,0.04)",
-      }}
-    >
-      {/* 3-column grid (1fr | auto | 1fr) instead of flex justify-between, so
-          the nav pill in the middle column is truly centered on the page —
-          flex justify-between centers it between the left and right
-          siblings, which have different widths and pulled the nav
-          off-center. */}
-      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-16 sm:h-20 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-        <Link href="/quote" className="flex items-center gap-2 min-w-0 justify-self-start">
-          <img
-            src="/brand/logo-wordmark-alpha.png"
-            alt="Voxaris Pitch"
-            width={1672}
-            height={941}
-            className="h-9 sm:h-14 w-auto max-w-[180px] sm:max-w-none object-contain"
-          />
-          <span className="hidden md:inline-block ml-1 chip text-[10px]">Quick Quote</span>
-        </Link>
-
-        <NavHeader
-          items={[
-            { label: "Quote", href: "/quote" },
-            { label: "How It Works", href: "/quote#how" },
-            { label: "FAQ", href: "/quote#faq" },
-          ]}
-        />
-
-        <div className="hidden sm:flex items-center gap-3 text-[12px] text-white/75 justify-self-end">
-          <Check size={13} className="text-mint" />
-          <span>Free · No-obligation</span>
-        </div>
-      </div>
-    </header>
-  );
-}
-
-function PublicFooter() {
-  return (
-    <footer className="border-t border-white/[0.08] mt-12">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 flex flex-wrap items-center justify-between gap-y-3 gap-x-6 text-[11px] text-white/45 font-mono">
-        {/* Brand-consistent footer: header logo is the Voxaris Pitch
-            wordmark, metadata title is "Voxaris Pitch · Roofing
-            Estimator", so the copyright reads "Voxaris Pitch" not
-            bare "Voxaris" to keep the product name aligned across all
-            surfaces. */}
-        <span>© {new Date().getFullYear()} Voxaris Pitch</span>
-        <div className="flex items-center gap-x-4 gap-y-2 flex-wrap">
-          <Link href="/privacy" className="hover:text-white/70 transition-colors">
-            Privacy
-          </Link>
-          <span className="text-white/25">·</span>
-          <Link href="/terms" className="hover:text-white/70 transition-colors">
-            Terms
-          </Link>
-          <span className="text-white/25">·</span>
-          <Link href="/storms" className="hover:text-white/70 transition-colors">
-            For roofing operators
-          </Link>
-          <span className="text-white/25">·</span>
-          <span>Estimates are non-binding</span>
-        </div>
-      </div>
-    </footer>
-  );
-}
+// PublicHeader + PublicFooter were inlined here previously. Both have
+// been promoted to @/components/ui/public-header.tsx + /public-footer.tsx
+// so /storms, /p/[id], /embed/install, and the (legal) layout share
+// the same brand chrome. Per-page usage (this file) passes
+// chip="Quick Quote" + a nav array; other pages pass their own.
 
 /* ─── Stepper ─────────────────────────────────────────────────────────── */
 

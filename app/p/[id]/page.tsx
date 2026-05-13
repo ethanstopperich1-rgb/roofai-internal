@@ -6,6 +6,8 @@ import type { Estimate } from "@/types/estimate";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
 import { Check, MapPin, Mail, Phone, ShieldCheck } from "lucide-react";
 import { BRAND_CONFIG } from "@/lib/branding";
+import PublicHeader from "@/components/ui/public-header";
+import PublicFooter from "@/components/ui/public-footer";
 
 export default function CustomerProposalPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -43,24 +45,39 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
     };
   }, [id]);
 
+  /* Wraps every state (loading / not-found / proposal) with the
+     shared PublicHeader + PublicFooter so the proposal page reads
+     as part of the product — not a stranded one-off. Previously the
+     page rendered the Voxaris logo as a centered float at the top of
+     the proposal card itself, with no nav, no footer, no consistency
+     with /quote or /storms. PublicHeader gets no nav / no rightSlot
+     here because /p/[id] is a CUSTOMER DESTINATION (they got the link
+     from their rep); marketing nav would be wrong. The proposal-
+     specific "Prepared by ..." footer block stays inside the
+     content because it's contextual metadata, not chrome. */
+
   if (!loaded) {
     return (
-      <div className="min-h-[60vh] flex items-center justify-center text-slate-400 text-[13px]">
-        Loading proposal…
-      </div>
+      <ProposalShell>
+        <div className="min-h-[40vh] flex items-center justify-center text-slate-400 text-[13px]">
+          Loading proposal…
+        </div>
+      </ProposalShell>
     );
   }
 
   if (!estimate) {
     return (
-      <div className="min-h-[60vh] flex items-center justify-center text-center px-6">
-        <div>
-          <div className="font-display text-2xl mb-2">Proposal not found</div>
-          <div className="text-[13px] text-slate-400">
-            This proposal link may have expired. Please contact your representative.
+      <ProposalShell>
+        <div className="min-h-[40vh] flex items-center justify-center text-center px-6">
+          <div>
+            <div className="font-display text-2xl mb-2">Proposal not found</div>
+            <div className="text-[13px] text-slate-400">
+              This proposal link may have expired. Please contact your representative.
+            </div>
           </div>
         </div>
-      </div>
+      </ProposalShell>
     );
   }
 
@@ -68,16 +85,8 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
   const created = new Date(estimate.createdAt);
 
   return (
+    <ProposalShell>
     <div className="space-y-6 max-w-3xl mx-auto">
-      <div className="flex items-center justify-center pt-2 pb-1">
-        <img
-          src="/brand/logo-wordmark-alpha.png"
-          alt="Voxaris Pitch"
-          width={1672}
-          height={941}
-          className="h-9 w-auto opacity-90"
-        />
-      </div>
       <div className="glass-strong rounded-3xl p-7 md:p-9 relative overflow-hidden">
         <div
           className="absolute -top-20 -right-20 w-[420px] h-[420px] rounded-full blur-3xl pointer-events-none opacity-50"
@@ -163,7 +172,7 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
         )}
       </div>
 
-      <footer className="flex items-center justify-between pt-4 pb-8 text-[11.5px] text-slate-500">
+      <div className="flex items-center justify-between pt-4 pb-2 text-[11.5px] text-slate-500">
         <div>
           Prepared by <span className="text-slate-300">{estimate.staff || BRAND_CONFIG.companyName}</span>
         </div>
@@ -179,7 +188,21 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
             </a>
           )}
         </div>
-      </footer>
+      </div>
+    </div>
+    </ProposalShell>
+  );
+}
+
+/** Shared chrome wrapper so loading / not-found / proposal states all
+ *  share the same PublicHeader + PublicFooter. Avoids the early-return
+ *  pattern dropping out of chrome on edge cases. */
+function ProposalShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen flex flex-col">
+      <PublicHeader chip={undefined} rightSlot={null} logoHref="/quote" />
+      <main className="flex-1 px-4 sm:px-6 py-8 sm:py-12">{children}</main>
+      <PublicFooter />
     </div>
   );
 }
