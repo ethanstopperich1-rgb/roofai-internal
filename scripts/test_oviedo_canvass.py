@@ -124,9 +124,18 @@ def haversine_mi(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 # ─── Address harvest (Overpass) ───────────────────────────────────────────
 
 
+OVERPASS_ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+    "https://z.overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
+
+
 def fetch_addresses_overpass(top_n: int) -> list[Address]:
     """Query Overpass for address-tagged residential buildings near the
-    hail center. Returns the top-N closest."""
+    hail center. Returns the top-N closest. Tries multiple Overpass
+    mirrors with backoff — the main endpoint is regularly overloaded."""
     radius_m = int(HAIL_RADIUS_MILES * 1609.344)
     query = f"""
 [out:json][timeout:25];
@@ -140,13 +149,24 @@ out center 400;
         "User-Agent": "Voxaris-Canvass-Test (+admin@voxaris.io)",
     }
     print(f"  → fetching addresses near {HAIL_LAT},{HAIL_LNG} (radius {HAIL_RADIUS_MILES}mi)…", file=sys.stderr)
-    with httpx.Client(timeout=30.0, headers=headers) as c:
-        r = c.post(
-            "https://overpass-api.de/api/interpreter",
-            data={"data": query},
-        )
-        r.raise_for_status()
-        data = r.json()
+
+    data = None
+    last_err = None
+    for endpoint in OVERPASS_ENDPOINTS:
+        try:
+            print(f"    trying {endpoint}…", file=sys.stderr)
+            with httpx.Client(timeout=45.0, headers=headers) as c:
+                r = c.post(endpoint, data={"data": query})
+                r.raise_for_status()
+                data = r.json()
+                print(f"    ok via {endpoint}", file=sys.stderr)
+                break
+        except Exception as e:
+            last_err = e
+            print(f"    failed: {type(e).__name__}: {e}", file=sys.stderr)
+            time.sleep(2.0)
+    if data is None:
+        raise RuntimeError(f"all Overpass endpoints failed; last error: {last_err}")
 
     residential = {"house", "residential", "detached", "semidetached_house",
                    "bungalow", "terrace", "yes"}
@@ -195,7 +215,11 @@ out center 400;
 # ─── Seminole permit portal via CloakBrowser ──────────────────────────────
 
 
-SEMINOLE_PERMIT_SEARCH = "https://citizenservice.seminolecountyfl.gov/Permits/SearchByAddress.aspx"
+# Real Seminole County permit search portal — found via
+# seminolecountyfl.gov/departments-services/development-services/building.
+# Two candidates; primary is the BuildingPermitWebInquiry portal.
+SEMINOLE_PERMIT_SEARCH = "https://scccap01.seminolecountyfl.gov/BuildingPermitWebInquiry/"
+SEMINOLE_PERMIT_FALLBACK = "https://scwebapp2.seminolecountyfl.gov:6443/contractorpermitinquiry/"
 
 
 def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> PermitFinding:
@@ -212,15 +236,46 @@ def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> Permit
     street_name_clean = re.sub(r"\s+(DR|RD|ST|AVE|LN|BLVD|CT|WAY|CIR|TRL|PL|TER)\.?$",
                                 "", street_name, flags=re.IGNORECASE).strip()
 
-    try:
-        page.goto(SEMINOLE_PERMIT_SEARCH, wait_until="domcontentloaded", timeout=20_000)
-    except Exception as e:
-        return PermitFinding(None, None, None, None, "", portal_error=f"goto: {e}")
+    last_goto_err = None
+    for portal in (SEMINOLE_PERMIT_SEARCH, SEMINOLE_PERMIT_FALLBACK):
+        try:
+            page.goto(portal, wait_until="domcontentloaded", timeout=25_000)
+            last_goto_err = None
+            break
+        except Exception as e:
+            last_goto_err = e
+    if last_goto_err is not None:
+        return PermitFinding(None, None, None, None, "",
+                              portal_error=f"goto-all-failed: {last_goto_err}")
 
     if debug_dir:
         try:
             page.screenshot(path=str(debug_dir / f"{street_num}_{street_name_clean[:20]}_landing.png"))
             (debug_dir / f"{street_num}_{street_name_clean[:20]}_landing.html").write_text(
+                page.content(), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    # Seminole's BuildingPermitWebInquiry portal is an ASP.NET WebForms
+    # app. The address fields are hidden until you pick "Address" from
+    # the SearchByDropDownList — which fires a postback that reveals
+    # them. So step one: select Address and wait for the form to update.
+    try:
+        dd = page.locator("select[id*='SearchByDropDownList']")
+        if dd.count() > 0:
+            dd.select_option("Address")
+            # postback re-renders the page; wait for the address inputs
+            # to appear. networkidle is the safest signal for ASP.NET.
+            page.wait_for_load_state("networkidle", timeout=12_000)
+    except Exception as e:
+        return PermitFinding(None, None, None, None, "",
+                              portal_error=f"dropdown-select: {e}")
+
+    if debug_dir:
+        try:
+            page.screenshot(path=str(debug_dir / f"{street_num}_{street_name_clean[:20]}_after_dropdown.png"))
+            (debug_dir / f"{street_num}_{street_name_clean[:20]}_after_dropdown.html").write_text(
                 page.content(), encoding="utf-8"
             )
         except Exception:
