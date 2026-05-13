@@ -66,6 +66,41 @@ ROOF_PERMIT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Seminole's StreetType dropdown uses the FULL word in uppercase.
+# Customer addresses use short suffixes ("CT", "DR", "RD"). Map between
+# them — the dropdown is REQUIRED by the portal, missing it fails the
+# search with a validation error and we get back zero results.
+STREET_SUFFIX_MAP = {
+    "ALY": "ALLEY", "ALLEY": "ALLEY",
+    "AVE": "AVENUE", "AVENUE": "AVENUE",
+    "BLVD": "BOULEVARD", "BOULEVARD": "BOULEVARD",
+    "CIR": "CIRCLE", "CIRCLE": "CIRCLE",
+    "CT": "COURT", "COURT": "COURT",
+    "CV": "COVE", "COVE": "COVE",
+    "CRES": "CRESCENT", "CRESCENT": "CRESCENT",
+    "XING": "CROSSING", "CROSSING": "CROSSING",
+    "DR": "DRIVE", "DRIVE": "DRIVE",
+    "HWY": "HIGHWAY", "HIGHWAY": "HIGHWAY",
+    "HL": "HILL", "HILL": "HILL",
+    "HOLW": "HOLLOW", "HOLLOW": "HOLLOW",
+    "LN": "LANE", "LANE": "LANE",
+    "LOOP": "LOOP",
+    "PKWY": "PARKWAY", "PARKWAY": "PARKWAY",
+    "PATH": "PATH",
+    "PL": "PLACE", "PLACE": "PLACE",
+    "PLZ": "PLAZA", "PLAZA": "PLAZA",
+    "RD": "ROAD", "ROAD": "ROAD",
+    "RUN": "RUN",
+    "SQ": "SQUARE", "SQUARE": "SQUARE",
+    "ST": "STREET", "STREET": "STREET",
+    "TER": "TERRACE", "TERRACE": "TERRACE",
+    "TRCE": "TRACE", "TRACE": "TRACE",
+    "TRL": "TRAIL", "TRAIL": "TRAIL",
+    "WAY": "WAY",
+    "VW": "VIEW", "VIEW": "VIEW",
+    "VLG": "VILLAGE", "VILLAGE": "VILLAGE",
+}
+
 
 # ─── Data shapes ──────────────────────────────────────────────────────────
 
@@ -233,8 +268,19 @@ def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> Permit
                               portal_error="address_parse")
     street_num, street_name = m.group(1), m.group(2)
     # Strip common suffixes that some portals don't want
-    street_name_clean = re.sub(r"\s+(DR|RD|ST|AVE|LN|BLVD|CT|WAY|CIR|TRL|PL|TER)\.?$",
-                                "", street_name, flags=re.IGNORECASE).strip()
+    street_name_clean = re.sub(
+        r"\s+(DR|RD|ST|AVE|LN|BLVD|CT|WAY|CIR|TRL|PL|TER|CV|XING|HWY)\.?$",
+        "", street_name, flags=re.IGNORECASE,
+    ).strip()
+    # Map the suffix to Seminole's StreetType dropdown value (full word).
+    # The portal REQUIRES this dropdown — without it the search returns
+    # validation errors and zero results.
+    suffix_match = re.search(
+        r"\s+(\w+)\.?$", street_name, flags=re.IGNORECASE,
+    )
+    street_type = None
+    if suffix_match:
+        street_type = STREET_SUFFIX_MAP.get(suffix_match.group(1).upper())
 
     last_goto_err = None
     for portal in (SEMINOLE_PERMIT_SEARCH, SEMINOLE_PERMIT_FALLBACK):
@@ -364,6 +410,29 @@ def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> Permit
     if not filled_name:
         return PermitFinding(None, None, None, None, "", portal_error="no_street_name_input")
 
+    # Street Type dropdown — REQUIRED by the portal. Without it,
+    # validation fails and the search returns "no Permits for the
+    # address searched" even on real addresses.
+    if street_type:
+        for s in [
+            "select[id$='StreetTypeDropDownList']",
+            "select[name$='StreetTypeDropDownList']",
+            "select[id*='StreetType']",
+            "select[id*='StreetSuffix']",
+        ]:
+            try:
+                if page.locator(s).count() > 0:
+                    page.select_option(s, value=street_type)
+                    break
+            except Exception:
+                # Try by label if value match fails — some portals
+                # store the dropdown options with leading whitespace.
+                try:
+                    page.select_option(s, label=street_type)
+                    break
+                except Exception:
+                    continue
+
     # Zip code — best-effort. If the portal requires it (some configs
     # do) the search will fail silently without it. If it doesn't,
     # filling it just narrows results, which is fine.
@@ -402,10 +471,38 @@ def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> Permit
         except Exception:
             pass
 
+    # Check for portal-explicit "no permits" message before parsing —
+    # avoids returning a misleading "parse failed" when the search
+    # actually ran and returned a legitimate empty result.
+    try:
+        body_text = page.locator("body").inner_text()[:8000]
+    except Exception:
+        body_text = ""
+    no_records_pattern = re.compile(
+        r"(no permits? for the address searched"
+        r"|no records? (found|matching|to display)"
+        r"|0 results?"
+        r"|no matching results)",
+        re.IGNORECASE,
+    )
+    if no_records_pattern.search(body_text):
+        # Real empty result — return the canonical "no permit on file"
+        # finding. has_recent_roof_permit=False, last_permit_date=None
+        # is exactly what the hot-lead scorer wants for "+50 / hot".
+        return PermitFinding(False, None, None, None,
+                              "portal: no permits for this address",
+                              portal_error=None)
+
     # Parse the result table — generic enough to catch a few common
-    # table shapes
+    # table shapes (Telerik RadGrid, plain HTML tables, etc.)
     permits: list[dict] = []
-    for table_sel in ["table.results tr", "table[id*='Result'] tr", "table tbody tr", "table tr"]:
+    for table_sel in [
+        "table.rgMasterTable tr",  # Telerik RadGrid main table
+        "table[id*='Result'] tr",
+        "table.results tr",
+        "table tbody tr",
+        "table tr",
+    ]:
         rows = page.query_selector_all(table_sel)
         if len(rows) <= 1:
             continue
