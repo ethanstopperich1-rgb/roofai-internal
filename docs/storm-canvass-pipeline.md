@@ -114,36 +114,94 @@ These are best-effort from public PA documentation; verify against
 the actual schema when adding each loader. The script's `_str_or_none`
 helpers tolerate missing columns gracefully.
 
-## Permit enrichment — deferred to post-demo
+## Permit enrichment — `scripts/enrich_permits.py`
 
-The original spec called for a `scripts/enrich_permits.py` using
-CloakBrowser to scrape county permit portals for the top-ranked
-canvass targets, flagging "no recent roof permit" as a hot-lead
-signal.
+Wired now. CloakBrowser-driven, runs in `.github/workflows/enrich-permits.yml`
+at 06:30 UTC daily (30 min after storm-pulse). Adapters for Seminole
+and Orange counties; add more by following the same shape.
 
-This is **intentionally deferred** for two reasons:
+### What it does
 
-1. **Legal posture.** Per the audit thread, scraping county permit
-   portals via stealth-browser anti-bot evasion is a CFAA gray zone
-   that a brief legal review should cover before we ship. The data
-   itself is public records, but actively bypassing Cloudflare /
-   reCAPTCHA on `.gov` sites is exactly the fact pattern that gets
-   sued. Cost of legal review: ~$500-1000 with a tech-friendly
-   attorney. Worth doing pre-launch, not pre-demo.
+1. Pulls top-N (default 500) `canvass_targets` rows where
+   `permit_checked_at is null`, ordered by score desc, filtered to the
+   target county via the parcel join.
+2. For each address, launches CloakBrowser (humanize=True for
+   human-like timing) and queries the county permit portal:
+   - **Seminole**: `citizenservice.seminolecountyfl.gov/Permits/SearchByAddress.aspx`
+   - **Orange**: `fasttrack.ocfl.net/OnlineServices/Permits/Search`
+3. Parses the result table for any permit whose type matches the roof
+   pattern (`re-roof | roof replace | roof repair | new roof | roofing`)
+   within the last 24 months.
+4. Writes back to the canvass_targets row:
+   - `has_recent_roof_permit` (bool, NULL on portal failure)
+   - `last_permit_type`, `last_permit_date`, `last_permit_number`
+   - `permit_raw_summary` (up to 4 KB for ops debugging)
+   - `permit_checked_at = now()`
 
-2. **Commercial alternative exists.** Shovels.ai publishes a
-   permit-data API covering most of FL for ~$200-800/mo per tier.
-   JSON in, JSON out. Zero legal exposure, faster to integrate, and
-   their data quality is better than scraping anyway (they normalize
-   permit types across county schemas, which a scraper would need to
-   replicate).
+### Polite-scrape posture (these are baked into the script, not optional)
 
-The recommended path post-demo: sign up for Shovels.ai's smallest
-FL tier, build `scripts/enrich_permits.py` against their API, add a
-`permits` table to the schema and a JOIN in `parcels_within_radius`
-to surface "has_recent_roof_permit" as a column on each canvass
-target. ~2 days of work.
+- **Volume cap**: TOP_N default 500/county/run. Configurable via env or
+  workflow input.
+- **Rate limit**: 3-5 second randomized interval per address. Single
+  concurrent worker — no parallelism within a county.
+- **Identifying User-Agent**: Standard Chrome UA + suffix
+  `Voxaris-Canvass-Bot (+hello@voxaris.io)` so the county IT team can
+  identify and reach us if there's an issue.
+- **robots.txt probed once per county at startup**; if our UA is
+  disallowed at the search path, we abort that county and log it.
+- **Fail open**: any single-address error is logged and the row is
+  marked `permit_checked_at = now()` with `has_recent_roof_permit =
+  null`, so a flaky portal doesn't block the canvass list.
 
-If you absolutely want the CloakBrowser path despite the above,
-the architecture lives in the audit thread — search for
-"county-portal worker" in the project history.
+### One-time setup
+
+```bash
+# Apply the migration
+psql "$SUPABASE_DB_URL" -f migrations/0014_canvass_targets_permits.sql
+
+# Add a GH secret for the contact email used in the identifying UA
+# (defaults to hello@voxaris.io if unset)
+gh secret set PERMITS_CONTACT_EMAIL --body "hello@voxaris.io"
+```
+
+### Manual test
+
+```bash
+export SUPABASE_DB_URL="postgresql://postgres:<pass>@<project>.supabase.co:5432/postgres"
+export PERMIT_DRYRUN=1
+python scripts/enrich_permits.py --county seminole --top-n 5
+```
+
+Dryrun hits the portals but skips the DB write, so you can verify the
+parser without polluting the canvass_targets rows.
+
+### The killer query
+
+Once permit data lands, the "hot lead" canvass query is:
+
+```sql
+select * from public.canvass_targets
+where office_id = $1
+  and status = 'new'
+  and has_recent_roof_permit is false
+order by score desc
+limit 50;
+```
+
+This is the priority queue: storm-hit address × in the canvass radius
+× residential × **no permit yet pulled**. That's the door we want
+the rep at first.
+
+### Adding a new county
+
+Follow `query_seminole()` in `scripts/enrich_permits.py` as the
+reference. Each adapter needs:
+
+- `portal_url` for the robots.txt probe
+- A `query_<county>(page, row)` function that fills the search form
+  and returns a list of `{number, type, date, status}` dicts
+- An entry in `COUNTY_QUERIES` mapping the slug → adapter
+
+The `_summarize_permits()` helper does the rest — match the roof
+regex, find the most recent permit within the 24-month window, return
+a `PermitFinding`. Same shape across counties.

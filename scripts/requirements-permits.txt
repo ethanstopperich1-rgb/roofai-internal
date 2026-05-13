@@ -1,0 +1,8 @@
+# Dependencies for scripts/enrich_permits.py.
+#
+# CloakBrowser is a stealth-Chromium Playwright drop-in. The
+# binary downloads on first run (~200 MB, cached at
+# ~/.cache/cloakbrowser/).
+cloakbrowser>=0.4.0
+psycopg[binary]>=3.1.18
+python-dateutil>=2.8.2

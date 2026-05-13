@@ -1,0 +1,91 @@
+name: Enrich permits
+
+# Runs scripts/enrich_permits.py against the top-N pending
+# canvass_targets rows per county. Triggered:
+#
+#   * Daily at 04:30 UTC — 90 minutes after the storm-pulse cron
+#     completes (06:00 UTC; actually we run BEFORE storm-pulse so
+#     the canvass list lands with permits already enriched). Actually
+#     scratch that: storm-pulse runs at 06:00 UTC. We run at 06:30 UTC
+#     so the pending rows it just created get permits within the same
+#     morning window.
+#   * Manually via workflow_dispatch when seeding a fresh storm
+#     event for live demo prep.
+#
+# Polite-scrape posture:
+#   * Top-N cap (default 500/county/run, configurable input)
+#   * 3-5s randomized rate limit per address
+#   * Identifying User-Agent (CONTACT_EMAIL secret → "Voxaris-Canvass-Bot (+<email>)")
+#   * robots.txt probed once per county; abort if disallowed
+#   * Single concurrent worker (no per-county parallelism)
+#
+# Cost: $0. ~500 addresses × 4s avg = 33 min/county/day. Two counties =
+# 66 min/day = ~2000 min/mo. JUST inside the GH Actions free tier.
+# If we add more counties beyond 2, this needs to either shorten the
+# top-N or run on a self-hosted runner.
+
+on:
+  schedule:
+    - cron: "30 6 * * *" # 30 min after storm-pulse
+  workflow_dispatch:
+    inputs:
+      county:
+        description: "seminole | orange | all"
+        required: true
+        default: "all"
+      top_n:
+        description: "Max addresses per county (default 500)"
+        required: false
+        default: "500"
+      dryrun:
+        description: "Run portal queries but skip DB writes (1 = dryrun)"
+        required: false
+        default: ""
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/requirements-permits.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements-permits.txt
+
+      - name: Cache CloakBrowser binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cloakbrowser
+          key: cloakbrowser-${{ runner.os }}-v1
+
+      - name: Resolve inputs
+        id: pick
+        env:
+          INPUT_COUNTY: ${{ github.event.inputs.county }}
+          INPUT_TOP_N:  ${{ github.event.inputs.top_n }}
+        run: |
+          echo "county=${INPUT_COUNTY:-all}" >> $GITHUB_OUTPUT
+          echo "top_n=${INPUT_TOP_N:-500}" >> $GITHUB_OUTPUT
+
+      - name: Enrich permits
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          CONTACT_EMAIL:   ${{ secrets.PERMITS_CONTACT_EMAIL }}
+          PERMIT_TOP_N:    ${{ steps.pick.outputs.top_n }}
+          PERMIT_DRYRUN:   ${{ github.event.inputs.dryrun }}
+          LOG_LEVEL:       INFO
+        run: |
+          python scripts/enrich_permits.py \
+            --county "${{ steps.pick.outputs.county }}" \
+            --top-n  "${{ steps.pick.outputs.top_n }}"
