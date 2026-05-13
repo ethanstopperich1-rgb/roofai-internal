@@ -18,10 +18,16 @@ import {
   fmtUSD,
   getDashboardOfficeId,
   getDashboardOfficeSlug,
+  getDashboardRole,
   getDashboardSupabase,
+  getDashboardUser,
+  isRepRole,
   monthStartISO,
+  type Lead,
 } from "@/lib/dashboard";
 import { getDemoActivity, getDemoMetrics } from "@/lib/dashboard-demo";
+import { getDemoLeads as getDemoLeadRows } from "@/lib/dashboard-demo-rows";
+import RepOverview from "./rep-overview";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -207,7 +213,112 @@ async function loadOverview(): Promise<{
   };
 }
 
+/** Build a rep-scoped data bundle from the demo leads — keeps the rep
+ *  view usable on /demo without a real Supabase session. Once RLS is
+ *  tight we'll swap in a live query that filters by `assigned_to = me`. */
+async function loadRepView(repUserId: string | null) {
+  const officeSlug = await getDashboardOfficeSlug();
+  const allLeads = getDemoLeadRows(officeSlug);
+  // On /demo the rep's "id" is the synthetic `demo-rep-${slug}` we wrote
+  // in dashboard-demo-rows.ts. In real life it's auth.uid().
+  const me = repUserId ?? `demo-rep-${officeSlug}`;
+  const myLeads: Lead[] = allLeads.filter((l) => l.assigned_to === me);
+
+  let pipelineLow = 0;
+  let pipelineHigh = 0;
+  let openLeads = 0;
+  let wonThisMonth = 0;
+  const monthStart = new Date(monthStartISO()).getTime();
+  for (const l of myLeads) {
+    if (l.status === "won") {
+      if (new Date(l.created_at).getTime() >= monthStart) wonThisMonth += 1;
+      continue;
+    }
+    if (l.status === "lost") continue;
+    openLeads += 1;
+    pipelineLow += l.estimate_low ?? 0;
+    pipelineHigh += l.estimate_high ?? 0;
+  }
+
+  // Build a small "needs attention" feed using simple heuristics that
+  // map to real rep behavior: pending proposal, no recent contact,
+  // booked-but-not-followed. The demo bundle doesn't carry follow-up
+  // history so we synthesize from status + age.
+  const now = Date.now();
+  const attention: Array<{
+    leadId: string;
+    publicId: string;
+    name: string;
+    address: string;
+    reason: string;
+    reasonTone: "amber" | "rose" | "cy";
+    at: string;
+  }> = [];
+  for (const l of myLeads) {
+    const age = now - new Date(l.created_at).getTime();
+    const days = age / (1000 * 60 * 60 * 24);
+    if (l.status === "quoted" && days > 1) {
+      attention.push({
+        leadId: l.id,
+        publicId: l.public_id,
+        name: l.name,
+        address: l.address,
+        reason: "Proposal pending · follow up",
+        reasonTone: "amber",
+        at: l.created_at,
+      });
+    } else if (l.status === "new" && days > 0.25) {
+      attention.push({
+        leadId: l.id,
+        publicId: l.public_id,
+        name: l.name,
+        address: l.address,
+        reason: "New lead · no contact yet",
+        reasonTone: "rose",
+        at: l.created_at,
+      });
+    } else if (l.status === "scheduled") {
+      attention.push({
+        leadId: l.id,
+        publicId: l.public_id,
+        name: l.name,
+        address: l.address,
+        reason: "Inspection scheduled · confirm",
+        reasonTone: "cy",
+        at: l.created_at,
+      });
+    }
+    if (attention.length >= 6) break;
+  }
+
+  return {
+    myLeads,
+    metrics: {
+      openLeads,
+      pipelineLow,
+      pipelineHigh,
+      callsThisWeek: Math.max(3, Math.round(myLeads.length * 0.6)),
+      wonThisMonth,
+    },
+    attention,
+  };
+}
+
 export default async function OverviewPage() {
+  const role = await getDashboardRole();
+  if (isRepRole(role)) {
+    const user = await getDashboardUser();
+    const { myLeads, metrics: repMetrics, attention } = await loadRepView(user?.id ?? null);
+    return (
+      <RepOverview
+        fullName={user?.full_name ?? user?.email ?? "Rep"}
+        metrics={repMetrics}
+        myLeads={myLeads}
+        attention={attention}
+      />
+    );
+  }
+
   const { metrics, activity } = await loadOverview();
 
   // The marquee KPI is the *midpoint* of the pipeline range — a single

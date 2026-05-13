@@ -112,6 +112,78 @@ async function hasSession(): Promise<boolean> {
   );
 }
 
+/** Canonical role union. Order is intentional: 'rep' < 'staff' < 'manager'
+ *  < 'admin' / 'owner'. 'staff' is the legacy default and is treated as
+ *  a full-office viewer for backward compatibility — same surface as
+ *  'manager'. 'admin' and 'owner' are equivalent (multi-office). */
+export type DashboardRole = "rep" | "staff" | "manager" | "admin" | "owner";
+
+export interface DashboardUser {
+  id: string;
+  email: string;
+  full_name: string | null;
+  office_id: string;
+  role: DashboardRole;
+}
+
+const ROLE_VALUES: DashboardRole[] = ["rep", "staff", "manager", "admin", "owner"];
+function normalizeRole(raw: string | null | undefined): DashboardRole {
+  if (raw && (ROLE_VALUES as string[]).includes(raw)) return raw as DashboardRole;
+  return "staff";
+}
+
+/** Resolve the current authenticated user. Returns null when there's no
+ *  Supabase session (HTTP-Basic / unauth surfaces). The dashboard demo
+ *  route returns null too — demo doesn't represent a real user. */
+export async function getDashboardUser(): Promise<DashboardUser | null> {
+  if (await isDemoRoute()) return null;
+  if (!supabaseConfigured()) return null;
+  if (!(await hasSession())) return null;
+  try {
+    const supabase = createServerClient(await buildCookieAdapter());
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("id, email, full_name, office_id, role")
+      .single();
+    if (!userRow) return null;
+    return {
+      id: userRow.id,
+      email: userRow.email,
+      full_name: userRow.full_name,
+      office_id: userRow.office_id,
+      role: normalizeRole(userRow.role),
+    };
+  } catch (err) {
+    console.warn("[dashboard] getDashboardUser failed:", err);
+    return null;
+  }
+}
+
+/** True when the active route should render a rep-scoped view (their
+ *  assigned leads only, no cross-office data). For the public /demo
+ *  surface we also respect a cookie that lets us preview the rep
+ *  experience without a real account — set `voxaris_demo_role=rep` to
+ *  toggle. */
+export async function getDashboardRole(): Promise<DashboardRole> {
+  if (await isDemoRoute()) {
+    const cookieStore = await cookies();
+    const raw = cookieStore.get("voxaris_demo_role")?.value;
+    return normalizeRole(raw);
+  }
+  const user = await getDashboardUser();
+  return user?.role ?? "staff";
+}
+
+export function isAdminRole(role: DashboardRole): boolean {
+  return role === "admin" || role === "owner";
+}
+export function isManagerRole(role: DashboardRole): boolean {
+  return role === "manager" || isAdminRole(role);
+}
+export function isRepRole(role: DashboardRole): boolean {
+  return role === "rep";
+}
+
 /** Resolve the office_id the dashboard should query.
  *
  *  When a Supabase session exists, we read it from public.users for

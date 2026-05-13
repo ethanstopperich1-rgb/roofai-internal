@@ -2,11 +2,14 @@ import { PhoneCall } from "lucide-react";
 import {
   getDashboardOfficeId,
   getDashboardOfficeSlug,
+  getDashboardRole,
   getDashboardSupabase,
+  getDashboardUser,
+  isRepRole,
   type Call,
   type Event,
 } from "@/lib/dashboard";
-import { getDemoCalls, getDemoEventsByCall } from "@/lib/dashboard-demo-rows";
+import { getDemoCalls, getDemoEventsByCall, getDemoLeads } from "@/lib/dashboard-demo-rows";
 import CallsTable from "@/components/dashboard/CallsTable";
 
 export const dynamic = "force-dynamic";
@@ -19,24 +22,52 @@ async function loadCalls(): Promise<{
   eventsByCall: Record<string, Event[]>;
   configured: boolean;
 }> {
-  const officeSlug = await getDashboardOfficeSlug();
-  const officeId = await getDashboardOfficeId();
-  const supabase = await getDashboardSupabase();
+  const [officeSlug, officeId, supabase, role, user] = await Promise.all([
+    getDashboardOfficeSlug(),
+    getDashboardOfficeId(),
+    getDashboardSupabase(),
+    getDashboardRole(),
+    getDashboardUser(),
+  ]);
   if (!officeId || !supabase) {
-    // No Supabase wiring → per-office demo data so the inbox never
-    // renders empty during a sales pitch. Real rows take over the
-    // moment the office has a Sydney call land.
-    return {
-      calls: getDemoCalls(officeSlug),
-      eventsByCall: getDemoEventsByCall(officeSlug),
-      configured: false,
-    };
+    let calls = getDemoCalls(officeSlug);
+    const eventsByCall = getDemoEventsByCall(officeSlug);
+    if (isRepRole(role)) {
+      const repId = user?.id ?? `demo-rep-${officeSlug}`;
+      const myLeadIds = new Set(
+        getDemoLeads(officeSlug).filter((l) => l.assigned_to === repId).map((l) => l.id),
+      );
+      calls = calls.filter((c) => c.lead_id != null && myLeadIds.has(c.lead_id));
+    }
+    return { calls, eventsByCall, configured: false };
   }
 
-  const { data: calls } = await supabase
+  // Reps see only calls linked to leads they own. We do this in two
+  // steps because Supabase RLS will eventually enforce it server-side
+  // (0008_*); for now the explicit filter prevents leakage during the
+  // transition window where RLS is still office-wide.
+  let myLeadIds: string[] | null = null;
+  if (isRepRole(role) && user?.id) {
+    const { data: myLeads } = await supabase
+      .from("leads")
+      .select("id")
+      .eq("office_id", officeId)
+      .eq("assigned_to", user.id);
+    myLeadIds = (myLeads ?? []).map((l) => l.id);
+  }
+
+  let callsQuery = supabase
     .from("calls")
     .select("*")
-    .eq("office_id", officeId)
+    .eq("office_id", officeId);
+  if (myLeadIds !== null) {
+    if (myLeadIds.length === 0) {
+      // Rep has no leads → no calls. Skip the query.
+      return { calls: [], eventsByCall: {}, configured: true };
+    }
+    callsQuery = callsQuery.in("lead_id", myLeadIds);
+  }
+  const { data: calls } = await callsQuery
     .order("started_at", { ascending: false })
     .limit(PAGE_SIZE);
 

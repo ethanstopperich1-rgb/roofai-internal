@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
-import { X, ExternalLink, Loader2 } from "lucide-react";
+import { X, ExternalLink, Loader2, Search } from "lucide-react";
 import Link from "next/link";
 import {
   LEAD_STATUSES,
@@ -16,6 +16,7 @@ import {
   type LeadStatus,
   type Proposal,
 } from "@/lib/dashboard-format";
+import { summarizeProposalSnapshot, fmtMaterial } from "@/lib/proposal-snapshot";
 import { updateLeadStatus } from "@/app/dashboard/leads/actions";
 
 type StatusFilter = "all" | LeadStatus;
@@ -33,6 +34,7 @@ export default function LeadsTable({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [materialFilter, setMaterialFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [query, setQuery] = useState<string>("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
@@ -47,15 +49,40 @@ export default function LeadsTable({
     return Array.from(s).sort();
   }, [leads]);
 
+  // Search normalizer — strip non-alphanumerics from phone before
+  // comparing so "(321) 555-0148" matches "+13215550148" matches "5550148".
+  const normalizedQuery = useMemo(() => query.trim().toLowerCase(), [query]);
+  const normalizedPhoneQuery = useMemo(
+    () => query.replace(/\D/g, ""),
+    [query],
+  );
+
   const filtered = useMemo(
     () =>
-      leads.filter(
-        (l) =>
-          (statusFilter === "all" || l.status === statusFilter) &&
-          (materialFilter === "all" || l.material === materialFilter) &&
-          (sourceFilter === "all" || l.source === sourceFilter),
-      ),
-    [leads, statusFilter, materialFilter, sourceFilter],
+      leads.filter((l) => {
+        if (statusFilter !== "all" && l.status !== statusFilter) return false;
+        if (materialFilter !== "all" && l.material !== materialFilter) return false;
+        if (sourceFilter !== "all" && l.source !== sourceFilter) return false;
+        if (!normalizedQuery) return true;
+        const hay = [
+          l.name,
+          l.email,
+          l.address,
+          l.zip ?? "",
+          l.county ?? "",
+          l.notes ?? "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (hay.includes(normalizedQuery)) return true;
+        // Phone match — strip non-digits both sides so "(321)" matches "+1321..."
+        if (normalizedPhoneQuery.length >= 3 && l.phone) {
+          const leadPhoneDigits = l.phone.replace(/\D/g, "");
+          if (leadPhoneDigits.includes(normalizedPhoneQuery)) return true;
+        }
+        return false;
+      }),
+    [leads, statusFilter, materialFilter, sourceFilter, normalizedQuery, normalizedPhoneQuery],
   );
 
   const openLead = openId ? leads.find((l) => l.id === openId) ?? null : null;
@@ -75,8 +102,29 @@ export default function LeadsTable({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Filters */}
+      {/* Filters + search */}
       <div className="glass-panel p-3 flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40 pointer-events-none" />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search name, email, phone, address"
+            aria-label="Search leads"
+            className="glass-input !py-1.5 !pl-9 !pr-3 text-xs w-full"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/80 transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
         <Select
           label="Status"
           value={statusFilter}
@@ -104,6 +152,9 @@ export default function LeadsTable({
             ...sources.map((s) => ({ value: s, label: s })),
           ]}
         />
+        <div className="text-[10.5px] font-mono tabular text-white/45 uppercase tracking-[0.16em] ml-auto px-2">
+          {filtered.length} / {leads.length}
+        </div>
       </div>
 
       {/* Table */}
@@ -367,33 +418,108 @@ function LeadDrawer({
 
         <section>
           <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-2">
-            Linked proposals
+            Saved estimates
           </div>
           {proposals.length === 0 ? (
-            <div className="text-xs text-white/50">No proposals generated for this lead yet.</div>
+            <div className="text-xs text-white/50">
+              No estimates generated for this lead yet. Open the rep tool from the topbar
+              and save one to pin it here.
+            </div>
           ) : (
             <ul className="flex flex-col gap-2">
-              {proposals.map((p) => (
-                <li key={p.id} className="glass-panel p-3 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-mono tabular text-white/85">
-                      {fmtDateTime(p.created_at)}
+              {proposals.map((p) => {
+                const s = summarizeProposalSnapshot(p.snapshot);
+                const total =
+                  s.totalLow != null && s.totalHigh != null
+                    ? `${fmtUSD(s.totalLow, 0)} – ${fmtUSD(s.totalHigh, 0)}`
+                    : p.total_low != null && p.total_high != null
+                      ? `${fmtUSD(p.total_low, 0)} – ${fmtUSD(p.total_high, 0)}`
+                      : "—";
+                return (
+                  <li key={p.id} className="glass-panel p-3.5">
+                    <div className="flex items-start justify-between gap-3 mb-2">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-medium text-white/92 truncate">
+                          {fmtMaterial(s.material)}
+                          {s.sqft && (
+                            <span className="text-white/55 font-mono tabular text-[12px]">
+                              {" · "}
+                              {s.sqft.toLocaleString()} sqft
+                            </span>
+                          )}
+                          {s.pitch && (
+                            <span className="text-white/45 font-mono tabular text-[11px]">
+                              {" · "}
+                              {s.pitch}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-white/50 font-mono tabular mt-0.5">
+                          {fmtDateTime(p.created_at)}
+                          {s.staff && (
+                            <>
+                              <span className="text-white/25 mx-1">·</span>
+                              by {s.staff}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-[13px] font-mono tabular text-white/95 whitespace-nowrap">
+                          {total}
+                        </div>
+                        {s.isInsuranceClaim && (
+                          <div className="text-[10px] font-mono tabular text-amber uppercase tracking-wider mt-0.5">
+                            Insurance
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <div className="text-[11px] text-white/55 font-mono tabular">
-                      {p.total_low != null && p.total_high != null
-                        ? `${fmtUSD(p.total_low, 0)} – ${fmtUSD(p.total_high, 0)}`
-                        : "—"}
+
+                    {(s.addOnCount > 0 || s.lineItemCount > 0 || s.hasPhotos) && (
+                      <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                        {s.addOnLabels.map((label) => (
+                          <span
+                            key={label}
+                            className="chip-accent text-[10px] !px-2 !py-0.5"
+                          >
+                            {label}
+                          </span>
+                        ))}
+                        {s.addOnCount > s.addOnLabels.length && (
+                          <span className="text-[11px] text-white/45 font-mono tabular">
+                            +{s.addOnCount - s.addOnLabels.length} add-ons
+                          </span>
+                        )}
+                        {s.lineItemCount > 0 && (
+                          <span className="text-[11px] text-white/55 font-mono tabular">
+                            {s.lineItemCount} line items
+                          </span>
+                        )}
+                        {s.hasPhotos && (
+                          <span className="text-[11px] text-white/55 font-mono tabular">
+                            {s.photoCount}{" "}
+                            {s.photoCount === 1 ? "photo" : "photos"}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-white/40 font-mono tabular">
+                        {p.public_id.slice(0, 16)}…
+                      </span>
+                      <Link
+                        href={`/p/${p.public_id}`}
+                        target="_blank"
+                        className="text-cy-300 hover:text-white inline-flex items-center gap-1"
+                      >
+                        Open share link <ExternalLink className="w-3 h-3" />
+                      </Link>
                     </div>
-                  </div>
-                  <Link
-                    href={`/p/${p.public_id}`}
-                    target="_blank"
-                    className="text-xs text-cy-300 hover:text-white inline-flex items-center gap-1"
-                  >
-                    Open <ExternalLink className="w-3 h-3" />
-                  </Link>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>

@@ -299,6 +299,12 @@ export function getDemoLeads(slug: DemoOfficeSlug): Lead[] {
         tcpa_consent: true,
         tcpa_consent_at: createdAt,
         tcpa_consent_text: tcpaText,
+        // Assignment fields (added by migration 0007). For demo we
+        // pretend every other lead is assigned to a fake rep id so the
+        // rep-view filter has something to chew on. Real users get a
+        // real auth.uid() here from /api/leads + the rep tool.
+        assigned_to: i % 2 === 0 ? `demo-rep-${slug}` : null,
+        assigned_at: i % 2 === 0 ? createdAt : null,
         created_at: createdAt,
         updated_at: createdAt,
       };

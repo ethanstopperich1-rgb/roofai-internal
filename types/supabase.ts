@@ -157,6 +157,8 @@ export type Database = {
       leads: {
         Row: {
           address: string
+          assigned_at: string | null
+          assigned_to: string | null
           county: string | null
           created_at: string
           email: string
@@ -183,6 +185,8 @@ export type Database = {
         }
         Insert: {
           address: string
+          assigned_at?: string | null
+          assigned_to?: string | null
           county?: string | null
           created_at?: string
           email: string
@@ -209,6 +213,8 @@ export type Database = {
         }
         Update: {
           address?: string
+          assigned_at?: string | null
+          assigned_to?: string | null
           county?: string | null
           created_at?: string
           email?: string

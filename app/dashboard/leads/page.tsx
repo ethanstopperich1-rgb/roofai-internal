@@ -2,7 +2,10 @@ import { Users } from "lucide-react";
 import {
   getDashboardOfficeId,
   getDashboardOfficeSlug,
+  getDashboardRole,
   getDashboardSupabase,
+  getDashboardUser,
+  isRepRole,
   type Lead,
   type Call,
   type Proposal,
@@ -37,15 +40,30 @@ async function loadLeads(): Promise<{
   callsByLead: Record<string, Call[]>;
   proposalsByLead: Record<string, Proposal[]>;
 }> {
-  const officeSlug = await getDashboardOfficeSlug();
-  const officeId = await getDashboardOfficeId();
-  const supabase = await getDashboardSupabase();
-  if (!officeId || !supabase) return buildDemoBundle(officeSlug);
+  const [officeSlug, officeId, supabase, role, user] = await Promise.all([
+    getDashboardOfficeSlug(),
+    getDashboardOfficeId(),
+    getDashboardSupabase(),
+    getDashboardRole(),
+    getDashboardUser(),
+  ]);
+  if (!officeId || !supabase) {
+    const bundle = buildDemoBundle(officeSlug);
+    if (isRepRole(role)) {
+      const repId = user?.id ?? `demo-rep-${officeSlug}`;
+      bundle.leads = bundle.leads.filter((l) => l.assigned_to === repId);
+    }
+    return bundle;
+  }
 
-  const { data: leads } = await supabase
+  let query = supabase
     .from("leads")
     .select("*")
-    .eq("office_id", officeId)
+    .eq("office_id", officeId);
+  if (isRepRole(role) && user?.id) {
+    query = query.eq("assigned_to", user.id);
+  }
+  const { data: leads } = await query
     .order("created_at", { ascending: false })
     .limit(200);
   const leadRows = leads ?? [];

@@ -29,6 +29,16 @@ interface SaveProposalRequest {
    *  Once Supabase Auth lands, the office comes from the JWT and this
    *  param goes away. */
   office?: string;
+  /** Optional explicit lead public-id (lead_ + 32hex). When the rep opened
+   *  the estimator directly from a lead drawer we'd rather match by id
+   *  than guess by address — addresses get reformatted by Maps autocomplete
+   *  and the loose match drifts. Falls back to address+email matching when
+   *  unset. */
+  leadPublicId?: string;
+  /** Optional customer email — used as a stronger fallback than address
+   *  when the rep changes the formatted address slightly between /quote
+   *  and the rep tool. */
+  email?: string;
 }
 
 export async function POST(req: Request) {
@@ -70,19 +80,48 @@ export async function POST(req: Request) {
 
   const supabase = createServiceRoleClient();
 
-  // Try to link to an existing lead by formatted address — when the rep
-  // generates a proposal after the customer filled out /quote, the
-  // lead already exists with that address. Best-effort match; falls
-  // back to null lead_id. (Estimate doesn't carry email directly;
-  // address is the only field present on BOTH lead and estimate.)
+  // Link the estimate to a lead. Resolution order — strongest signal first:
+  //   1. Explicit lead public_id (rep opened estimator from the lead drawer)
+  //   2. Exact address match within the same office
+  //   3. Customer email match within the same office (covers cases where
+  //      Maps autocomplete rewrites the address between /quote and the
+  //      rep tool — most common when the rep retypes the address)
+  // Falls back to null lead_id when nothing matches. We never CREATE a
+  // lead from this route — that path lives in /api/leads with TCPA gating.
   let leadId: string | null = null;
-  const addr = estimate.address?.formatted;
-  if (addr) {
+  const isValidLeadId = (v: unknown): v is string =>
+    typeof v === "string" && /^lead_[0-9a-f]{32}$/i.test(v.trim());
+
+  if (isValidLeadId(body.leadPublicId)) {
     const { data: lead } = await supabase
       .from("leads")
       .select("id")
       .eq("office_id", officeId)
-      .eq("address", addr)
+      .eq("public_id", body.leadPublicId.trim())
+      .maybeSingle();
+    if (lead) leadId = lead.id;
+  }
+  if (!leadId) {
+    const addr = estimate.address?.formatted;
+    if (addr) {
+      const { data: lead } = await supabase
+        .from("leads")
+        .select("id")
+        .eq("office_id", officeId)
+        .eq("address", addr)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lead) leadId = lead.id;
+    }
+  }
+  if (!leadId && body.email?.trim()) {
+    const emailNorm = body.email.trim().toLowerCase();
+    const { data: lead } = await supabase
+      .from("leads")
+      .select("id")
+      .eq("office_id", officeId)
+      .eq("email", emailNorm)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();

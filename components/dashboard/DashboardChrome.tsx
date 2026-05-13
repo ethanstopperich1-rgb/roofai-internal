@@ -32,23 +32,53 @@ import type { DemoOffice } from "@/lib/dashboard-demo";
  * Server Component re-reads the demo data for the new office.
  */
 
+type RoleVisibility = "rep" | "manager" | "admin";
+
 type NavItem = {
   segment: "" | "/calls" | "/leads" | "/proposals" | "/analytics" | "/settings" | "/admin";
   label: string;
   icon: typeof LayoutDashboard;
   match: "exact" | "prefix";
   internalOnly?: boolean; // Hidden on the public /demo route
+  // Lowest role tier that may see this nav item. Order: rep < manager < admin.
+  // 'rep' = visible to everyone. 'manager' = manager + admin. 'admin' = admin/owner only.
+  minRole?: RoleVisibility;
+  // Override label per role (e.g. "Leads" → "My leads" for reps)
+  labelByRole?: Partial<Record<RoleVisibility, string>>;
 };
 
 const NAV: NavItem[] = [
-  { segment: "", label: "Overview", icon: LayoutDashboard, match: "exact" },
-  { segment: "/calls", label: "Sydney Calls", icon: PhoneCall, match: "prefix" },
-  { segment: "/leads", label: "Leads", icon: Users, match: "prefix" },
-  { segment: "/proposals", label: "Proposals", icon: FileText, match: "prefix" },
-  { segment: "/analytics", label: "Analytics", icon: BarChart3, match: "prefix" },
-  { segment: "/settings", label: "Settings", icon: SettingsIcon, match: "prefix", internalOnly: true },
-  { segment: "/admin", label: "Admin", icon: ShieldCheck, match: "prefix", internalOnly: true },
+  { segment: "", label: "Overview", icon: LayoutDashboard, match: "exact", minRole: "rep" },
+  { segment: "/calls", label: "Sydney Calls", icon: PhoneCall, match: "prefix", minRole: "rep",
+    labelByRole: { rep: "My calls" } },
+  { segment: "/leads", label: "Leads", icon: Users, match: "prefix", minRole: "rep",
+    labelByRole: { rep: "My leads" } },
+  { segment: "/proposals", label: "Proposals", icon: FileText, match: "prefix", minRole: "rep",
+    labelByRole: { rep: "My estimates" } },
+  { segment: "/analytics", label: "Analytics", icon: BarChart3, match: "prefix", minRole: "manager" },
+  { segment: "/settings", label: "Settings", icon: SettingsIcon, match: "prefix", internalOnly: true, minRole: "manager" },
+  { segment: "/admin", label: "Admin", icon: ShieldCheck, match: "prefix", internalOnly: true, minRole: "admin" },
 ];
+
+function roleTier(role: string): number {
+  switch (role) {
+    case "rep":
+      return 0;
+    case "staff":
+    case "manager":
+      return 1;
+    case "admin":
+    case "owner":
+      return 2;
+    default:
+      return 1; // unknown roles get the office-staff treatment
+  }
+}
+function navAllowedFor(role: string, item: NavItem): boolean {
+  const required = item.minRole ?? "rep";
+  const requiredTier = required === "rep" ? 0 : required === "manager" ? 1 : 2;
+  return roleTier(role) >= requiredTier;
+}
 
 function isActive(pathname: string, item: NavItem, basePath: string): boolean {
   const href = basePath + item.segment;
@@ -60,12 +90,22 @@ interface DashboardChromeProps {
   children: ReactNode;
   offices: DemoOffice[];
   activeOffice: DemoOffice;
+  /** Current viewer's role. Drives nav filtering + office-switcher
+   *  visibility. Falls back to 'staff' (full-office visibility, no
+   *  admin tools, no multi-office switcher). */
+  role?: string;
+  /** Displayed in the topbar instead of "admin@voxaris.io" when set. */
+  userEmail?: string | null;
+  userFullName?: string | null;
 }
 
 export default function DashboardChrome({
   children,
   offices,
   activeOffice,
+  role = "staff",
+  userEmail,
+  userFullName,
 }: DashboardChromeProps) {
   const rawPathname = usePathname() ?? "/dashboard";
   const isDemo = rawPathname === "/demo" || rawPathname.startsWith("/demo/");
@@ -98,7 +138,7 @@ export default function DashboardChrome({
 
       {/* Sidebar — desktop */}
       <aside className="hidden lg:flex lg:w-72 xl:w-80 shrink-0 flex-col gap-5 px-6 py-7 border-r border-white/[0.06] sticky top-0 h-screen bg-[rgba(8,11,17,0.32)] backdrop-blur-2xl">
-        <SidebarContent pathname={pathname} basePath={basePath} isDemo={isDemo} />
+        <SidebarContent pathname={pathname} basePath={basePath} isDemo={isDemo} role={role} />
       </aside>
 
       {/* Drawer — mobile */}
@@ -108,19 +148,22 @@ export default function DashboardChrome({
             pathname={pathname}
             basePath={basePath}
             isDemo={isDemo}
+            role={role}
             onNavigate={() => setDrawerOpen(false)}
           />
-          <div className="mt-4 pt-4 border-t border-white/[0.06]">
-            <div className="text-[10px] font-mono tabular uppercase tracking-[0.18em] text-white/40 mb-2 px-1">
-              Active office
+          {roleTier(role) >= 2 && (
+            <div className="mt-4 pt-4 border-t border-white/[0.06]">
+              <div className="text-[10px] font-mono tabular uppercase tracking-[0.18em] text-white/40 mb-2 px-1">
+                Active office
+              </div>
+              <OfficeSwitcher
+                offices={offices}
+                activeOffice={activeOffice}
+                variant="drawer"
+                onSwitched={() => setDrawerOpen(false)}
+              />
             </div>
-            <OfficeSwitcher
-              offices={offices}
-              activeOffice={activeOffice}
-              variant="drawer"
-              onSwitched={() => setDrawerOpen(false)}
-            />
-          </div>
+          )}
         </div>
       )}
 
@@ -128,7 +171,24 @@ export default function DashboardChrome({
         {/* Desktop top bar */}
         <div className="hidden lg:flex items-center justify-between px-8 py-5 border-b border-white/[0.06] bg-[rgba(8,11,17,0.22)] backdrop-blur-xl">
           <div className="flex items-center gap-6">
-            <OfficeSwitcher offices={offices} activeOffice={activeOffice} variant="topbar" />
+            {roleTier(role) >= 2 ? (
+              <OfficeSwitcher offices={offices} activeOffice={activeOffice} variant="topbar" />
+            ) : (
+              <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-full border border-white/[0.05]">
+                <span
+                  className="h-5 w-5 rounded-md border border-white/10 flex items-center justify-center text-[10px] font-bold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]"
+                  style={{
+                    background: `linear-gradient(135deg, ${activeOffice.brand}66, ${activeOffice.brand}33)`,
+                  }}
+                >
+                  {activeOffice.initial}
+                </span>
+                <span className="text-[13px] text-white/85 font-medium">{activeOffice.shortName}</span>
+                <span className="text-[10px] font-mono tabular text-white/40 uppercase tracking-wider ml-1">
+                  Office
+                </span>
+              </div>
+            )}
 
             <div className="flex items-center gap-2 text-[12px] text-white/65">
               <div className="relative flex items-center justify-center">
@@ -152,13 +212,21 @@ export default function DashboardChrome({
               })}
             </div>
             {isDemo ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber/30 bg-amber/10 text-[11px] font-mono tabular uppercase tracking-[0.14em] text-amber">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber shadow-[0_0_6px_rgba(243,177,75,0.6)]" />
-                Demo mode
-              </span>
+              <>
+                <DemoRolePicker activeRole={role} />
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber/30 bg-amber/10 text-[11px] font-mono tabular uppercase tracking-[0.14em] text-amber">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber shadow-[0_0_6px_rgba(243,177,75,0.6)]" />
+                  Demo
+                </span>
+              </>
             ) : (
               <>
-                <div className="text-xs text-white/60 font-mono tabular">admin@voxaris.io</div>
+                <div className="text-xs text-white/65 font-mono tabular flex flex-col items-end leading-tight">
+                  <span>{userEmail ?? "staff@voxaris.io"}</span>
+                  <span className="text-[10px] text-white/40 uppercase tracking-[0.16em]">
+                    {role}
+                  </span>
+                </div>
                 <form action="/auth/signout" method="POST">
                   <button
                     type="submit"
@@ -199,6 +267,69 @@ export default function DashboardChrome({
           </div>
         </div>
       </main>
+    </div>
+  );
+}
+
+// ─── Demo role picker ─────────────────────────────────────────────────
+//
+// Visible only on /demo. Lets the user toggle between rep / manager /
+// owner views without a real Supabase login. Writes voxaris_demo_role
+// cookie via /api/demo/role and refreshes Server Components.
+
+function DemoRolePicker({ activeRole }: { activeRole: string }) {
+  const router = useRouter();
+  const [pending, setPending] = useState<string | null>(null);
+  const roles: Array<{ key: string; label: string }> = [
+    { key: "rep", label: "Rep" },
+    { key: "manager", label: "Manager" },
+    { key: "owner", label: "Owner" },
+  ];
+  async function pick(roleKey: string) {
+    if (roleKey === activeRole) return;
+    setPending(roleKey);
+    try {
+      await fetch("/api/demo/role", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: roleKey }),
+      });
+      router.refresh();
+    } finally {
+      setPending(null);
+    }
+  }
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Preview demo as role"
+      className="inline-flex items-center rounded-full border border-white/[0.08] bg-white/[0.03] p-0.5"
+    >
+      <span className="text-[10px] font-mono tabular text-white/40 uppercase tracking-[0.14em] px-2.5">
+        as
+      </span>
+      {roles.map((r) => {
+        const active = r.key === activeRole;
+        const isPending = pending === r.key;
+        return (
+          <button
+            key={r.key}
+            role="radio"
+            aria-checked={active}
+            disabled={isPending}
+            onClick={() => pick(r.key)}
+            className={[
+              "px-2.5 py-1 rounded-full text-[10.5px] font-mono tabular uppercase tracking-[0.14em] transition-colors",
+              active
+                ? "bg-white/[0.12] text-white"
+                : "text-white/55 hover:text-white hover:bg-white/[0.06]",
+              isPending ? "opacity-60" : "",
+            ].join(" ")}
+          >
+            {r.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -463,14 +594,19 @@ function SidebarContent({
   pathname,
   basePath,
   isDemo,
+  role,
   onNavigate,
 }: {
   pathname: string;
   basePath: string;
   isDemo: boolean;
+  role: string;
   onNavigate?: () => void;
 }) {
-  const navItems = isDemo ? NAV.filter((n) => !n.internalOnly) : NAV;
+  const navItems = (isDemo ? NAV.filter((n) => !n.internalOnly) : NAV).filter((n) =>
+    navAllowedFor(role, n),
+  );
+  const isRepView = roleTier(role) === 0;
   return (
     <>
       <Link
@@ -486,7 +622,7 @@ function SidebarContent({
           draggable={false}
         />
         <span className="text-[10px] font-mono tabular uppercase tracking-[0.18em] text-white/40 pl-0.5">
-          {isDemo ? "Demo Console" : "Operator Console"}
+          {isDemo ? "Demo Console" : isRepView ? "Rep Console" : "Operator Console"}
         </span>
       </Link>
       <div className="hidden lg:block glass-divider mt-2" />
@@ -518,7 +654,9 @@ function SidebarContent({
               >
                 <Icon className="w-3.5 h-3.5" />
               </span>
-              <span className="truncate">{item.label}</span>
+              <span className="truncate">
+                {isRepView && item.labelByRole?.rep ? item.labelByRole.rep : item.label}
+              </span>
               {active && (
                 <span className="ml-auto w-1 h-1 rounded-full bg-cy-300 shadow-[0_0_6px_rgba(125,211,252,0.7)]" />
               )}

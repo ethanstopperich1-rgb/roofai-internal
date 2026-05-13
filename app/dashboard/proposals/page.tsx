@@ -5,7 +5,10 @@ import {
   fmtUSD,
   getDashboardOfficeId,
   getDashboardOfficeSlug,
+  getDashboardRole,
   getDashboardSupabase,
+  getDashboardUser,
+  isRepRole,
   type Lead,
   type Proposal,
 } from "@/lib/dashboard";
@@ -29,15 +32,44 @@ function buildDemoRows(slug: Parameters<typeof getDemoProposals>[0]) {
 async function load(): Promise<{
   rows: Array<Proposal & { lead?: Lead | null; isDemo?: boolean }>;
 }> {
-  const officeSlug = await getDashboardOfficeSlug();
-  const officeId = await getDashboardOfficeId();
-  const supabase = await getDashboardSupabase();
-  if (!officeId || !supabase) return buildDemoRows(officeSlug);
+  const [officeSlug, officeId, supabase, role, user] = await Promise.all([
+    getDashboardOfficeSlug(),
+    getDashboardOfficeId(),
+    getDashboardSupabase(),
+    getDashboardRole(),
+    getDashboardUser(),
+  ]);
+  if (!officeId || !supabase) {
+    const bundle = buildDemoRows(officeSlug);
+    if (isRepRole(role)) {
+      const repId = user?.id ?? `demo-rep-${officeSlug}`;
+      const myLeadIds = new Set(
+        getDemoLeads(officeSlug).filter((l) => l.assigned_to === repId).map((l) => l.id),
+      );
+      bundle.rows = bundle.rows.filter((p) => p.lead_id != null && myLeadIds.has(p.lead_id));
+    }
+    return bundle;
+  }
 
-  const { data: proposals } = await supabase
+  let myLeadIds: string[] | null = null;
+  if (isRepRole(role) && user?.id) {
+    const { data: myLeads } = await supabase
+      .from("leads")
+      .select("id")
+      .eq("office_id", officeId)
+      .eq("assigned_to", user.id);
+    myLeadIds = (myLeads ?? []).map((l) => l.id);
+  }
+
+  let proposalsQuery = supabase
     .from("proposals")
     .select("*")
-    .eq("office_id", officeId)
+    .eq("office_id", officeId);
+  if (myLeadIds !== null) {
+    if (myLeadIds.length === 0) return { rows: [] };
+    proposalsQuery = proposalsQuery.in("lead_id", myLeadIds);
+  }
+  const { data: proposals } = await proposalsQuery
     .order("created_at", { ascending: false })
     .limit(200);
   const rows = proposals ?? [];
