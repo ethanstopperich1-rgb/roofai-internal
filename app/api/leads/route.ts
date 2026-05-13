@@ -15,9 +15,14 @@ export const runtime = "nodejs";
 // Function needs to live long enough to (a) finish the synchronous lead
 // insert + initial /api/dispatch-outbound forward, and (b) hold the
 // short pre-dispatch delay inside waitUntil so the customer's phone
-// doesn't ring the instant they submit. 15s is plenty for the 3s delay
-// plus the dispatch forward.
-export const maxDuration = 15;
+// doesn't ring the instant they submit.
+//
+// 30s gives the 3s delay PLUS realistic headroom for the downstream
+// dispatch — LiveKit room creation + SIP outbound dispatch + Twilio
+// trunk setup is routinely 5-12s on cold starts. The previous 15s
+// budget left ~1s of headroom which would silently drop the call on
+// any cold path, with no error surfaced to the customer.
+export const maxDuration = 30;
 
 interface LeadPayload {
   name: string;

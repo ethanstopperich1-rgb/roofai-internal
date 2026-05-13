@@ -190,15 +190,45 @@ export default function RecentStormCard({
       )}
 
       {hasCoords && !loading && error && (
-        <div className="text-[12.5px] text-rose-400/90 py-2">
-          Couldn't reach the IEM feed: <span className="font-mono">{error}</span>
+        <div className="text-[12.5px] text-rose-400/90 py-2 px-3 rounded-lg bg-rose-400/[0.04] border border-rose-400/15">
+          <div>Storm feed is taking a moment — try again in a few seconds.</div>
+          <div className="text-[10.5px] text-white/40 mt-1 font-mono tabular">
+            ref: {error}
+          </div>
         </div>
       )}
 
       {hasCoords && !loading && !error && s && s.total === 0 && (
-        <EmptyHint
-          text={`No severe-weather reports within ${radius} mi over the last ${windowKey === 1 ? "24 hours" : `${windowKey} days`}.`}
-        />
+        <div className="text-[12.5px] text-white/55 py-2 px-3 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+          <div>
+            No severe-weather reports within {radius} mi over the last{" "}
+            {windowKey === 1 ? "24 hours" : `${windowKey} days`}.
+          </div>
+          {/* Escalation affordance — on quiet weeks the default 7d/10mi
+              comes back empty and the card reads like a dead surface.
+              Offer one-click expansion to the next-larger window so the
+              rep / demo audience sees the system reaching further. */}
+          {windowKey < 30 && (
+            <button
+              type="button"
+              onClick={() =>
+                setWindowKey(windowKey === 1 ? 7 : 30)
+              }
+              className="mt-2 inline-flex items-center gap-1.5 text-[11.5px] text-cy-300 hover:text-white transition-colors"
+            >
+              Look back {windowKey === 1 ? "7 days" : "30 days"} instead →
+            </button>
+          )}
+          {windowKey === 30 && radius < 20 && (
+            <button
+              type="button"
+              onClick={() => setRadius(20)}
+              className="mt-2 inline-flex items-center gap-1.5 text-[11.5px] text-cy-300 hover:text-white transition-colors"
+            >
+              Widen radius to 20 mi →
+            </button>
+          )}
+        </div>
       )}
 
       {hasCoords && !loading && !error && s && s.total > 0 && (

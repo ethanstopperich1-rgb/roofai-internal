@@ -216,23 +216,46 @@ function RepWorkbench({
     );
   }
 
-  const a = estimate.assumptions;
-  const matLabel = MATERIAL_RATES[a.material as Material]?.label ?? a.material;
+  // Defensive reads — the snapshot is JSONB and historical rows may
+  // lack fields we added later. `readEstimate()` already verified it's
+  // an object; here we treat every nested field as optional and
+  // never crash on partial data. The previous direct field access
+  // (estimate.assumptions.sqft, estimate.addOns.filter) would throw
+  // on any snapshot that predates the current shape.
+  const a = estimate.assumptions ?? ({} as Estimate["assumptions"]);
+  const matKey = a?.material as Material | undefined;
+  const matLabel = matKey
+    ? (MATERIAL_RATES[matKey]?.label ?? String(matKey))
+    : "—";
   const detailed = estimate.detailed;
   const lengths = estimate.lengths;
   const waste = estimate.waste;
   const photos = estimate.photos ?? [];
-  const enabledAddOns = estimate.addOns.filter((ao) => ao.enabled);
+  const addOns = Array.isArray(estimate.addOns) ? estimate.addOns : [];
+  const enabledAddOns = addOns.filter((ao) => ao?.enabled === true);
   const addrLat = estimate.address?.lat;
   const addrLng = estimate.address?.lng;
-  // Friendly city/region label for the storm card header. Pulls the
-  // first meaningful comma-segment from the formatted address ("8450
-  // Oak Park Rd, Oviedo, FL 32765" → "Oviedo"). Falls back to the
-  // raw formatted string when we can't parse a clean city.
+  // Friendly city/region label for the storm card header. Walks the
+  // formatted-address segments in reverse looking for the first one
+  // that isn't a state+zip pattern ("FL 32765") or a country ("USA").
+  // Previously took `parts[length-2]` which mislabelled 2-part
+  // addresses as "FL 32765".
   const cityLabel = (() => {
     const f = estimate.address?.formatted ?? "";
     const parts = f.split(",").map((s) => s.trim()).filter(Boolean);
-    return parts.length >= 2 ? parts[parts.length - 2] : f || undefined;
+    if (parts.length === 0) return undefined;
+    const stateZip = /^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$/;
+    const country = /^(USA|US|United States)$/i;
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i];
+      if (stateZip.test(p) || country.test(p)) continue;
+      // Prefer not to return the street line itself when we can. If
+      // we're at index 0 and there's nothing better, return undefined
+      // so the card falls back to "Near this property".
+      if (i === 0 && parts.length > 1) return undefined;
+      return p;
+    }
+    return undefined;
   })();
 
   return (
@@ -243,10 +266,16 @@ function RepWorkbench({
           Assumptions <span className="text-white/30 normal-case">· internal</span>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <Stat label="Sqft" value={a.sqft.toLocaleString()} />
-          <Stat label="Pitch" value={a.pitch} />
+          <Stat
+            label="Sqft"
+            value={typeof a.sqft === "number" ? a.sqft.toLocaleString() : "—"}
+          />
+          <Stat label="Pitch" value={a.pitch ?? "—"} />
           <Stat label="Material" value={matLabel} />
-          <Stat label="Service" value={(a.serviceType ?? "reroof-tearoff").replace(/-/g, " ")} />
+          <Stat
+            label="Service"
+            value={(a.serviceType ?? "reroof-tearoff").replace(/-/g, " ")}
+          />
           <Stat label="Complexity" value={a.complexity ?? "moderate"} />
           <Stat label="Age (yrs)" value={String(a.ageYears ?? "—")} />
           <Stat
@@ -398,15 +427,28 @@ function RepWorkbench({
         </section>
       )}
 
-      {/* Insurance claim metadata */}
+      {/* Insurance claim metadata — folded behind a disclosure so the
+          rep view doesn't surface a raw JSON dump by default. The
+          underlying data is rep-only and useful for diagnostics but
+          shouldn't be the first thing a screenshot captures. */}
       {estimate.isInsuranceClaim && estimate.claim && (
         <section className="glass-panel p-5">
-          <div className="text-[10.5px] uppercase tracking-wider text-amber mb-3">
-            Insurance claim · internal
-          </div>
-          <pre className="text-[11.5px] font-mono text-white/70 whitespace-pre-wrap break-all max-h-[280px] overflow-y-auto">
-            {JSON.stringify(estimate.claim, null, 2)}
-          </pre>
+          <details className="group">
+            <summary className="cursor-pointer flex items-center justify-between gap-3 list-none">
+              <div className="text-[10.5px] uppercase tracking-wider text-amber">
+                Insurance claim · internal
+              </div>
+              <span className="text-[10.5px] text-white/45 font-mono group-open:hidden">
+                Show
+              </span>
+              <span className="text-[10.5px] text-white/45 font-mono hidden group-open:inline">
+                Hide
+              </span>
+            </summary>
+            <pre className="text-[11.5px] font-mono text-white/70 whitespace-pre-wrap break-all max-h-[280px] overflow-y-auto mt-3">
+              {JSON.stringify(estimate.claim, null, 2)}
+            </pre>
+          </details>
         </section>
       )}
 
@@ -431,6 +473,8 @@ function RepWorkbench({
                   <img
                     src={p.url}
                     alt={tagLabel ?? p.filename ?? "Field photo"}
+                    loading="lazy"
+                    decoding="async"
                     className="w-full aspect-square object-cover"
                   />
                   {tagLabel && (
@@ -445,7 +489,8 @@ function RepWorkbench({
         </section>
       )}
 
-      {/* Vision/notes */}
+      {/* Notes always visible; raw vision payload folded behind a
+          disclosure so the page doesn't lead with a JSON dump. */}
       {(estimate.vision || estimate.notes) && (
         <section className="glass-panel p-5">
           <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-3">
@@ -457,9 +502,22 @@ function RepWorkbench({
             </p>
           )}
           {estimate.vision && (
-            <pre className="text-[11px] font-mono text-white/60 whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto">
-              {JSON.stringify(estimate.vision, null, 2)}
-            </pre>
+            <details className="group">
+              <summary className="cursor-pointer flex items-center justify-between gap-3 list-none">
+                <div className="text-[10.5px] uppercase tracking-wider text-white/45">
+                  Vision payload · raw
+                </div>
+                <span className="text-[10.5px] text-white/45 font-mono group-open:hidden">
+                  Show
+                </span>
+                <span className="text-[10.5px] text-white/45 font-mono hidden group-open:inline">
+                  Hide
+                </span>
+              </summary>
+              <pre className="text-[11px] font-mono text-white/60 whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto mt-3">
+                {JSON.stringify(estimate.vision, null, 2)}
+              </pre>
+            </details>
           )}
         </section>
       )}

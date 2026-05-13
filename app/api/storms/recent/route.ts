@@ -121,9 +121,23 @@ export async function GET(req: Request) {
   // IEM hard-caps practical queries around ~30 days. 7 is the canvass
   // default; 30 covers the "last month" pill on the UI.
   const days = Math.max(1, Math.min(30, Number(searchParams.get("daysBack")) || 7));
+  // Optional 2-letter state hint — used to bound the IEM upstream
+  // payload. Defaults to FL because that's the only territory we
+  // serve. Validated against a safe-list to keep this off the SSRF
+  // / injection radar.
+  const stateRaw = (searchParams.get("state") ?? "FL").toUpperCase();
+  const state = /^[A-Z]{2}$/.test(stateRaw) ? stateRaw : "FL";
 
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    Math.abs(lat) > 89.9 ||
+    Math.abs(lng) > 180
+  ) {
+    return NextResponse.json(
+      { error: "lat & lng required and must be valid coordinates" },
+      { status: 400 },
+    );
   }
 
   // Bbox from radius. 1deg lat = 69mi; 1deg lng = 69·cos(lat) mi.
@@ -138,14 +152,34 @@ export async function GET(req: Request) {
   const maxLng = lng + dLng;
 
   // IEM expects UTC iso-ish timestamps `YYYY-MM-DDTHH:MM`.
+  //
+  // BUCKET ROUND: round ets DOWN to the nearest 10-minute mark and
+  // start to the nearest hour. Without bucketing, every request had
+  // a minute-precision timestamp → unique URL → Next.js fetch cache
+  // never hit, defeating the entire `next.revalidate=600` line. With
+  // 10-min buckets, all requests inside a 10-min window share one
+  // cache entry and the upstream sees ~6 hits/hour total, not one
+  // hit per page render.
+  const BUCKET_MIN = 10;
   const now = new Date();
-  const start = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  const etsBucket = new Date(
+    Math.floor(now.getTime() / (BUCKET_MIN * 60_000)) * BUCKET_MIN * 60_000,
+  );
+  const start = new Date(etsBucket.getTime() - days * 24 * 60 * 60 * 1000);
+  // round start to the hour so day-boundary queries cluster too
+  start.setUTCMinutes(0, 0, 0);
   const fmt = (d: Date) =>
     d.toISOString().slice(0, 16); // "YYYY-MM-DDTHH:mm"
 
   const url = new URL("https://mesonet.agron.iastate.edu/geojson/lsr.geojson");
   url.searchParams.set("sts", fmt(start));
-  url.searchParams.set("ets", fmt(now));
+  url.searchParams.set("ets", fmt(etsBucket));
+  // Bound the upstream payload by state — without this, IEM returns
+  // every LSR in CONUS for the window. On an active severe-weather
+  // day that's 5k-50k features and several MB, blowing past our 8s
+  // timeout. With state=FL the payload stays small even during a
+  // tropical-system landfall.
+  url.searchParams.set("state", state);
 
   let raw: IEMResponse;
   try {
@@ -178,12 +212,9 @@ export async function GET(req: Request) {
     if (!IEM_TYPETEXT_ALLOW.has(ttRaw)) continue;
     const dist = haversineMiles(lat, lng, latP, lon);
     if (dist > radius) continue;
-    // IEM stores hail size in `magnitude` (inches) and uses `magf` for
-    // wind speed in MPH on some flavors of LSR. Prefer `magnitude`,
-    // fall back to `magf` to catch wind-gust events.
-    const magRaw =
-      (f.properties as Record<string, unknown>).magnitude ??
-      (f.properties as Record<string, unknown>).magf;
+    // IEM stores hail size in `magnitude` (inches) and wind speed in
+    // `magnitude` (MPH). One field, two units, disambiguated by type.
+    const magRaw = f.properties.magnitude;
     const magnitude =
       typeof magRaw === "number"
         ? magRaw
