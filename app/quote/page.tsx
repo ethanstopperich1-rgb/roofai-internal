@@ -1058,8 +1058,15 @@ function MaterialStep({
         </p>
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-4">
-        {(Object.keys(MATERIAL_RATES) as Material[]).map((m) => {
+      {/* Demo configuration: only Architectural Shingle is offered on the
+          customer-side estimator. The other materials remain in
+          MATERIAL_RATES / MATERIAL_COPY (used by the rep-facing internal
+          estimator) so swapping back to the multi-option grid is a
+          one-line change. The page state defaults to
+          "asphalt-architectural", so the single card below renders pre-
+          selected — Next is always enabled. */}
+      <div className="grid grid-cols-1 gap-4 max-w-xl">
+        {(["asphalt-architectural"] as Material[]).map((m) => {
           const active = material === m;
           const copy = MATERIAL_COPY[m];
           return (
