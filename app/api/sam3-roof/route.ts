@@ -1367,7 +1367,7 @@ export async function GET(req: Request) {
     //   - Filter predictions with pixelArea < that residence floor
     //     (sheds, AC pads).
     //   - Rural-mode switch: if the closest passing prediction is small
-    //     and within ~7m of image center, but a ≥1.6× larger
+    //     and within ~7m of image center, but a ≥SIZE_DOMINANCE larger
     //     prediction exists within ~26m of center, prefer the larger.
     //   - Otherwise pick closest-to-center.
     //
@@ -1378,6 +1378,18 @@ export async function GET(req: Request) {
     // pixels. Without that scaling the filter eats every prediction and
     // we fall back to closest-to-center, which is exactly the failure
     // mode this picker exists to avoid.
+    //
+    // SIZE_DOMINANCE was tightened 1.6 → 2.5 (2026-05-13) after dense
+    // subdivisions started getting the next-door neighbour picked. At
+    // the loose 1.6× the switch fired any time a neighbour was 60%+
+    // bigger than the addressed house — common in mixed-size FL
+    // subdivisions where 1500 sqft starter homes sit next to 3000 sqft
+    // additions. The switch was designed for "small garage near road
+    // vs big house set back" where the ratio is 3-5× (typical garage
+    // 30-50 m², typical house 100-200 m²) — that still clears 2.5×
+    // easily. The new "residential house roof" Roboflow prompt does
+    // most of the outbuilding-filtering semantically now, so this
+    // switch is more vestigial safety-net than primary mechanism.
     const zoomScaleFactor = Math.pow(2, 20 - tileZoom);
     const RESIDENCE_MIN_PX2 = Math.round(
       18_000 / (zoomScaleFactor * zoomScaleFactor),
@@ -1390,7 +1402,7 @@ export async function GET(req: Request) {
     const closest = pool[0];
     let chosenIdx = closest.idx;
     if (closest.distPx < NEAR_CENTER_PX) {
-      const SIZE_DOMINANCE = 1.6;
+      const SIZE_DOMINANCE = 2.5;
       let bestRural: (typeof closest) | null = null;
       for (const s of pool) {
         if (s.idx === closest.idx) continue;
