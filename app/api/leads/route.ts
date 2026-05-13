@@ -279,6 +279,10 @@ export async function POST(req: Request) {
               const baseHigh =
                 typeof est.baseHigh === "number" ? est.baseHigh : null;
               if (estId && /^[a-z0-9_-]{8,64}$/i.test(estId)) {
+                // generated_by is uuid in prod (FK→users.id), so we leave it
+                // NULL for customer self-served quotes. The distinguishing
+                // signal lives in snapshot.staff = "Customer · self-served"
+                // (set in app/quote/page.tsx where customerEstimate is built).
                 const { error: propErr } = await supabase
                   .from("proposals")
                   .upsert(
@@ -289,7 +293,7 @@ export async function POST(req: Request) {
                       snapshot: JSON.parse(JSON.stringify(body.estimate)),
                       total_low: baseLow,
                       total_high: baseHigh,
-                      generated_by: "customer-quote",
+                      generated_by: null,
                     },
                     { onConflict: "public_id" },
                   );
