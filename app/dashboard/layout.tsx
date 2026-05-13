@@ -23,7 +23,7 @@ import { DEMO_OFFICES } from "@/lib/dashboard-demo";
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   const activeOffice = await getActiveDemoOffice();
   return (
-    <div className="lg-env min-h-screen text-white">
+    <div className="theme-terminal min-h-screen text-white">
       <DashboardChrome offices={DEMO_OFFICES} activeOffice={activeOffice}>
         {children}
       </DashboardChrome>

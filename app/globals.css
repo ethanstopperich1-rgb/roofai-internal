@@ -1029,6 +1029,290 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   animation: toast-in 280ms cubic-bezier(.2,.8,.2,1) backwards;
 }
 
+/* ─── Theme: Terminal ──────────────────────────────────────────────────
+ *
+ * Alternative dashboard skin — keeps the cyan/mint/amber palette but
+ * strips the visionOS Liquid Glass language for a denser, tactical SaaS
+ * look. Applied by replacing `.lg-env` with `.theme-terminal` on the
+ * dashboard wrapper (see app/dashboard/layout.tsx).
+ *
+ * Design intent: feels like a real ops console, not a marketing site.
+ * - True dark canvas with a dot-grid backdrop instead of aurora
+ * - Hairline cyan-tinted borders, NO backdrop-filter (huge perf win)
+ * - Sharp 8–12px radii (down from 28–36px)
+ * - Solid type (no iridescent gradient), heavy mono numerics
+ * - Brackets [LIVE] and arrow ▸ markers instead of glass pills
+ * - Cyan is THE accent; mint reserved for verified-positive states only
+ *
+ * Implementation: scoped overrides on the existing glass-* utility names.
+ * Every dashboard page renders identically markup-wise — only the
+ * wrapper class changes.
+ */
+.theme-terminal {
+  position: relative;
+  isolation: isolate;
+  background: #06080c;
+  color: rgb(229 234 245 / 0.92);
+}
+/* Dot-grid backdrop — sits behind all content, low-contrast. Gives the
+ * "engineering drawing / oscilloscope" texture without being noisy. */
+.theme-terminal::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle at center, rgba(103,220,255,0.06) 0.7px, transparent 0.8px);
+  background-size: 22px 22px;
+  background-position: 0 0;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, black 30%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, black 30%, transparent 100%);
+}
+/* Faint horizon glow at the bottom — a single soft cyan band so the dot
+ * grid doesn't terminate abruptly. Keeps the page anchored. */
+.theme-terminal::after {
+  content: "";
+  position: fixed;
+  inset: auto 0 0 0;
+  height: 360px;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 70% 100% at 50% 110%, rgba(56,197,238,0.10) 0%, transparent 70%);
+}
+
+/* ── Panel overrides ── */
+.theme-terminal .glass-panel,
+.theme-terminal .glass-panel-hero {
+  background: rgba(13,16,22,0.65);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid rgba(103,220,255,0.10);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.025),
+    0 1px 0 rgba(0,0,0,0.4);
+  transition: border-color 200ms ease, background 200ms ease;
+}
+.theme-terminal .glass-panel::before,
+.theme-terminal .glass-panel::after,
+.theme-terminal .glass-panel-hero::before,
+.theme-terminal .glass-panel-hero::after {
+  display: none;
+}
+.theme-terminal .glass-panel-hero {
+  border-radius: 12px;
+  background: rgba(11,14,20,0.78);
+  /* Inset corner-tick accents — top-left + bottom-right cyan markers
+   * that read as "terminal frame" instead of "glass orb" */
+  position: relative;
+}
+.theme-terminal .glass-panel-hero {
+  background-image:
+    linear-gradient(180deg, rgba(103,220,255,0.04) 0%, transparent 12%, transparent 100%);
+  background-color: rgba(11,14,20,0.78);
+}
+.theme-terminal .glass-panel.is-interactive:hover {
+  transform: none;
+  border-color: rgba(103,220,255,0.30);
+  background: rgba(15,19,28,0.78);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.03),
+    0 0 0 1px rgba(103,220,255,0.06),
+    0 8px 24px -12px rgba(56,197,238,0.20);
+}
+
+/* ── Selected variant — solid cyan tint, not a glow bloom ── */
+.theme-terminal .glass-panel-selected {
+  background: rgba(103,220,255,0.06);
+  border-color: rgba(103,220,255,0.40);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    0 0 0 1px rgba(103,220,255,0.12);
+}
+
+/* ── Eyebrow → bracket label ── */
+.theme-terminal .glass-eyebrow {
+  background: transparent;
+  border: 1px solid rgba(103,220,255,0.22);
+  border-radius: 4px;
+  padding: 0.2rem 0.55rem;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: rgba(179,237,255,0.85);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  box-shadow: none;
+}
+.theme-terminal .glass-eyebrow::before {
+  content: "▸ ";
+  opacity: 0.7;
+  margin-right: 0.15em;
+}
+
+/* ── Text gradient → solid tinted white ── */
+.theme-terminal .iridescent-text {
+  background: none;
+  -webkit-text-fill-color: rgb(243 250 255);
+  color: rgb(243 250 255);
+}
+
+/* ── Marquee KPI: solid color, no scan-line overlay, cyan underline ── */
+.theme-terminal .marquee-kpi-value {
+  background: none;
+  -webkit-text-fill-color: rgb(245 252 255);
+  color: rgb(245 252 255);
+  letter-spacing: -0.04em;
+  font-weight: 500;
+}
+.theme-terminal .marquee-kpi-value::after { display: none; }
+
+/* ── Live ribbon: tighter, no rounded ends, cyan vertical separators ── */
+.theme-terminal .live-ribbon {
+  border-top: 1px solid rgba(103,220,255,0.14);
+  border-bottom: 1px solid rgba(103,220,255,0.14);
+  background: rgba(7,9,13,0.55);
+}
+.theme-terminal .live-ribbon-cell {
+  border-right: 1px solid rgba(103,220,255,0.08);
+  padding: 0.85rem 1.15rem;
+}
+.theme-terminal .live-ribbon-cell .label {
+  color: rgba(179,237,255,0.55);
+  letter-spacing: 0.20em;
+}
+.theme-terminal .live-ribbon-cell .value {
+  font-weight: 500;
+  color: rgb(245 252 255);
+}
+
+/* ── Section rule: ASCII tape style ── */
+.theme-terminal .console-section-rule > span:not(.pulse) {
+  color: rgba(179,237,255,0.70);
+  font-size: 10px;
+}
+.theme-terminal .console-section-rule > span:not(.pulse)::before {
+  content: "[ ";
+  color: rgba(103,220,255,0.55);
+}
+.theme-terminal .console-section-rule > span:not(.pulse)::after {
+  content: " ]";
+  color: rgba(103,220,255,0.55);
+}
+.theme-terminal .console-section-rule::before {
+  background: linear-gradient(90deg, rgba(103,220,255,0.65), rgba(103,220,255,0.05));
+  width: 32px;
+}
+.theme-terminal .console-section-rule::after {
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(103,220,255,0.20) 0px,
+    rgba(103,220,255,0.20) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  height: 1px;
+}
+
+/* ── Buttons → solid filled / outlined, no glass ── */
+.theme-terminal .glass-button-primary {
+  background: rgb(103 220 255);
+  color: #051019;
+  border: 1px solid rgba(103,220,255,0.8);
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.35),
+    inset 0 -1px 0 rgba(0,0,0,0.15),
+    0 4px 14px -6px rgba(56,197,238,0.55);
+  text-shadow: none;
+  font-weight: 600;
+}
+.theme-terminal .glass-button-primary::before { display: none; }
+.theme-terminal .glass-button-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.35),
+    0 6px 18px -6px rgba(56,197,238,0.70);
+}
+.theme-terminal .glass-button-secondary {
+  background: transparent;
+  border: 1px solid rgba(103,220,255,0.22);
+  border-radius: 6px;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: rgba(229,247,255,0.88);
+  box-shadow: none;
+}
+.theme-terminal .glass-button-secondary:hover {
+  background: rgba(103,220,255,0.06);
+  border-color: rgba(103,220,255,0.40);
+}
+
+/* ── Steppers / pills ── */
+.theme-terminal .glass-pill {
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.10);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.theme-terminal .glass-pill-active {
+  background: rgb(103 220 255);
+  color: #051019;
+  border-color: rgba(103,220,255,0.85);
+  box-shadow: 0 0 0 1px rgba(103,220,255,0.25);
+}
+
+/* ── Input ── */
+.theme-terminal .glass-input {
+  background: rgba(7,9,13,0.7);
+  border: 1px solid rgba(103,220,255,0.14);
+  border-radius: 6px;
+  box-shadow: inset 0 1px 0 rgba(0,0,0,0.25);
+}
+.theme-terminal .glass-input:focus {
+  border-color: rgba(103,220,255,0.55);
+  box-shadow: 0 0 0 3px rgba(56,197,238,0.10);
+}
+
+/* ── Divider hairline ── */
+.theme-terminal .glass-divider {
+  background: linear-gradient(90deg, transparent, rgba(103,220,255,0.20), transparent);
+}
+
+/* ── Chips: sharper, smaller radius ── */
+.theme-terminal .chip,
+.theme-terminal .chip-accent,
+.theme-terminal .chip-mint,
+.theme-terminal .chip-amber,
+.theme-terminal .chip-rose {
+  border-radius: 4px;
+}
+
+/* ── Tighten the existing pulse-ping rings (less marketing, more telemetry) ── */
+.theme-terminal .animate-ping {
+  animation-duration: 2.4s;
+}
+
+/* ── Make the topbar / sidebar match: terminal frame, not glass ── */
+.theme-terminal .lg-env { background: transparent; }
+.theme-terminal main,
+.theme-terminal aside {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.theme-terminal aside.lg\\:flex {
+  border-right: 1px solid rgba(103,220,255,0.10);
+  background: rgba(8,11,17,0.40) !important;
+}
+.theme-terminal main > div:first-child {
+  /* topbar */
+  border-bottom: 1px solid rgba(103,220,255,0.10);
+}
+
 /* ─── Animated dots used by Roof3DViewer "Generating…" pill ─────────── */
 .generating-dots::after {
   content: "";
