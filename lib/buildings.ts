@@ -25,6 +25,15 @@ export interface BuildingPolygon {
   latLng: Array<{ lat: number; lng: number }>;
   source: "osm";
   osmId?: number;
+  /** True if the picked polygon was selected because OSM had
+   *  `addr:housenumber` matching the input houseNumber tagged to this
+   *  way. Strongest single signal short of parcel data — callers can
+   *  use this to prefer OSM over Solar / Solar-mask on rural setback
+   *  lots where both Google products identified the wrong building.
+   *  False when no houseNumber was supplied or no candidate matched. */
+  addrMatched: boolean;
+  /** OSM `building=*` classification of the picked polygon. */
+  kind: "house" | "outbuilding" | "unknown";
 }
 
 /** OSM `building=*` values that explicitly identify a non-dwelling.
@@ -351,5 +360,7 @@ export async function fetchBuildingPolygon(opts: {
     latLng: best!.polygon,
     source: "osm",
     osmId: best!.osmId,
+    addrMatched: best!.addrMatch,
+    kind: best!.kind,
   };
 }

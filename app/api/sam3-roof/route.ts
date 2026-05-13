@@ -364,10 +364,13 @@ type ResolvedCenter = {
   lng: number;
   /** Provenance string for logs / response diagnostics. Stable values:
    *    "click-override"
+   *    "osm-addr-matched"
    *    "solar-buildingCenter" | "solar-buildingCenter-direct"
    *    "solar-mask-centroid"
-   *    "osm-centroid-after-solar-drift" | "osm-centroid-no-solar"
-   *    "address-solar-drift-fallback" | "address" */
+   *    "osm-centroid-after-solar-drift" | "osm-centroid-after-mask-drift"
+   *    "osm-centroid-no-solar"
+   *    "address-solar-drift-fallback" | "address-mask-drift-fallback"
+   *    "address" */
   source: string;
   /** Zoom level the satellite tile should be fetched at. Lower means a
    *  wider ground frame — used when we're not confident the building
@@ -381,6 +384,14 @@ type ResolvedCenter = {
    *  the geocoded address to Solar's suggestion — regardless of whether
    *  we ended up using it. Lets us audit Solar's accuracy retroactively. */
   solarSuggestedDriftM: number | null;
+  /** Same idea for Solar mask centroid — null when mask wasn't tried or
+   *  didn't return. */
+  solarMaskDriftM: number | null;
+  /** Whether OSM was consulted for this address, and if so whether the
+   *  picked OSM polygon was selected via `addr:housenumber` match.
+   *  "no-osm" when we didn't call OSM (no houseNumber and Solar
+   *  succeeded). "no-result" when OSM had no candidate. */
+  osmAddrMatch: "matched" | "no-match" | "no-result" | "no-osm";
 };
 
 /** Solar findClosest returns the closest building to the query point.
@@ -427,103 +438,90 @@ function centroidLatLng(
  *  results) the building can fall outside the tile and SAM3 can't see
  *  it. So we try to refine the centre before fetching.
  *
- *  Cascade:
- *    1. Solar findClosest's buildingCenter (cached → direct). When
- *       Solar's centre is within SOLAR_DRIFT_THRESHOLD_M of the
- *       geocoded address, Solar identified the same building Google's
- *       geocoder pointed at — trust it.
- *    2. If Solar's centre is FURTHER than the threshold, Solar may have
- *       picked an outbuilding closer to the road. Skip Solar mask (same
- *       data source, same potential bias) and try OSM via
- *       fetchBuildingPolygon — its residence-aware ranker drops
- *       outbuildings and prefers `addr:housenumber` matches. Falling
- *       through to a wider zoom 19 tile centred on the geocoded address
- *       if OSM has no coverage.
- *    3. If Solar didn't return anything at all (no coverage), try Solar
- *       mask, then OSM, then geocoded.
- *
- *  Result on the rural FL failure mode:
- *    - Solar returns shop centre (60m from geocoded address)
- *    - Drift > 40m → fall through to OSM
- *    - OSM finds house polygon at the addressed point (addr:housenumber
- *      match short-circuits the ranker)
- *    - Tile centred on house, SAM3 traces house. */
+ *  Cascade (in priority order):
+ *    0. **OSM addr:housenumber match.** Strongest single signal short
+ *       of county parcel data. When OSM contributors hand-tagged the
+ *       input house number to a footprint, that footprint IS the
+ *       residence. Beats Solar/mask/geocoder all at once, including
+ *       the 4851 Cypress Rdg Ln case where Solar, Solar-mask, AND the
+ *       geocoded pin all agreed on the wrong building (the garage).
+ *    1. Solar findClosest within drift threshold of geocoded address.
+ *       Solar identified the same building Google's geocoder pointed
+ *       at — high confidence, normal path.
+ *    2. Solar findClosest drifted from geocoded address. Try OSM
+ *       fallback; on miss, drop to zoom 19 wider tile.
+ *    3. Solar findClosest absent, but Solar mask present AND within
+ *       drift threshold. Mask uses the same Google building-detection
+ *       so we apply the same drift gate as findClosest — without it,
+ *       this is where 4851 Cypress Rdg slipped through (mask centroid
+ *       sat on the garage, no gate, we trusted it).
+ *    4. Solar mask drifted. OSM fallback, then widened geocode tile.
+ *    5. No Solar signal at all. OSM, then geocoded address. */
 async function resolveBuildingCenter(
   lat: number,
   lng: number,
   houseNumber: string | undefined,
 ): Promise<ResolvedCenter> {
-  // ─── 1. Solar findClosest (cached, then direct) ──────────────────────
-  // Solar buildingCenter is Google's "what building is at this point"
-  // signal. Cache first (cheap), then a direct API call (Solar is keyed
-  // separately from the /api/solar route that populates the cache, so
-  // we may race ahead of it on the very first request for an address).
-  let solarCenter: { lat: number; lng: number } | null = null;
-  const solarCached = await getCached<SolarSummary>("solar", lat, lng).catch(() => null);
-  if (solarCached?.buildingCenter) {
-    solarCenter = {
-      lat: solarCached.buildingCenter.lat,
-      lng: solarCached.buildingCenter.lng,
-    };
-  } else {
-    const solarKey =
-      process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
-    if (solarKey) {
-      try {
-        const url =
-          `https://solar.googleapis.com/v1/buildingInsights:findClosest` +
-          `?location.latitude=${lat}&location.longitude=${lng}` +
-          `&requiredQuality=HIGH&key=${solarKey}`;
-        const res = await fetch(url, {
-          cache: "no-store",
-          signal: AbortSignal.timeout(8_000),
-        });
-        if (res.ok) {
-          const data = (await res.json()) as {
-            center?: { latitude?: number; longitude?: number };
-          };
-          if (
-            typeof data.center?.latitude === "number" &&
-            typeof data.center?.longitude === "number"
-          ) {
-            solarCenter = {
-              lat: data.center.latitude,
-              lng: data.center.longitude,
-            };
-          }
-        }
-      } catch {
-        // fall through to other sources
-      }
-    }
-  }
+  // Run OSM and Solar findClosest concurrently when we have a
+  // houseNumber. OSM's addr-match is the strongest single signal we
+  // have, so we always want to know its answer before committing to a
+  // Solar-based centre. Parallel kick keeps the normal-path latency
+  // bounded to max(solar~500ms, osm~1.5s) instead of sum.
+  //
+  // When no houseNumber is supplied (rare — happens for POI/ranch
+  // addresses), there's no addr-match possible, so we skip OSM upfront
+  // and only fall through to it as a no-Solar fallback below.
+  const osmPromise = houseNumber
+    ? fetchBuildingPolygon({ lat, lng, houseNumber }).catch(() => null)
+    : null;
+  const solarCenterPromise = fetchSolarFindClosest(lat, lng);
 
+  // ─── 0. OSM addr:housenumber match — strongest signal ───────────────
+  const osmEarly = osmPromise ? await osmPromise : null;
+  if (osmEarly?.addrMatched && osmEarly.latLng.length >= 3) {
+    const c = centroidLatLng(osmEarly.latLng);
+    return {
+      lat: c.lat,
+      lng: c.lng,
+      source: "osm-addr-matched",
+      zoomHint: 20,
+      driftFromAddressM: metersBetween(lat, lng, c.lat, c.lng),
+      solarSuggestedDriftM: null,
+      solarMaskDriftM: null,
+      osmAddrMatch: "matched",
+    };
+  }
+  const osmAddrMatchState: ResolvedCenter["osmAddrMatch"] =
+    osmPromise == null
+      ? "no-osm"
+      : osmEarly == null
+        ? "no-result"
+        : "no-match";
+
+  // ─── 1. Solar findClosest (await whatever the parallel kick produced) ─
+  const { solarCenter, solarSource } = await solarCenterPromise;
   const solarDriftM = solarCenter
     ? metersBetween(lat, lng, solarCenter.lat, solarCenter.lng)
     : null;
 
-  // Solar agrees with the geocoder — trust it, normal path.
+  // Solar agrees with the geocoder — trust it.
   if (solarCenter && solarDriftM !== null && solarDriftM <= SOLAR_DRIFT_THRESHOLD_M) {
     return {
       lat: solarCenter.lat,
       lng: solarCenter.lng,
-      source: solarCached?.buildingCenter
-        ? "solar-buildingCenter"
-        : "solar-buildingCenter-direct",
+      source: solarSource,
       zoomHint: 20,
       driftFromAddressM: solarDriftM,
       solarSuggestedDriftM: solarDriftM,
+      solarMaskDriftM: null,
+      osmAddrMatch: osmAddrMatchState,
     };
   }
 
-  // ─── 2. Solar disagreed by > threshold → OSM, then widened geocode ──
-  // Solar mask comes from the same data source as findClosest — if
-  // findClosest picked an outbuilding for this address, the mask will
-  // too. Skip it. OSM is independent.
+  // ─── 2. Solar drifted → use OSM (no addr-match), else widened tile ──
   if (solarCenter) {
-    const osm = await fetchBuildingPolygon({ lat, lng, houseNumber }).catch(() => null);
-    if (osm && osm.latLng.length >= 3) {
-      const c = centroidLatLng(osm.latLng);
+    if (osmEarly && osmEarly.latLng.length >= 3) {
+      const c = centroidLatLng(osmEarly.latLng);
       return {
         lat: c.lat,
         lng: c.lng,
@@ -531,12 +529,10 @@ async function resolveBuildingCenter(
         zoomHint: 20,
         driftFromAddressM: metersBetween(lat, lng, c.lat, c.lng),
         solarSuggestedDriftM: solarDriftM,
+        solarMaskDriftM: null,
+        osmAddrMatch: osmAddrMatchState,
       };
     }
-    // OSM blank — drop to zoom 19 around the geocoded address. The wider
-    // ground frame (~168 m across vs ~84 m) usually contains both Solar's
-    // (wrong) pick and the actual house, so the picker's
-    // residence-aware scoring can choose between them.
     return {
       lat,
       lng,
@@ -544,57 +540,126 @@ async function resolveBuildingCenter(
       zoomHint: 19,
       driftFromAddressM: 0,
       solarSuggestedDriftM: solarDriftM,
+      solarMaskDriftM: null,
+      osmAddrMatch: osmAddrMatchState,
     };
   }
 
-  // ─── 3. No Solar findClosest result — try Solar mask, then OSM ──────
-  // Solar mask is sometimes populated even when findClosest isn't (e.g.
-  // edge of coverage). Use its centroid if available.
+  // ─── 3. Solar absent → Solar mask with drift check ──────────────────
+  // Mask is from the same Google building-detection as findClosest, so
+  // the same wrong-building risk applies. Drift-gate it just like we
+  // gate findClosest. Before this gate existed, 4851 Cypress Rdg
+  // landed at solar-mask-centroid (on the garage) and we trusted it.
   const solarMask = await getCached<SolarMaskPolygon | null>(
     "solar-mask",
     lat,
     lng,
   ).catch(() => null);
+  let solarMaskDriftM: number | null = null;
   if (solarMask?.latLng?.length) {
     const c = centroidLatLng(solarMask.latLng);
+    solarMaskDriftM = metersBetween(lat, lng, c.lat, c.lng);
+    if (solarMaskDriftM <= SOLAR_DRIFT_THRESHOLD_M) {
+      return {
+        lat: c.lat,
+        lng: c.lng,
+        source: "solar-mask-centroid",
+        zoomHint: 20,
+        driftFromAddressM: solarMaskDriftM,
+        solarSuggestedDriftM: null,
+        solarMaskDriftM,
+        osmAddrMatch: osmAddrMatchState,
+      };
+    }
+    // Mask drifted — fall through to OSM / widened tile, same shape as
+    // the Solar-findClosest-drift path.
+  }
+
+  // ─── 4 + 5. OSM as last refinement, then geocoded address ───────────
+  // If we had a houseNumber, osmEarly already has the result (matched
+  // or didn't). If not, this is the first OSM call.
+  const osmLate = osmEarly ?? (await fetchBuildingPolygon({ lat, lng }).catch(() => null));
+  if (osmLate && osmLate.latLng.length >= 3) {
+    const c = centroidLatLng(osmLate.latLng);
     return {
       lat: c.lat,
       lng: c.lng,
-      source: "solar-mask-centroid",
+      source:
+        solarMaskDriftM !== null
+          ? "osm-centroid-after-mask-drift"
+          : "osm-centroid-no-solar",
       zoomHint: 20,
       driftFromAddressM: metersBetween(lat, lng, c.lat, c.lng),
       solarSuggestedDriftM: null,
+      solarMaskDriftM,
+      osmAddrMatch: osmAddrMatchState,
     };
   }
 
-  // OSM as the last refinement step before bare geocode. Universal
-  // coverage (modulo data gaps), residence-aware ranker, free.
-  const osm = await fetchBuildingPolygon({ lat, lng, houseNumber }).catch(() => null);
-  if (osm && osm.latLng.length >= 3) {
-    const c = centroidLatLng(osm.latLng);
-    return {
-      lat: c.lat,
-      lng: c.lng,
-      source: "osm-centroid-no-solar",
-      zoomHint: 20,
-      driftFromAddressM: metersBetween(lat, lng, c.lat, c.lng),
-      solarSuggestedDriftM: null,
-    };
-  }
-
-  // Bare geocoded address — no refinement source returned anything. Stay
-  // at zoom 20: without Solar drift we have no positive signal that the
-  // centre is wrong, and the wider frame at zoom 19 has its own costs
-  // (the picker has to discriminate between more buildings, with lower
-  // pixel density per building).
+  // Bare geocoded address. Widen tile to zoom 19 when something signalled
+  // the centre might be off (Solar mask drifted), otherwise stay at 20.
   return {
     lat,
     lng,
-    source: "address",
-    zoomHint: 20,
+    source: solarMaskDriftM !== null ? "address-mask-drift-fallback" : "address",
+    zoomHint: solarMaskDriftM !== null ? 19 : 20,
     driftFromAddressM: 0,
     solarSuggestedDriftM: null,
+    solarMaskDriftM,
+    osmAddrMatch: osmAddrMatchState,
   };
+}
+
+/** Solar findClosest with cache-first → direct fallback, returning both
+ *  the centre and a stable source label. Split out from
+ *  resolveBuildingCenter so the parent can run it concurrently with
+ *  the OSM lookup via Promise.all-style parallelism. */
+async function fetchSolarFindClosest(
+  lat: number,
+  lng: number,
+): Promise<{
+  solarCenter: { lat: number; lng: number } | null;
+  solarSource: "solar-buildingCenter" | "solar-buildingCenter-direct";
+}> {
+  const solarCached = await getCached<SolarSummary>("solar", lat, lng).catch(() => null);
+  if (solarCached?.buildingCenter) {
+    return {
+      solarCenter: {
+        lat: solarCached.buildingCenter.lat,
+        lng: solarCached.buildingCenter.lng,
+      },
+      solarSource: "solar-buildingCenter",
+    };
+  }
+  const solarKey =
+    process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
+  if (!solarKey) return { solarCenter: null, solarSource: "solar-buildingCenter-direct" };
+  try {
+    const url =
+      `https://solar.googleapis.com/v1/buildingInsights:findClosest` +
+      `?location.latitude=${lat}&location.longitude=${lng}` +
+      `&requiredQuality=HIGH&key=${solarKey}`;
+    const res = await fetch(url, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return { solarCenter: null, solarSource: "solar-buildingCenter-direct" };
+    const data = (await res.json()) as {
+      center?: { latitude?: number; longitude?: number };
+    };
+    if (
+      typeof data.center?.latitude === "number" &&
+      typeof data.center?.longitude === "number"
+    ) {
+      return {
+        solarCenter: { lat: data.center.latitude, lng: data.center.longitude },
+        solarSource: "solar-buildingCenter-direct",
+      };
+    }
+  } catch {
+    // fall through
+  }
+  return { solarCenter: null, solarSource: "solar-buildingCenter-direct" };
 }
 
 export async function GET(req: Request) {
@@ -740,6 +805,8 @@ export async function GET(req: Request) {
         zoomHint: 20,
         driftFromAddressM: metersBetween(lat, lng, clickLat, clickLng),
         solarSuggestedDriftM: null,
+        solarMaskDriftM: null,
+        osmAddrMatch: "no-osm",
       }
     : await resolveBuildingCenter(lat, lng, houseNumber);
   // Structured single-line log so it's greppable in Vercel logs:
@@ -757,7 +824,14 @@ export async function GET(req: Request) {
         tileCenter.solarSuggestedDriftM !== null
           ? tileCenter.solarSuggestedDriftM.toFixed(1)
           : "n/a"
-      }`,
+      } ` +
+      `solar_mask_drift_m=${
+        tileCenter.solarMaskDriftM !== null
+          ? tileCenter.solarMaskDriftM.toFixed(1)
+          : "n/a"
+      } ` +
+      `osm_addr_match=${tileCenter.osmAddrMatch} ` +
+      `house_number=${houseNumber ?? "n/a"}`,
   );
 
   // ─── Fetch the satellite tile ─────────────────────────────────────────
