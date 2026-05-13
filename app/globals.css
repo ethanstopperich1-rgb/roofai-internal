@@ -1103,14 +1103,12 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
 .theme-terminal .glass-panel-hero {
   border-radius: 12px;
   background: rgba(11,14,20,0.78);
-  /* Inset corner-tick accents — top-left + bottom-right cyan markers
-   * that read as "terminal frame" instead of "glass orb" */
+  /* Kill the inset rim-light (a 36% white edge that read as a harsh
+   * bright line once the aurora was removed from behind it) */
+  box-shadow:
+    0 1px 0 rgba(0,0,0,0.5),
+    0 0 0 1px rgba(103,220,255,0.06);
   position: relative;
-}
-.theme-terminal .glass-panel-hero {
-  background-image:
-    linear-gradient(180deg, rgba(103,220,255,0.04) 0%, transparent 12%, transparent 100%);
-  background-color: rgba(11,14,20,0.78);
 }
 .theme-terminal .glass-panel.is-interactive:hover {
   transform: none;
@@ -1294,6 +1292,254 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
 /* ── Tighten the existing pulse-ping rings (less marketing, more telemetry) ── */
 .theme-terminal .animate-ping {
   animation-duration: 2.4s;
+}
+
+/* ── Scoreboard tile grid — replaces the hero+stat-grid composition.
+ * Six tiles in a 3x2 (desktop) / 2x3 (tablet) / 1x6 (mobile) frame.
+ * Hard cyan dividers between tiles, no glass blur, no rounded inside. */
+.theme-terminal .scoreboard {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  border: 1px solid rgba(103,220,255,0.14);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(11,14,20,0.78);
+}
+@media (min-width: 640px) {
+  .theme-terminal .scoreboard {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (min-width: 1024px) {
+  .theme-terminal .scoreboard {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+}
+.theme-terminal .scoreboard-tile {
+  position: relative;
+  padding: 1.4rem 1.4rem 1.5rem;
+  border-right: 1px solid rgba(103,220,255,0.08);
+  border-bottom: 1px solid rgba(103,220,255,0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  min-height: 156px;
+  isolation: isolate;
+}
+@media (min-width: 1024px) {
+  .theme-terminal .scoreboard-tile {
+    padding: 1.7rem 1.8rem 1.9rem;
+    min-height: 188px;
+  }
+  .theme-terminal .scoreboard-tile:nth-child(3n) { border-right: none; }
+  .theme-terminal .scoreboard-tile:nth-child(n+4) { border-bottom: none; }
+}
+@media (min-width: 640px) and (max-width: 1023.98px) {
+  .theme-terminal .scoreboard-tile:nth-child(2n) { border-right: none; }
+  .theme-terminal .scoreboard-tile:nth-last-child(-n+2) { border-bottom: none; }
+}
+@media (max-width: 639.98px) {
+  .theme-terminal .scoreboard-tile { border-right: none; }
+  .theme-terminal .scoreboard-tile:last-child { border-bottom: none; }
+}
+/* Left-side cyan accent bar — what makes each tile read as a "channel" */
+.theme-terminal .scoreboard-tile::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12%;
+  bottom: 12%;
+  width: 2px;
+  background: linear-gradient(180deg,
+    rgba(103,220,255,0.55) 0%,
+    rgba(103,220,255,0.15) 100%);
+  box-shadow: 0 0 12px rgba(103,220,255,0.35);
+}
+.theme-terminal .scoreboard-tile.accent-mint::before {
+  background: linear-gradient(180deg, rgba(95,227,176,0.65) 0%, rgba(95,227,176,0.18) 100%);
+  box-shadow: 0 0 12px rgba(95,227,176,0.35);
+}
+.theme-terminal .scoreboard-tile.accent-amber::before {
+  background: linear-gradient(180deg, rgba(243,177,75,0.65) 0%, rgba(243,177,75,0.18) 100%);
+  box-shadow: 0 0 12px rgba(243,177,75,0.30);
+}
+.theme-terminal .scoreboard-tile .label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(179,237,255,0.62);
+  font-weight: 500;
+}
+.theme-terminal .scoreboard-tile .value {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum", "zero";
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: rgb(248 253 255);
+  line-height: 0.95;
+}
+.theme-terminal .scoreboard-tile.size-hero .value {
+  font-size: clamp(2.8rem, 5.2vw, 4.4rem);
+  letter-spacing: -0.045em;
+}
+.theme-terminal .scoreboard-tile .sublabel {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  letter-spacing: 0.04em;
+  margin-top: auto;
+}
+.theme-terminal .scoreboard-tile .delta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+}
+.theme-terminal .scoreboard-tile .delta.up   { color: var(--color-mint); }
+.theme-terminal .scoreboard-tile .delta.down { color: var(--color-rose); }
+
+/* Tape strip — a single-row scrolling ticker that anchors the top of
+ * the page. Reads like a stock-ticker / news-bar. */
+.theme-terminal .tape-strip {
+  border: 1px solid rgba(103,220,255,0.14);
+  border-radius: 8px;
+  background: rgba(7,9,13,0.85);
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 38px;
+}
+.theme-terminal .tape-strip .tape-prefix {
+  flex-shrink: 0;
+  padding: 0 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgb(103 220 255);
+  background: rgba(103,220,255,0.06);
+  border-right: 1px solid rgba(103,220,255,0.14);
+}
+.theme-terminal .tape-strip .tape-track {
+  display: flex;
+  align-items: center;
+  gap: 2.4rem;
+  padding-left: 1.4rem;
+  white-space: nowrap;
+  animation: tape-scroll 38s linear infinite;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: rgba(255,255,255,0.80);
+  flex-shrink: 0;
+}
+.theme-terminal .tape-strip .tape-track .tape-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.55rem;
+}
+.theme-terminal .tape-strip .tape-track .tape-cell .k {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(179,237,255,0.55);
+}
+.theme-terminal .tape-strip .tape-track .tape-cell .v {
+  font-feature-settings: "tnum", "zero";
+  font-variant-numeric: tabular-nums;
+  color: rgb(248 253 255);
+}
+.theme-terminal .tape-strip .tape-track .tape-cell .d.up   { color: var(--color-mint); font-size: 10.5px; }
+.theme-terminal .tape-strip .tape-track .tape-cell .d.down { color: var(--color-rose); font-size: 10.5px; }
+.theme-terminal .tape-strip .tape-track .tape-sep {
+  color: rgba(103,220,255,0.40);
+}
+@keyframes tape-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-terminal .tape-strip .tape-track { animation: none; }
+}
+
+/* Log-style activity rows — mono timestamp, kind tag, payload */
+.theme-terminal .log-row {
+  display: grid;
+  grid-template-columns: 84px 86px 1fr auto;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.55rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border-bottom: 1px dashed rgba(103,220,255,0.08);
+  color: rgba(255,255,255,0.82);
+}
+.theme-terminal .log-row:last-child { border-bottom: none; }
+.theme-terminal .log-row:hover { background: rgba(103,220,255,0.03); }
+.theme-terminal .log-row .ts {
+  color: rgba(179,237,255,0.55);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.theme-terminal .log-row .kind {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.theme-terminal .log-row .kind.lead     { color: rgb(103 220 255); }
+.theme-terminal .log-row .kind.call     { color: rgb(95 227 176); }
+.theme-terminal .log-row .kind.proposal { color: rgb(243 177 75); }
+.theme-terminal .log-row .kind.event    { color: rgba(255,255,255,0.55); }
+.theme-terminal .log-row .kind::before {
+  content: "▸ ";
+  opacity: 0.55;
+}
+.theme-terminal .log-row .body {
+  color: rgba(255,255,255,0.92);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.theme-terminal .log-row .meta {
+  color: rgba(255,255,255,0.42);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+@media (max-width: 767.98px) {
+  .theme-terminal .log-row {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+  }
+  .theme-terminal .log-row .meta { display: none; }
+}
+
+/* Terminal-style "jump in" rows — sharp, hairline, no inner panels */
+.theme-terminal .jump-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.7rem 0.9rem;
+  border-left: 2px solid rgba(103,220,255,0.30);
+  border-bottom: 1px dashed rgba(103,220,255,0.10);
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.theme-terminal .jump-row:last-child { border-bottom: none; }
+.theme-terminal .jump-row:hover {
+  background: rgba(103,220,255,0.05);
+  border-left-color: rgb(103 220 255);
+}
+.theme-terminal .jump-row .glyph {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: rgb(103 220 255);
 }
 
 /* ── Make the topbar / sidebar match: terminal frame, not glass ── */

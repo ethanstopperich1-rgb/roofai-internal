@@ -218,247 +218,244 @@ export default async function OverviewPage() {
       ? null
       : Math.round((metrics.pipelineLow + metrics.pipelineHigh) / 2);
 
+  // Compact pipeline midpoint for the headline tile
+  const pipelineDisplay =
+    pipelineMid === null
+      ? "—"
+      : pipelineMid >= 1_000_000
+        ? `$${(pipelineMid / 1_000_000).toFixed(2)}M`
+        : `$${Math.round(pipelineMid / 1000)}K`;
+
+  // Ticker cells repeat once so the CSS-only marquee can scroll seamlessly
+  const tickerCells = [
+    { k: "LEADS · MTD", v: metrics.leadsThisMonth.toLocaleString(), d: null as null | number },
+    { k: "SYDNEY", v: metrics.callsThisMonth.toLocaleString(), d: null },
+    { k: "PROPOSALS", v: metrics.proposalsThisMonth.toLocaleString(), d: null },
+    { k: "SUPPLEMENT MTD", v: fmtUSD(metrics.supplementRecoveredMtd, 0), d: metrics.supplementVsPrevMonthPct },
+    { k: "PIPELINE", v: pipelineDisplay, d: null },
+    { k: "AVG PICKUP", v: "<5s", d: null },
+    { k: "CLAIMS", v: metrics.supplementClaimsCount.toString(), d: null },
+  ];
+
   return (
-    <div className="flex flex-col gap-7 lg:gap-8">
-      {/* HERO — marquee KPI + live ribbon */}
-      <header className="glass-panel-hero relative overflow-hidden">
-        {/* Aurora wash */}
-        <div className="absolute inset-0 pointer-events-none opacity-70">
-          <div className="absolute -top-40 -right-24 w-[560px] h-[560px] rounded-full bg-cy-300/12 blur-[90px]" />
-          <div className="absolute -bottom-40 -left-12 w-[420px] h-[420px] rounded-full bg-violet-300/12 blur-[90px]" />
+    <div className="flex flex-col gap-6 lg:gap-7">
+      {/* TICKER TAPE — single-row scrolling status strip */}
+      <div className="tape-strip" role="region" aria-label="Live metrics ticker">
+        <div className="tape-prefix">
+          <span className="relative flex items-center justify-center">
+            <span className="absolute w-2.5 h-2.5 rounded-full bg-mint/35 animate-ping" />
+            <span className="relative w-1.5 h-1.5 rounded-full bg-mint shadow-[0_0_8px_rgba(95,227,176,0.55)]" />
+          </span>
+          <span>{isDemoBuild() ? "DEMO · LIVE" : "LIVE"}</span>
         </div>
-
-        <div className="relative p-7 lg:p-9 pb-6 lg:pb-7">
-          <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-6 xl:gap-10">
-            {/* Marquee KPI block */}
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2.5 mb-4 flex-wrap">
-                <span className="glass-eyebrow">Operator Console · {monthLabel()}</span>
-                <span className="flex items-center gap-1.5 text-[10.5px] font-mono tabular text-mint/85 uppercase tracking-[0.14em]">
-                  <span className="relative flex items-center justify-center">
-                    <span className="absolute w-2.5 h-2.5 rounded-full bg-mint/35 animate-ping" />
-                    <span className="relative w-1.5 h-1.5 rounded-full bg-mint shadow-[0_0_8px_rgba(95,227,176,0.55)]" />
-                  </span>
-                  Live · streaming
+        <div className="tape-track" aria-hidden="false">
+          {[...tickerCells, ...tickerCells].map((c, i) => (
+            <span key={i} className="tape-cell">
+              <span className="k">{c.k}</span>
+              <span className="v">{c.v}</span>
+              {c.d != null && c.d !== 0 && (
+                <span className={["d", c.d > 0 ? "up" : "down"].join(" ")}>
+                  {c.d > 0 ? "▲" : "▼"} {Math.abs(c.d)}%
                 </span>
-              </div>
-
-              <div className="text-[10.5px] font-mono tabular uppercase tracking-[0.18em] text-white/50 mb-2">
-                Pipeline value · midpoint
-              </div>
-              <div className="flex items-baseline gap-3 flex-wrap">
-                <div className="marquee-kpi-value text-[64px] sm:text-[80px] lg:text-[104px]">
-                  {pipelineMid === null ? "—" : fmtUSD(pipelineMid, 0)}
-                </div>
-                {pipelineMid !== null && (
-                  <div className="text-[12px] font-mono tabular text-white/55 pb-2.5">
-                    range{" "}
-                    <span className="text-white/85">
-                      {fmtUSD(metrics.pipelineLow, 0)}
-                    </span>
-                    {" – "}
-                    <span className="text-white/85">
-                      {fmtUSD(metrics.pipelineHigh, 0)}
-                    </span>
-                  </div>
-                )}
-              </div>
-              <p className="text-[13.5px] text-white/65 mt-4 max-w-2xl leading-relaxed">
-                Real-time operator view across leads, Sydney calls, and proposals — multi-office
-                architecture with row-level isolation. Updates the instant Sydney books an
-                inspection or a customer requests a quote.
-              </p>
-            </div>
-
-            {/* Sydney status card */}
-            <div className="xl:w-72 shrink-0">
-              <div className="rounded-2xl border border-white/[0.10] bg-white/[0.04] backdrop-blur-2xl p-5 relative overflow-hidden">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <Radio className="w-3.5 h-3.5 text-mint" />
-                    <span className="text-[12px] font-medium text-white/90">Sydney</span>
-                  </div>
-                  <span className="text-[10px] font-mono tabular text-mint uppercase tracking-[0.14em] flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-mint shadow-[0_0_6px_rgba(95,227,176,0.6)]" />
-                    Online
-                  </span>
-                </div>
-                <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono tabular text-3xl font-semibold text-white tracking-tight">
-                    {metrics.callsThisMonth}
-                  </span>
-                  <span className="text-[12px] text-white/55">calls this month</span>
-                </div>
-                <div className="mt-3 pt-3 border-t border-white/[0.05] flex items-center justify-between text-[11px] text-white/50">
-                  <span>Avg pickup</span>
-                  <span className="font-mono tabular text-white/80">&lt; 5s</span>
-                </div>
-              </div>
-            </div>
-          </div>
+              )}
+              <span className="tape-sep">·</span>
+            </span>
+          ))}
         </div>
+      </div>
 
-        {/* Live ribbon — compact tabular telemetry strip */}
-        <div className="live-ribbon relative">
-          <div className="live-ribbon-cell">
-            <span className="label">Leads · MTD</span>
-            <span className="value">{metrics.leadsThisMonth.toLocaleString()}</span>
-          </div>
-          <div className="live-ribbon-cell">
-            <span className="label">Sydney calls</span>
-            <span className="value">{metrics.callsThisMonth.toLocaleString()}</span>
-          </div>
-          <div className="live-ribbon-cell">
-            <span className="label">Proposals</span>
-            <span className="value">{metrics.proposalsThisMonth.toLocaleString()}</span>
-          </div>
-          <div className="live-ribbon-cell">
-            <span className="label">Supplement · MTD</span>
-            <span className="value">{fmtUSD(metrics.supplementRecoveredMtd, 0)}</span>
-            {metrics.supplementVsPrevMonthPct !== 0 && (
-              <span
-                className={[
-                  "delta",
-                  metrics.supplementVsPrevMonthPct > 0 ? "up" : "down",
-                ].join(" ")}
-              >
-                {metrics.supplementVsPrevMonthPct > 0 ? "▲" : "▼"}{" "}
-                {Math.abs(metrics.supplementVsPrevMonthPct)}% vs {prevMonthLabel()}
-              </span>
-            )}
-          </div>
+      {/* HEADER ROW — eyebrow + status, no big paragraph */}
+      <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+        <div>
+          <span className="glass-eyebrow">Operator Console · {monthLabel()}</span>
+          <h1 className="text-[22px] sm:text-[26px] lg:text-[30px] tracking-tight font-medium leading-tight mt-3 text-white/92">
+            <span className="iridescent-text">Voxaris pipeline</span>{" "}
+            <span className="text-white/45">/ overview</span>
+          </h1>
+        </div>
+        <div className="flex items-center gap-3 text-[10.5px] font-mono tabular uppercase tracking-[0.18em] text-white/45">
+          <span>
+            office{" "}
+            <span className="text-cy-300">
+              {new Date().toLocaleDateString("en-US", {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+              })}
+            </span>
+          </span>
         </div>
       </header>
 
-      {/* OPERATIONS chapter */}
-      <div className="console-section-rule">
-        <span className="pulse" aria-hidden="true" />
-        <span>Operations · jump back in</span>
-      </div>
-
-      {/* STAT GRID */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          icon={Users}
-          label="Leads"
-          sublabel="this month"
-          value={metrics.leadsThisMonth.toString()}
+      {/* SCOREBOARD — 6-tile mega grid (was: hero + stat grid) */}
+      <div className="scoreboard" role="group" aria-label="Operator metrics scoreboard">
+        <Link
           href="/dashboard/leads"
-          accent="cy"
-        />
-        <StatCard
-          icon={PhoneCall}
-          label="Sydney calls"
-          sublabel="answered 24/7"
-          value={metrics.callsThisMonth.toString()}
+          className="scoreboard-tile"
+        >
+          <div className="label">Leads · MTD</div>
+          <div className="value">{metrics.leadsThisMonth.toLocaleString()}</div>
+          <div className="sublabel">from /quote + /embed</div>
+        </Link>
+
+        <Link
           href="/dashboard/calls"
-          accent="cy"
-        />
-        <StatCard
-          icon={Wallet}
-          label="Supplement recovery"
-          sublabel={`${metrics.supplementClaimsCount} claims supplemented`}
-          value={fmtUSD(metrics.supplementRecoveredMtd, 0)}
-          href="/dashboard/proposals"
-          accent="mint"
-          deltaPct={metrics.supplementVsPrevMonthPct}
-        />
-        <StatCard
-          icon={TrendingUp}
-          label="Pipeline value"
-          sublabel="estimated range"
-          value={
-            metrics.pipelineLow === 0 && metrics.pipelineHigh === 0
-              ? "—"
-              : `${fmtUSD(metrics.pipelineLow, 0)}–${fmtUSD(metrics.pipelineHigh, 0)}`
-          }
+          className="scoreboard-tile"
+        >
+          <div className="label">Sydney calls</div>
+          <div className="value">{metrics.callsThisMonth.toLocaleString()}</div>
+          <div className="sublabel">answered 24/7 · avg pickup &lt;5s</div>
+        </Link>
+
+        <Link
           href="/dashboard/leads"
-          accent="amber"
-          dense
-        />
+          className="scoreboard-tile accent-amber size-hero"
+        >
+          <div className="label">Pipeline · midpoint</div>
+          <div className="value">{pipelineDisplay}</div>
+          <div className="sublabel">
+            {pipelineMid === null
+              ? "no estimates yet"
+              : `range ${fmtUSD(metrics.pipelineLow, 0)} – ${fmtUSD(metrics.pipelineHigh, 0)}`}
+          </div>
+        </Link>
+
+        <Link
+          href="/dashboard/proposals"
+          className="scoreboard-tile"
+        >
+          <div className="label">Proposals</div>
+          <div className="value">{metrics.proposalsThisMonth.toLocaleString()}</div>
+          <div className="sublabel">generated this month</div>
+        </Link>
+
+        <Link
+          href="/dashboard/proposals"
+          className="scoreboard-tile accent-mint"
+        >
+          <div className="label">Supplement · MTD</div>
+          <div className="value">{fmtUSD(metrics.supplementRecoveredMtd, 0)}</div>
+          <div className="sublabel">{metrics.supplementClaimsCount} claims supplemented</div>
+          {metrics.supplementVsPrevMonthPct !== 0 && (
+            <div
+              className={[
+                "delta",
+                metrics.supplementVsPrevMonthPct > 0 ? "up" : "down",
+              ].join(" ")}
+            >
+              {metrics.supplementVsPrevMonthPct > 0 ? "▲" : "▼"}{" "}
+              {Math.abs(metrics.supplementVsPrevMonthPct)}% vs {prevMonthLabel()}
+            </div>
+          )}
+        </Link>
+
+        <div className="scoreboard-tile accent-mint">
+          <div className="label">Sydney status</div>
+          <div className="value" style={{ fontSize: "1.5rem", letterSpacing: "0.04em" }}>
+            <span className="text-mint">◆</span>{" "}
+            <span style={{ color: "rgb(143 240 199)" }}>ONLINE</span>
+          </div>
+          <div className="sublabel">
+            standing by · listening across {/* office count */}every office
+          </div>
+        </div>
       </div>
 
-      {/* LIVE FEED chapter */}
-      <div className="console-section-rule">
+      {/* OPERATIONS chapter */}
+      <div className="console-section-rule mt-2">
         <span className="pulse" aria-hidden="true" />
         <span>Live feed · last 60 minutes</span>
       </div>
 
-      {/* ACTIVITY + JUMP-IN */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 lg:gap-6">
-        <div className="glass-panel p-5 lg:p-7 xl:col-span-2">
-          <div className="flex items-center justify-between mb-5">
-            <div className="flex items-center gap-2.5">
-              <Activity className="w-4 h-4 text-cy-300" />
-              <h2 className="text-[15px] font-semibold tracking-tight text-white">
-                Recent activity
-              </h2>
-            </div>
-            <span className="flex items-center gap-1.5 text-[10.5px] text-mint/85 font-mono tabular uppercase tracking-[0.16em]">
-              <span className="w-1.5 h-1.5 rounded-full bg-mint shadow-[0_0_6px_rgba(95,227,176,0.55)] animate-pulse" />
-              Live feed
-            </span>
-          </div>
+      {/* TERMINAL LOG + JUMP-IN — two-column, log dominates */}
+      <div className="grid grid-cols-1 xl:grid-cols-[2fr_1fr] gap-4 lg:gap-6">
+        <div className="glass-panel overflow-hidden">
           {activity.length === 0 ? (
-            <StandbyState
-              title="Sydney is standing by"
-              body="No activity in the last hour. As soon as a customer enters their address or Sydney picks up an inbound call, it surfaces here in real time."
-            />
+            <div className="p-6">
+              <StandbyState
+                title="Sydney is standing by"
+                body="No activity in the last hour. As soon as a customer enters their address or Sydney picks up an inbound call, it surfaces here in real time."
+              />
+            </div>
           ) : (
             <ul className="flex flex-col">
-              {activity.map((item, i) => (
-                <li
-                  key={item.id}
-                  className={[
-                    "flex items-start gap-3.5 py-3.5",
-                    i !== activity.length - 1 ? "border-b border-white/[0.04]" : "",
-                  ].join(" ")}
-                >
-                  <ActivityIcon kind={item.kind} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13.5px] text-white/90 truncate">{item.title}</div>
-                    {item.detail && (
-                      <div className="text-[12px] text-white/50 truncate mt-0.5">{item.detail}</div>
-                    )}
-                  </div>
-                  <div className="text-[10.5px] text-white/40 font-mono tabular whitespace-nowrap">
-                    {fmtDateTime(item.at)}
-                  </div>
+              {activity.map((item) => (
+                <li key={item.id} className="log-row">
+                  <span className="ts">{shortTime(item.at)}</span>
+                  <span className={`kind ${item.kind}`}>{item.kind}</span>
+                  <span className="body">{item.title}</span>
+                  <span className="meta">{item.detail ?? ""}</span>
                 </li>
               ))}
             </ul>
           )}
         </div>
 
-        <aside className="flex flex-col gap-4">
-          <div className="glass-panel p-5 lg:p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <Sparkles className="w-4 h-4 text-cy-300" />
-              <h2 className="text-[15px] font-semibold tracking-tight">Jump in</h2>
+        <aside className="flex flex-col gap-5">
+          <div className="glass-panel overflow-hidden">
+            <div className="px-4 pt-3.5 pb-2 text-[10.5px] font-mono tabular uppercase tracking-[0.18em] text-white/45 border-b border-white/[0.06]">
+              Jump in
             </div>
-            <div className="flex flex-col gap-2">
-              <JumpLink href="/dashboard/calls" icon={PhoneCall} label="Sydney call inbox" sub="Live transcripts" />
-              <JumpLink href="/dashboard/leads" icon={Users} label="Lead pipeline" sub="By status, by office" />
-              <JumpLink href="/dashboard/analytics" icon={BarChart3} label="30-day analytics" sub="Funnel + outcomes" />
+            <div className="flex flex-col">
+              <Link href="/dashboard/calls" className="jump-row">
+                <span className="glyph">▸</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] text-white/92 font-medium">Sydney call inbox</div>
+                  <div className="text-[11px] text-white/45 font-mono tabular uppercase tracking-wider mt-0.5">
+                    live transcripts
+                  </div>
+                </div>
+                <ArrowUpRight className="w-3.5 h-3.5 text-white/35" />
+              </Link>
+              <Link href="/dashboard/leads" className="jump-row">
+                <span className="glyph">▸</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] text-white/92 font-medium">Lead pipeline</div>
+                  <div className="text-[11px] text-white/45 font-mono tabular uppercase tracking-wider mt-0.5">
+                    by status · by office
+                  </div>
+                </div>
+                <ArrowUpRight className="w-3.5 h-3.5 text-white/35" />
+              </Link>
+              <Link href="/dashboard/analytics" className="jump-row">
+                <span className="glyph">▸</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] text-white/92 font-medium">30-day analytics</div>
+                  <div className="text-[11px] text-white/45 font-mono tabular uppercase tracking-wider mt-0.5">
+                    funnel + outcomes
+                  </div>
+                </div>
+                <ArrowUpRight className="w-3.5 h-3.5 text-white/35" />
+              </Link>
             </div>
           </div>
 
-          <div className="glass-panel p-5 lg:p-6 relative overflow-hidden">
-            <div className="absolute -top-12 -right-8 w-40 h-40 rounded-full bg-cy-300/8 blur-3xl pointer-events-none" />
-            <div className="relative">
-              <div className="glass-eyebrow mb-3 inline-flex">Platform</div>
-              <div className="text-[13px] text-white/75 leading-relaxed">
-                <p>
-                  Multi-office sales &amp; service automation. One operator console.{" "}
-                  <span className="text-white/95 font-medium">Every market, every hour.</span>
-                </p>
-              </div>
+          <div className="glass-panel p-4">
+            <div className="text-[10.5px] font-mono tabular uppercase tracking-[0.18em] text-cy-300/85 mb-2">
+              ▸ Platform
             </div>
+            <p className="text-[12.5px] text-white/72 leading-relaxed">
+              Multi-office sales &amp; service automation. One operator console.{" "}
+              <span className="text-white/95 font-medium">Every market, every hour.</span>
+            </p>
           </div>
         </aside>
       </div>
     </div>
   );
+}
+
+function shortTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function isDemoBuild(): boolean {
+  // Used purely for label cosmetic — the real demo flag is set by middleware
+  // via the x-voxaris-demo header. Avoiding a server-only call from this
+  // synchronous helper; the prefix reads the same way either way.
+  return false;
 }
 
 function monthLabel(): string {
