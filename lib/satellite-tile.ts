@@ -1,28 +1,45 @@
 /**
  * Satellite tile fetcher with imagery-freshness aware source selection.
  *
- * Google Static Maps is the default provider — high US coverage, well-tested
- * across the pipeline. But Google's imagery for any given property can be
+ * Google Static Maps is the fallback — high US coverage, well-tested
+ * across the pipeline. But its imagery for any given property can be
  * 5–12 years old (the `imageryDate` chip on screenshots regularly shows
  * 2014, 2015, 2017 dates), and a roof replaced after the imagery date
  * shows up wrong: the analysis runs on shingles that no longer exist.
  *
- * When `MAPBOX_ACCESS_TOKEN` is set AND Google's Solar API reports an
- * `imageryDate` older than `STALE_YEARS`, route to Mapbox Satellite
- * (Vexcel + Maxar imagery, often newer per region). Otherwise stay on
- * Google. Mapbox failures fall back to Google so the pipeline never
- * stalls on a Mapbox outage.
+ * Policy (revised 2026-05-13): when `MAPBOX_ACCESS_TOKEN` is set, ALWAYS
+ * prefer Mapbox Satellite (Vexcel / Maxar / NearMap imagery, 6-18 month
+ * refresh cycles in most US regions). Mapbox failures fall back to
+ * Google so the pipeline never stalls on a Mapbox outage.
  *
- * The freshness check uses Solar's cached `imageryDate` — every estimate
- * already calls Solar, so no extra round-trip. If Solar didn't return
- * (rural / 404) or `imageryDate` is null, we trust Google by default.
+ * Prior policy gated Mapbox routing on Solar API's `imageryDate` being
+ * >3 years stale — the assumption was that Solar's date tracks Static
+ * Maps' tile age. It doesn't: Solar and Static Maps are separate Google
+ * products with separate update cycles. Solar would report a 2024
+ * `imageryDate` while Static Maps still served a 2018 tile for the
+ * same lat/lng, so the gate failed-closed and we kept sending stale
+ * imagery to SAM3 / vision for analysis. SAM3 then traced eaves that
+ * no longer existed (or missed eaves that did) and the rep got a roof
+ * outline mismatched to the current building.
+ *
+ * The simpler "Mapbox always when token present" rule eliminates that
+ * failure mode at the cost of using Mapbox for some addresses where
+ * Google would have been fine. That tradeoff is right: Mapbox-fresh
+ * tile of an unchanged roof = correct trace; Google-stale tile of a
+ * changed roof = wrong trace fed downstream into a $50k estimate.
+ *
+ * If `MAPBOX_ACCESS_TOKEN` isn't set, every call defaults to Google
+ * Static Maps and the staleness problem persists. Set the token in
+ * Vercel env to fix.
  */
 
 import type { SolarSummary } from "@/types/estimate";
 import { getCached } from "./cache";
 
-/** Years past which Google imagery is considered too stale to trust */
-export const STALE_YEARS = 3;
+// Note: STALE_YEARS constant removed — the prior Solar-date-gated
+// routing policy no longer applies. The internal page has its own
+// imagery-age penalty constant (`STALE_YEARS = 5`) for confidence
+// scoring that's unrelated to this file.
 
 export interface SatelliteImage {
   base64: string;
@@ -45,27 +62,25 @@ export interface FetchSatelliteOpts {
   scale?: 1 | 2;
 }
 
-async function chooseSource(
-  lat: number,
-  lng: number,
-): Promise<"google" | "mapbox"> {
-  if (!process.env.MAPBOX_ACCESS_TOKEN) return "google";
-  const solar = await getCached<SolarSummary>("solar", lat, lng);
-  const date = solar?.imageryDate;
-  if (!date) return "google";
-  const ms = Date.now() - new Date(date).getTime();
-  if (!isFinite(ms) || ms < 0) return "google";
-  const years = ms / (365.25 * 24 * 3600 * 1000);
-  return years > STALE_YEARS ? "mapbox" : "google";
+function chooseSource(): "google" | "mapbox" {
+  // Whenever a Mapbox token is configured, prefer Mapbox. See the file
+  // header for the rationale on dropping the prior Solar-date gating.
+  // No async work needed — the choice is now a pure env-var check.
+  return process.env.MAPBOX_ACCESS_TOKEN ? "mapbox" : "google";
 }
 
 export async function fetchSatelliteImage(
   opts: FetchSatelliteOpts,
 ): Promise<SatelliteImage | null> {
   const { lat, lng, googleApiKey, sizePx = 640, zoom = 20, scale = 1 } = opts;
+  // Solar's imageryDate is still surfaced on the returned tile metadata
+  // so confidence scoring + the "Solar imagery YYYY-MM-DD" chip have
+  // a value to read. The chip now correctly labels this as Solar's
+  // dataset date (not the served tile's date) per the rename in
+  // app/(internal)/page.tsx.
   const solar = await getCached<SolarSummary>("solar", lat, lng);
   const imageryDate = solar?.imageryDate ?? null;
-  const preferred = await chooseSource(lat, lng);
+  const preferred = chooseSource();
 
   if (preferred === "mapbox") {
     const token = process.env.MAPBOX_ACCESS_TOKEN!;
