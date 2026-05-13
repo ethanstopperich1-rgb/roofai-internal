@@ -96,7 +96,7 @@ const STEPS: Step[] = [
   {
     icon: <Satellite size={22} />,
     title: "AI measures your roof",
-    body: "Voxaris's proprietary segmentation model calculates square footage, pitch, and roof complexity in seconds — trained specifically on residential roofs across FL, MN, and TX.",
+    body: "Our proprietary segmentation model calculates square footage, pitch, and roof complexity in seconds — trained specifically on residential roofs across FL, MN, and TX.",
   },
   {
     icon: <Wrench size={22} />,

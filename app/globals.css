@@ -493,6 +493,14 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
     radial-gradient(35% 30% at 90% 20%, rgba(94,234,212,0.14) 0%, transparent 60%);
   filter: blur(80px) saturate(1.4);
   animation: auroraDrift 28s ease-in-out infinite alternate;
+  /* will-change tells the browser to allocate a dedicated GPU
+   * compositor layer for the animated transform up front, instead of
+   * promoting/demoting the layer on every animation iteration. Without
+   * this hint, the `filter: blur(80px)` element (sized inset:-20% ≈
+   * 140vw × 140vh) re-rasterizes on the CPU on each frame on low-end
+   * Android, dropping FPS noticeably. transform-only listing avoids
+   * forcing layer-promotion on filter/opacity changes elsewhere. */
+  will-change: transform;
 }
 /* Film grain overlay — adds tactile noise so flat color regions don't
  * look "dead." Subtle: ~3% opacity. */

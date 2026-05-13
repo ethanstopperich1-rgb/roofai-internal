@@ -8,12 +8,25 @@ import { usePathname } from "next/navigation";
  *
  * Source: 21st.dev/bg.ibelick (gradient-background-4)
  *
- * Self-hides on `/embed` because the widget is iframed onto third-party
- * sites where any backdrop would visually leak past the form box.
+ * Self-hides on routes that paint their own atmosphere:
+ *   - /embed: iframed onto third-party sites; any backdrop leaks past
+ *     the form box.
+ *   - /quote, /p/*: customer-facing routes that wrap content in
+ *     `.lg-env` (the visionOS Liquid Glass environment in globals.css),
+ *     which paints its own #060812 base + radial gradients + aurora blob.
+ *     Layering this indigo halo behind that stacks four opaque bases
+ *     (body, this, ray-background in the hero, lg-env) where only one
+ *     ever shows through; the others are dead pixels.
  */
 export const GradientBackground = () => {
   const pathname = usePathname() ?? "/";
-  if (pathname.startsWith("/embed")) return null;
+  if (
+    pathname.startsWith("/embed") ||
+    pathname.startsWith("/quote") ||
+    pathname.startsWith("/p/")
+  ) {
+    return null;
+  }
 
   return (
     <div

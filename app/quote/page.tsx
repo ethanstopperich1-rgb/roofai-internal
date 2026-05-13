@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { BotIdClient } from "botid/client";
 import {
@@ -559,8 +559,9 @@ export default function QuotePage() {
             get rejected server-side; humans see nothing. */}
         <BotIdClient protect={[{ path: "/api/leads", method: "POST" }]} />
         <BoltStyleHero
-          title="What will it cost to"
-          subtitle="Voxaris's in-house AI measures your roof from satellite imagery and prices it in thirty seconds. Proprietary model, real number, no calls until you ask."
+          title="What will it cost"
+          titleAccent="to replace your roof"
+          subtitle="We measure your roof from satellite imagery and price it in thirty seconds. Proprietary model, real number, no calls until you ask."
           onSubmit={onLeadSubmit}
           submitting={submitting}
           nav={
@@ -805,7 +806,12 @@ function PublicFooter() {
   return (
     <footer className="border-t border-white/[0.08] mt-12">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 flex flex-wrap items-center justify-between gap-y-3 gap-x-6 text-[11px] text-white/45 font-mono">
-        <span>© {new Date().getFullYear()} Voxaris</span>
+        {/* Brand-consistent footer: header logo is the Voxaris Pitch
+            wordmark, metadata title is "Voxaris Pitch · Roofing
+            Estimator", so the copyright reads "Voxaris Pitch" not
+            bare "Voxaris" to keep the product name aligned across all
+            surfaces. */}
+        <span>© {new Date().getFullYear()} Voxaris Pitch</span>
         <div className="flex items-center gap-x-4 gap-y-2 flex-wrap">
           <Link href="/privacy" className="hover:text-white/70 transition-colors">
             Privacy
@@ -829,46 +835,67 @@ function PublicFooter() {
 /* ─── Stepper ─────────────────────────────────────────────────────────── */
 
 function Stepper({ current }: { current: number }) {
+  const currentLabel = STEPS[current] ?? "";
   return (
-    <div className="flex items-center gap-2 sm:gap-3">
-      {STEPS.map((label, i) => {
-        const active = i === current;
-        const done = i < current;
-        return (
-          <div key={label} className="flex items-center gap-2 sm:gap-3 flex-1">
-            <div className="flex items-center gap-2 min-w-0">
-              <div
-                className={`glass-pill tabular flex-shrink-0 ${
-                  active ? "glass-pill-active" : done ? "glass-pill-done" : ""
-                }`}
-              >
-                {done ? <Check size={12} strokeWidth={3} /> : i + 1}
+    <>
+      {/* Mobile (<sm): single "Step X of 4 — Current label" line.
+          Previously the four number pills rendered with their labels
+          hidden via sm:inline, leaving "1 2 3 4" as noise without any
+          text orientation. A single labeled progress line carries the
+          same information with less visual weight. */}
+      <div
+        className="sm:hidden flex items-center justify-between text-[11.5px] font-mono uppercase tracking-[0.14em] text-white/65"
+        aria-label={`Step ${current + 1} of ${STEPS.length}: ${currentLabel}`}
+        role="status"
+        aria-live="polite"
+      >
+        <span className="text-white/45">
+          Step <span className="text-white/95 tabular">{current + 1}</span> of {STEPS.length}
+        </span>
+        <span className="text-cy-300">{currentLabel}</span>
+      </div>
+
+      {/* Desktop (≥sm): full 4-pill stepper with connecting rails. */}
+      <div className="hidden sm:flex items-center gap-3">
+        {STEPS.map((label, i) => {
+          const active = i === current;
+          const done = i < current;
+          return (
+            <div key={label} className="flex items-center gap-3 flex-1">
+              <div className="flex items-center gap-2 min-w-0">
+                <div
+                  className={`glass-pill tabular flex-shrink-0 ${
+                    active ? "glass-pill-active" : done ? "glass-pill-done" : ""
+                  }`}
+                >
+                  {done ? <Check size={12} strokeWidth={3} /> : i + 1}
+                </div>
+                <span
+                  className={`text-[11.5px] font-mono uppercase tracking-[0.14em] ${
+                    active
+                      ? "text-white/95"
+                      : done
+                        ? "text-white/65"
+                        : "text-white/40"
+                  }`}
+                >
+                  {label}
+                </span>
               </div>
-              <span
-                className={`hidden sm:inline text-[11.5px] font-mono uppercase tracking-[0.14em] ${
-                  active
-                    ? "text-white/95"
-                    : done
-                      ? "text-white/65"
-                      : "text-white/40"
-                }`}
-              >
-                {label}
-              </span>
+              {i < STEPS.length - 1 && (
+                <div
+                  className={`flex-1 h-px ${
+                    i < current
+                      ? "bg-gradient-to-r from-mint/0 via-mint/50 to-mint/0"
+                      : "bg-white/[0.06]"
+                  }`}
+                />
+              )}
             </div>
-            {i < STEPS.length - 1 && (
-              <div
-                className={`flex-1 h-px ${
-                  i < current
-                    ? "bg-gradient-to-r from-mint/0 via-mint/50 to-mint/0"
-                    : "bg-white/[0.06]"
-                }`}
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
+          );
+        })}
+      </div>
+    </>
   );
 }
 
@@ -912,8 +939,12 @@ function RoofStep({
 
       <div className="glass-panel overflow-hidden aspect-video relative">
         {loading ? (
-          <div className="w-full h-full flex items-center justify-center text-white/55 text-[13px]">
-            <Loader2 size={16} className="animate-spin mr-2" /> Measuring your roof…
+          <div
+            role="status"
+            aria-live="polite"
+            className="w-full h-full flex items-center justify-center text-white/55 text-[13px]"
+          >
+            <Loader2 size={16} className="animate-spin mr-2" aria-hidden /> Measuring your roof…
           </div>
         ) : address?.lat != null && address?.lng != null ? (
           <EditableRoofMap
@@ -943,7 +974,11 @@ function RoofStep({
        *  is done, so the satellite map renders first and the heavy Cesium
        *  bundle isn't blocking. No verification — pure visual. */}
       {!loading && address?.lat != null && address?.lng != null && (
-        <div className="glass-panel overflow-hidden aspect-video relative">
+        <div
+          className="glass-panel overflow-hidden aspect-video relative"
+          aria-label={`3D photorealistic view of the roof at ${address?.formatted ?? "this property"}`}
+          role="img"
+        >
           <Roof3DViewer
             // Hard-remount on every address change so the previous Cesium
             // camera + tiles can't linger.
@@ -1445,5 +1480,3 @@ function NavButtons({
   );
 }
 
-// Suppress unused-import warning for useEffect (kept for future use)
-void useEffect;
