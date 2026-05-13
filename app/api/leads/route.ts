@@ -14,10 +14,10 @@ import {
 export const runtime = "nodejs";
 // Function needs to live long enough to (a) finish the synchronous lead
 // insert + initial /api/dispatch-outbound forward, and (b) hold the
-// 30-second pre-dispatch delay inside waitUntil so the customer's phone
-// doesn't ring the instant they submit. 45s gives that comfortably under
-// Vercel's nodejs default cap.
-export const maxDuration = 45;
+// short pre-dispatch delay inside waitUntil so the customer's phone
+// doesn't ring the instant they submit. 15s is plenty for the 3s delay
+// plus the dispatch forward.
+export const maxDuration = 15;
 
 interface LeadPayload {
   name: string;
@@ -459,10 +459,10 @@ export async function POST(req: Request) {
     const dispatchSecret = process.env.INTERNAL_DISPATCH_SECRET;
     // Hold the dispatch for a beat so the customer has a moment to
     // dismiss the form and read the confirmation card before their
-    // phone rings. 30s was the empirically chosen pause — short enough
-    // that the customer still feels "instant", long enough that the
-    // call doesn't land on top of the submit animation.
-    const DISPATCH_DELAY_MS = 30_000;
+    // phone rings. 3s keeps the call effectively "instant" while still
+    // letting the submit animation settle — long pauses were making the
+    // demo feel broken.
+    const DISPATCH_DELAY_MS = 3_000;
     console.log("[leads] queuing outbound dispatch", {
       leadId,
       phoneE164,
