@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import dynamic from "next/dynamic";
+// Aliased to `nextDynamic` because Next.js's `dynamic` import collides
+// with the route-level `export const dynamic = "force-dynamic"` below
+// (they share the name `dynamic` in the module scope).
+import nextDynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 
 // 3D viewer is heavy (Cesium + Map Tiles 3D bundle ≈ 1.2 MB gzipped)
@@ -18,9 +21,22 @@ import { useSearchParams } from "next/navigation";
 // from there, the 3D mesh draping is anchored on the right building
 // — and the photorealistic view is a real differentiator for reps
 // showing storm damage to homeowners on tablets in the field.
-const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
+const Roof3DViewer = nextDynamic(() => import("@/components/Roof3DViewer"), {
   ssr: false,
 });
+
+// Force this page out of static prerendering. We synchronously call
+// `useSearchParams()` at the top of HomePage to read `?office=<slug>`,
+// which (per Next.js 16) requires either a `<Suspense>` boundary above
+// the call or this route-level escape hatch. The rep tool needs the
+// query param + auth context to render anything meaningful, so static
+// prerendering was never going to work for it anyway — this just makes
+// that explicit so the build doesn't try and fail.
+//
+// `force-dynamic` runs the page server-side on every request. The
+// "use client" directive at the top of this file still applies to the
+// component output; this only opts out of build-time prerendering.
+export const dynamic = "force-dynamic";
 import AddressInput from "@/components/AddressInput";
 import AssumptionsEditor from "@/components/AssumptionsEditor";
 import AddOnsPanel from "@/components/AddOnsPanel";
