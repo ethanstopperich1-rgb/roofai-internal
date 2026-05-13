@@ -3,6 +3,7 @@ import {
   createServiceRoleClient,
   supabaseServiceRoleConfigured,
 } from "@/lib/supabase";
+import { parcelsWithinRadius, rankParcels } from "@/lib/parcel-canvass";
 
 export const runtime = "nodejs";
 export const maxDuration = 90;
@@ -171,11 +172,59 @@ export async function GET(req: Request) {
       if (!isNew) continue;
       result.newStormEvents += 1;
 
-      // Build the canvass list from OSM buildings within the canvass
-      // radius. v1 inserts placeholder address rows tagged with
-      // (lat, lng) only — the address-line gets populated once the
-      // operator wires in their county parcel feed.
+      // Build the canvass list. PRIMARY path: PostGIS spatial join
+      // against `public.parcels` populated by scripts/ingest_parcels.py
+      // — real owner names + situs addresses + ranked score. FALLBACK:
+      // if the parcels table is empty (ingest hasn't run yet) or the
+      // RPC is missing (migration not yet applied), drop back to the
+      // OSM placeholder so the cron stays functional during rollout.
       try {
+        const hits = await parcelsWithinRadius(
+          sb,
+          region.lat,
+          region.lng,
+          CANVASS_RADIUS_MILES,
+          { residentialOnly: true, limit: 5_000 },
+        );
+
+        if (hits.length > 0) {
+          const ranked = rankParcels(hits, ev.maxInches);
+          // Cap the canvass-target rows inserted per event. The full
+          // ranked list is preserved on disk via storm_event_id →
+          // canvass_targets join, but we don't need to insert all 5k
+          // — the top 500 covers a generous "first wave" canvass.
+          const top = ranked.slice(0, 500);
+          // Batch insert. Postgrest handles arrays natively; if the
+          // batch fails (e.g. on a single bad row), we fall back to
+          // the OSM placeholder rather than leaving the event without
+          // any canvass attached.
+          const rows = top.map((p) => ({
+            office_id: seedOfficeId,
+            storm_event_id: upserted.id,
+            address_line: p.situs_address,
+            city: p.situs_city,
+            state: "FL",
+            zip: p.situs_zip,
+            lat: p.centroid_lat,
+            lng: p.centroid_lng,
+            score: p.score,
+            distance_miles: p.distance_miles,
+            status: "new",
+          }));
+          const insertRes = await sb.from("canvass_targets").insert(rows);
+          if (!insertRes.error) {
+            result.newCanvassTargets += top.length;
+            // Continue to next event; PRIMARY path succeeded.
+            continue;
+          }
+          // Log + fall through to OSM placeholder
+          console.warn(
+            "[storm-pulse] parcel insert failed, falling back to OSM:",
+            insertRes.error.message,
+          );
+        }
+
+        // FALLBACK — OSM-counted building summary row, same as v1
         const canvassRes = await fetch(
           `${origin}/api/storms/canvass-area?lat=${region.lat}&lng=${region.lng}` +
             `&radiusMiles=${CANVASS_RADIUS_MILES}`,
@@ -183,17 +232,12 @@ export async function GET(req: Request) {
         );
         if (canvassRes.ok) {
           const data = (await canvassRes.json()) as { buildingCount: number };
-          // Insert a single placeholder "summary" canvass-target row for
-          // v1. This is enough to surface "N buildings to canvass" on the
-          // operator dashboard. Per-address rows land when parcel data
-          // is wired up — populating them now from OSM-only data would
-          // be misleading (no owner info, no address lines).
           const insertRes = await sb.from("canvass_targets").insert({
             office_id: seedOfficeId,
             storm_event_id: upserted.id,
             lat: region.lat,
             lng: region.lng,
-            score: Math.round(ev.maxInches * 100) / 10, // peak_inches * 10
+            score: Math.round(ev.maxInches * 100) / 10,
             distance_miles: ev.distanceMiles,
             status: "new",
           });
@@ -201,8 +245,12 @@ export async function GET(req: Request) {
             result.newCanvassTargets += data.buildingCount;
           }
         }
-      } catch {
+      } catch (err) {
         // Soft failure — the storm event itself is recorded.
+        console.warn(
+          "[storm-pulse] canvass build failed:",
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
 

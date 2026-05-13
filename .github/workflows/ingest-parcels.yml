@@ -1,0 +1,90 @@
+name: Ingest FL parcels
+
+# Nightly ingest of Florida parcel data into Supabase `public.parcels`.
+#
+# Why GitHub Actions (not Vercel Cron):
+#   The county GIS exports are shapefiles / file geodatabases that need
+#   GDAL + pyogrio + fiona to decode. Vercel's Python serverless runtime
+#   can't apt-install GDAL; GH Actions Ubuntu runners can.
+#
+# Schedule:
+#   01:30 UTC — Seminole County (daily fast feed, our HQ territory)
+#   Sunday 03:00 UTC — FGIO statewide (weekly refresh, big download)
+#
+# The two schedules don't overlap so we never have two workers
+# upserting the same parcels concurrently. (The UPSERT is safe under
+# concurrency thanks to the ON CONFLICT clause, but staggering avoids
+# pointless contention.)
+#
+# Cost: $0. GH Actions free tier covers 2,000 min/mo for private repos.
+# Seminole daily ≈ 8 min/day = 240 min/mo. FGIO weekly ≈ 45 min/wk =
+# 195 min/mo. Total ~435 min/mo, well under the limit.
+
+on:
+  schedule:
+    - cron: "30 1 * * *"      # 01:30 UTC daily — Seminole
+    - cron: "0 3 * * 0"       # 03:00 UTC Sunday — FGIO statewide
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "fgio | seminole | orange | lake | osceola | volusia | all"
+        required: true
+        default: "seminole"
+      dryrun:
+        description: "Skip DB write (1 = dry-run)"
+        required: false
+        default: ""
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/requirements-parcels.txt
+
+      - name: Install system GDAL deps
+        # pyogrio + fiona need libgdal at runtime. The pyogrio wheel
+        # bundles a build of GDAL but fiona links against the system
+        # one — installing both keeps either path working.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgdal-dev gdal-bin
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements-parcels.txt
+
+      - name: Resolve source from schedule
+        id: pick
+        env:
+          INPUT_SOURCE: ${{ github.event.inputs.source }}
+          CRON_EXPR: ${{ github.event.schedule }}
+        run: |
+          if [ -n "$INPUT_SOURCE" ]; then
+            echo "source=$INPUT_SOURCE" >> $GITHUB_OUTPUT
+          elif [ "$CRON_EXPR" = "0 3 * * 0" ]; then
+            echo "source=fgio" >> $GITHUB_OUTPUT
+          else
+            echo "source=seminole" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Ingest parcels
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          FGIO_SHAPEFILE_URL: ${{ secrets.FGIO_SHAPEFILE_URL }}
+          SEMINOLE_PARCELS_GDB_URL: ${{ secrets.SEMINOLE_PARCELS_GDB_URL }}
+          PARCEL_INGEST_DRYRUN: ${{ github.event.inputs.dryrun }}
+          LOG_LEVEL: INFO
+        run: |
+          python scripts/ingest_parcels.py --source "${{ steps.pick.outputs.source }}"

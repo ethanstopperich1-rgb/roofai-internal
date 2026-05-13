@@ -1,0 +1,11 @@
+# Dependencies for scripts/ingest_parcels.py.
+#
+# Heavy GIS deps (fiona, shapely, pyogrio) — same shape as the MRMS
+# requirements. Installed on GitHub Actions Ubuntu runners where the
+# system GDAL libs are apt-available; not installed on Vercel.
+fiona>=1.9.5
+shapely>=2.0.2
+pyogrio>=0.7.2
+psycopg[binary]>=3.1.18
+requests>=2.31.0
+python-dateutil>=2.8.2
