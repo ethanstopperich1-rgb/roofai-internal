@@ -13,6 +13,7 @@
 import { useEffect } from "react";
 import { AlertTriangle, RotateCcw, Radio } from "lucide-react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 export default function DashboardError({
   error,
@@ -24,6 +25,13 @@ export default function DashboardError({
   useEffect(() => {
     console.error("[dashboard] route error:", error);
   }, [error]);
+
+  // Use `/demo` as the home destination when the visitor is on the
+  // public demo surface — the "Back to overview" CTA must NOT route
+  // them into the protected /dashboard path that prompts HTTP Basic.
+  const pathname = usePathname() ?? "/dashboard";
+  const isDemo = pathname === "/demo" || pathname.startsWith("/demo/");
+  const homeHref = isDemo ? "/demo" : "/dashboard";
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6 py-16">
@@ -67,7 +75,7 @@ export default function DashboardError({
               <RotateCcw className="w-4 h-4" />
               Retry
             </button>
-            <Link href="/dashboard" className="glass-button-secondary">
+            <Link href={homeHref} className="glass-button-secondary">
               <Radio className="w-3.5 h-3.5 text-mint" />
               Back to overview
             </Link>

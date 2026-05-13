@@ -21,6 +21,7 @@ import {
   getDashboardRole,
   getDashboardSupabase,
   getDashboardUser,
+  isOnDemoRoute,
   isRepRole,
   monthStartISO,
   type Lead,
@@ -305,7 +306,16 @@ async function loadRepView(repUserId: string | null) {
 }
 
 export default async function OverviewPage() {
-  const role = await getDashboardRole();
+  // basePath stays as `/demo` for the public demo surface so navigation
+  // clicks rewrite through the middleware demo branch instead of hitting
+  // the protected `/dashboard/*` routes directly (which would prompt for
+  // HTTP Basic auth on a public visitor).
+  const [role, isDemo] = await Promise.all([
+    getDashboardRole(),
+    isOnDemoRoute(),
+  ]);
+  const basePath = isDemo ? "/demo" : "/dashboard";
+
   if (isRepRole(role)) {
     const user = await getDashboardUser();
     const { myLeads, metrics: repMetrics, attention } = await loadRepView(user?.id ?? null);
@@ -315,6 +325,8 @@ export default async function OverviewPage() {
         metrics={repMetrics}
         myLeads={myLeads}
         attention={attention}
+        basePath={basePath}
+        isDemo={isDemo}
       />
     );
   }
@@ -366,19 +378,19 @@ export default async function OverviewPage() {
        * (surfaces in the activity feed below) and Sydney-status
        * (already shown in the topbar + footer). */}
       <div className="scoreboard" role="group" aria-label="Operator metrics scoreboard">
-        <Link href="/dashboard/leads" className="scoreboard-tile">
+        <Link href={`${basePath}/leads`} className="scoreboard-tile">
           <div className="label">Leads · MTD</div>
           <div className="value">{metrics.leadsThisMonth.toLocaleString()}</div>
           <div className="sublabel">from /quote + /embed</div>
         </Link>
 
-        <Link href="/dashboard/calls" className="scoreboard-tile">
+        <Link href={`${basePath}/calls`} className="scoreboard-tile">
           <div className="label">Sydney calls</div>
           <div className="value">{metrics.callsThisMonth.toLocaleString()}</div>
           <div className="sublabel">answered 24/7</div>
         </Link>
 
-        <Link href="/dashboard/leads" className="scoreboard-tile accent-amber">
+        <Link href={`${basePath}/leads`} className="scoreboard-tile accent-amber">
           <div className="label">Pipeline · midpoint</div>
           <div className="value">{pipelineDisplay}</div>
           <div className="sublabel">
@@ -388,7 +400,7 @@ export default async function OverviewPage() {
           </div>
         </Link>
 
-        <Link href="/dashboard/proposals" className="scoreboard-tile accent-mint">
+        <Link href={`${basePath}/proposals`} className="scoreboard-tile accent-mint">
           <div className="label">Supplement · MTD</div>
           <div className="value">{fmtUSD(metrics.supplementRecoveredMtd, 0)}</div>
           <div className="sublabel">
@@ -444,7 +456,7 @@ export default async function OverviewPage() {
               Jump in
             </div>
             <div className="flex flex-col">
-              <Link href="/dashboard/calls" className="jump-row">
+              <Link href={`${basePath}/calls`} className="jump-row">
                 <span className="glyph">▸</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] text-white/92 font-medium">Sydney call inbox</div>
@@ -454,7 +466,7 @@ export default async function OverviewPage() {
                 </div>
                 <ArrowUpRight className="w-3.5 h-3.5 text-white/35" />
               </Link>
-              <Link href="/dashboard/leads" className="jump-row">
+              <Link href={`${basePath}/leads`} className="jump-row">
                 <span className="glyph">▸</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] text-white/92 font-medium">Lead pipeline</div>
@@ -464,7 +476,7 @@ export default async function OverviewPage() {
                 </div>
                 <ArrowUpRight className="w-3.5 h-3.5 text-white/35" />
               </Link>
-              <Link href="/dashboard/analytics" className="jump-row">
+              <Link href={`${basePath}/analytics`} className="jump-row">
                 <span className="glyph">▸</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] text-white/92 font-medium">30-day analytics</div>

@@ -51,6 +51,15 @@ export interface RepOverviewProps {
   metrics: RepMetrics;
   myLeads: Lead[];
   attention: AttentionItem[];
+  /** "/demo" on the public demo surface, "/dashboard" for the real
+   *  staff dashboard. Drives sub-page link prefixes so demo visitors
+   *  don't get bounced to the protected /dashboard/* routes (which
+   *  prompt HTTP Basic auth). */
+  basePath: string;
+  /** Hides the "New estimate" CTA on /demo — demo visitors are
+   *  prospects, not reps with an account; the button would link to
+   *  the protected rep-tool at "/" and trigger an auth prompt. */
+  isDemo: boolean;
 }
 
 export default function RepOverview({
@@ -58,6 +67,8 @@ export default function RepOverview({
   metrics,
   myLeads,
   attention,
+  basePath,
+  isDemo,
 }: RepOverviewProps) {
   const pipelineMid =
     metrics.pipelineLow === 0 && metrics.pipelineHigh === 0
@@ -82,14 +93,16 @@ export default function RepOverview({
             <span className="text-white/40 font-medium">/ today</span>
           </h1>
         </div>
-        <Link
-          href="/"
-          className="glass-button-primary"
-          aria-label="Open the rep estimator"
-        >
-          <Plus className="w-4 h-4" />
-          New estimate
-        </Link>
+        {!isDemo && (
+          <Link
+            href="/"
+            className="glass-button-primary"
+            aria-label="Open the rep estimator"
+          >
+            <Plus className="w-4 h-4" />
+            New estimate
+          </Link>
+        )}
       </header>
 
       {/* MY SCOREBOARD */}
@@ -139,7 +152,7 @@ export default function RepOverview({
             {attention.map((item) => (
               <li key={item.leadId}>
                 <Link
-                  href={`/dashboard/leads?focus=${encodeURIComponent(item.publicId)}`}
+                  href={`${basePath}/leads?focus=${encodeURIComponent(item.publicId)}`}
                   className="flex items-start gap-3 px-4 py-3 border-b border-white/[0.04] last:border-b-0 hover:bg-white/[0.03] focus:bg-white/[0.05] focus:outline-none transition-colors"
                 >
                   <AlertCircle
@@ -197,7 +210,7 @@ export default function RepOverview({
               return (
                 <li key={l.id}>
                   <Link
-                    href={`/dashboard/leads?focus=${encodeURIComponent(l.public_id)}`}
+                    href={`${basePath}/leads?focus=${encodeURIComponent(l.public_id)}`}
                     className="grid grid-cols-[1fr_auto_auto] items-center gap-3 px-4 py-3 border-b border-white/[0.04] last:border-b-0 hover:bg-white/[0.03] focus:bg-white/[0.05] focus:outline-none transition-colors"
                   >
                     <div className="min-w-0">
@@ -229,7 +242,7 @@ export default function RepOverview({
           </ul>
           {myLeads.length > 12 && (
             <Link
-              href="/dashboard/leads"
+              href={`${basePath}/leads`}
               className="block px-4 py-3 text-[11.5px] font-mono tabular text-cy-300 uppercase tracking-[0.16em] border-t border-white/[0.05] hover:bg-white/[0.03] transition-colors text-center"
             >
               View all {myLeads.length} of my leads →
