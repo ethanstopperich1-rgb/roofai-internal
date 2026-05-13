@@ -226,44 +226,8 @@ export default async function OverviewPage() {
         ? `$${(pipelineMid / 1_000_000).toFixed(2)}M`
         : `$${Math.round(pipelineMid / 1000)}K`;
 
-  // Ticker cells repeat once so the CSS-only marquee can scroll seamlessly
-  const tickerCells = [
-    { k: "LEADS · MTD", v: metrics.leadsThisMonth.toLocaleString(), d: null as null | number },
-    { k: "SYDNEY", v: metrics.callsThisMonth.toLocaleString(), d: null },
-    { k: "PROPOSALS", v: metrics.proposalsThisMonth.toLocaleString(), d: null },
-    { k: "SUPPLEMENT MTD", v: fmtUSD(metrics.supplementRecoveredMtd, 0), d: metrics.supplementVsPrevMonthPct },
-    { k: "PIPELINE", v: pipelineDisplay, d: null },
-    { k: "AVG PICKUP", v: "<5s", d: null },
-    { k: "CLAIMS", v: metrics.supplementClaimsCount.toString(), d: null },
-  ];
-
   return (
     <div className="flex flex-col gap-6 lg:gap-7">
-      {/* TICKER TAPE — single-row scrolling status strip */}
-      <div className="tape-strip" role="region" aria-label="Live metrics ticker">
-        <div className="tape-prefix">
-          <span className="relative flex items-center justify-center">
-            <span className="absolute w-2.5 h-2.5 rounded-full bg-mint/35 animate-ping" />
-            <span className="relative w-1.5 h-1.5 rounded-full bg-mint shadow-[0_0_8px_rgba(95,227,176,0.55)]" />
-          </span>
-          <span>{isDemoBuild() ? "DEMO · LIVE" : "LIVE"}</span>
-        </div>
-        <div className="tape-track" aria-hidden="false">
-          {[...tickerCells, ...tickerCells].map((c, i) => (
-            <span key={i} className="tape-cell">
-              <span className="k">{c.k}</span>
-              <span className="v">{c.v}</span>
-              {c.d != null && c.d !== 0 && (
-                <span className={["d", c.d > 0 ? "up" : "down"].join(" ")}>
-                  {c.d > 0 ? "▲" : "▼"} {Math.abs(c.d)}%
-                </span>
-              )}
-              <span className="tape-sep">·</span>
-            </span>
-          ))}
-        </div>
-      </div>
-
       {/* HEADER ROW — eyebrow + status, no big paragraph */}
       <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
         <div>
@@ -287,30 +251,23 @@ export default async function OverviewPage() {
         </div>
       </header>
 
-      {/* SCOREBOARD — 6-tile mega grid (was: hero + stat grid) */}
+      {/* SCOREBOARD — 4-tile single-row banner. Dropped Proposals
+       * (surfaces in the activity feed below) and Sydney-status
+       * (already shown in the topbar + footer). */}
       <div className="scoreboard" role="group" aria-label="Operator metrics scoreboard">
-        <Link
-          href="/dashboard/leads"
-          className="scoreboard-tile"
-        >
+        <Link href="/dashboard/leads" className="scoreboard-tile">
           <div className="label">Leads · MTD</div>
           <div className="value">{metrics.leadsThisMonth.toLocaleString()}</div>
           <div className="sublabel">from /quote + /embed</div>
         </Link>
 
-        <Link
-          href="/dashboard/calls"
-          className="scoreboard-tile"
-        >
+        <Link href="/dashboard/calls" className="scoreboard-tile">
           <div className="label">Sydney calls</div>
           <div className="value">{metrics.callsThisMonth.toLocaleString()}</div>
-          <div className="sublabel">answered 24/7 · avg pickup &lt;5s</div>
+          <div className="sublabel">answered 24/7</div>
         </Link>
 
-        <Link
-          href="/dashboard/leads"
-          className="scoreboard-tile accent-amber size-hero"
-        >
+        <Link href="/dashboard/leads" className="scoreboard-tile accent-amber">
           <div className="label">Pipeline · midpoint</div>
           <div className="value">{pipelineDisplay}</div>
           <div className="sublabel">
@@ -320,22 +277,12 @@ export default async function OverviewPage() {
           </div>
         </Link>
 
-        <Link
-          href="/dashboard/proposals"
-          className="scoreboard-tile"
-        >
-          <div className="label">Proposals</div>
-          <div className="value">{metrics.proposalsThisMonth.toLocaleString()}</div>
-          <div className="sublabel">generated this month</div>
-        </Link>
-
-        <Link
-          href="/dashboard/proposals"
-          className="scoreboard-tile accent-mint"
-        >
+        <Link href="/dashboard/proposals" className="scoreboard-tile accent-mint">
           <div className="label">Supplement · MTD</div>
           <div className="value">{fmtUSD(metrics.supplementRecoveredMtd, 0)}</div>
-          <div className="sublabel">{metrics.supplementClaimsCount} claims supplemented</div>
+          <div className="sublabel">
+            {metrics.supplementClaimsCount} claims supplemented
+          </div>
           {metrics.supplementVsPrevMonthPct !== 0 && (
             <div
               className={[
@@ -348,17 +295,6 @@ export default async function OverviewPage() {
             </div>
           )}
         </Link>
-
-        <div className="scoreboard-tile accent-mint">
-          <div className="label">Sydney status</div>
-          <div className="value" style={{ fontSize: "1.5rem", letterSpacing: "0.04em" }}>
-            <span className="text-mint">◆</span>{" "}
-            <span style={{ color: "rgb(143 240 199)" }}>ONLINE</span>
-          </div>
-          <div className="sublabel">
-            standing by · listening across {/* office count */}every office
-          </div>
-        </div>
       </div>
 
       {/* OPERATIONS chapter */}
@@ -379,7 +315,7 @@ export default async function OverviewPage() {
             </div>
           ) : (
             <ul className="flex flex-col">
-              {activity.map((item) => (
+              {activity.slice(0, 6).map((item) => (
                 <li key={item.id} className="log-row">
                   <span className="ts">{shortTime(item.at)}</span>
                   <span className={`kind ${item.kind}`}>{item.kind}</span>
@@ -391,7 +327,7 @@ export default async function OverviewPage() {
           )}
         </div>
 
-        <aside className="flex flex-col gap-5">
+        <aside className="flex flex-col">
           <div className="glass-panel overflow-hidden">
             <div className="px-4 pt-3.5 pb-2 text-[10.5px] font-mono tabular uppercase tracking-[0.18em] text-white/45 border-b border-white/[0.06]">
               Jump in
@@ -429,16 +365,6 @@ export default async function OverviewPage() {
               </Link>
             </div>
           </div>
-
-          <div className="glass-panel p-4">
-            <div className="text-[10.5px] font-mono tabular uppercase tracking-[0.18em] text-cy-300/85 mb-2">
-              ▸ Platform
-            </div>
-            <p className="text-[12.5px] text-white/72 leading-relaxed">
-              Multi-office sales &amp; service automation. One operator console.{" "}
-              <span className="text-white/95 font-medium">Every market, every hour.</span>
-            </p>
-          </div>
         </aside>
       </div>
     </div>
@@ -451,12 +377,6 @@ function shortTime(iso: string): string {
   return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-function isDemoBuild(): boolean {
-  // Used purely for label cosmetic — the real demo flag is set by middleware
-  // via the x-voxaris-demo header. Avoiding a server-only call from this
-  // synchronous helper; the prefix reads the same way either way.
-  return false;
-}
 
 function monthLabel(): string {
   return new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });

@@ -1313,7 +1313,7 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
 }
 @media (min-width: 1024px) {
   .theme-terminal .scoreboard {
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: repeat(4, 1fr);
   }
 }
 .theme-terminal .scoreboard-tile {
@@ -1324,18 +1324,21 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
-  min-height: 156px;
+  min-height: 152px;
   isolation: isolate;
 }
 @media (min-width: 1024px) {
   .theme-terminal .scoreboard-tile {
-    padding: 1.7rem 1.8rem 1.9rem;
-    min-height: 188px;
+    padding: 1.7rem 1.7rem 1.8rem;
+    min-height: 170px;
   }
-  .theme-terminal .scoreboard-tile:nth-child(3n) { border-right: none; }
-  .theme-terminal .scoreboard-tile:nth-child(n+4) { border-bottom: none; }
+  /* Single row at desktop: every tile right-bordered except the last,
+   * no tile gets a bottom border */
+  .theme-terminal .scoreboard-tile { border-bottom: none; }
+  .theme-terminal .scoreboard-tile:nth-child(4n) { border-right: none; }
 }
 @media (min-width: 640px) and (max-width: 1023.98px) {
+  /* 2x2 tablet — tiles 2 & 4 lose right; tiles 3 & 4 lose bottom */
   .theme-terminal .scoreboard-tile:nth-child(2n) { border-right: none; }
   .theme-terminal .scoreboard-tile:nth-last-child(-n+2) { border-bottom: none; }
 }
@@ -1550,7 +1553,7 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
-.theme-terminal aside.lg\\:flex {
+.theme-terminal aside.lg\:flex {
   border-right: 1px solid rgba(103,220,255,0.10);
   background: rgba(8,11,17,0.40) !important;
 }

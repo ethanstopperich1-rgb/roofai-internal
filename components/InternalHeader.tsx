@@ -17,8 +17,18 @@ export default function InternalHeader() {
     pathname.startsWith("/p/") ||
     pathname.startsWith("/embed");
   // /dashboard renders its own chrome (sidebar + topbar) so the global
-  // staff header would double up — hide it there.
-  const isDashboardRoute = pathname === "/dashboard" || pathname.startsWith("/dashboard/");
+  // staff header would double up — hide it there. /demo is the public
+  // pitch surface that middleware rewrites internally to /dashboard,
+  // but usePathname() returns the browser URL ("/demo") not the rewrite
+  // target, so we must match both prefixes explicitly. Without this,
+  // the marketing header rendered ON TOP of the dashboard chrome and
+  // (worse) created a hydration mismatch that orphaned the Suspense
+  // content subtree outside <main>, breaking every theme CSS rule.
+  const isDashboardRoute =
+    pathname === "/dashboard" ||
+    pathname.startsWith("/dashboard/") ||
+    pathname === "/demo" ||
+    pathname.startsWith("/demo/");
   // Legal pages (/privacy, /terms, /methodology) are public surfaces a
   // homeowner reaches from the customer flow. They should never show
   // staff nav ("ESTIMATOR · HISTORY · ADMIN") — that signal of
