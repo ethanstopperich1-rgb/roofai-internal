@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
 import DashboardChrome from "@/components/dashboard/DashboardChrome";
+import DemoBanner from "@/components/dashboard/DemoBanner";
 import {
   getActiveDemoOffice,
   getDashboardRole,
   getDashboardUser,
+  isOnDemoRoute,
 } from "@/lib/dashboard";
 import { DEMO_OFFICES } from "@/lib/dashboard-demo";
 
@@ -25,13 +27,15 @@ import { DEMO_OFFICES } from "@/lib/dashboard-demo";
  * flickers between SSR and hydration.
  */
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
-  const [activeOffice, role, user] = await Promise.all([
+  const [activeOffice, role, user, isDemo] = await Promise.all([
     getActiveDemoOffice(),
     getDashboardRole(),
     getDashboardUser(),
+    isOnDemoRoute(),
   ]);
   return (
     <div className="theme-terminal theme-nothing min-h-screen text-white">
+      {isDemo && <DemoBanner activeRole={role} />}
       <DashboardChrome
         offices={DEMO_OFFICES}
         activeOffice={activeOffice}

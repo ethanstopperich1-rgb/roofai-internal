@@ -60,6 +60,12 @@ async function isDemoRoute(): Promise<boolean> {
   }
 }
 
+/** Public wrapper so layouts/Server Components can branch on the demo
+ *  surface (e.g. render the demo-mode banner). */
+export async function isOnDemoRoute(): Promise<boolean> {
+  return isDemoRoute();
+}
+
 // Re-export the client-safe formatters + types so existing call sites
 // in app/dashboard/* keep working without changing imports.
 export {

@@ -7,13 +7,15 @@ import {
 } from "@/lib/reconcile-roof-polygon";
 import { getCached, setCached } from "@/lib/cache";
 import { polygonAreaSqft } from "@/lib/polygon";
+import { fetchBuildingPolygon } from "@/lib/buildings";
 import type { SolarSummary } from "@/types/estimate";
 import type { SolarMaskPolygon } from "@/lib/solar-mask";
-// fetchMicrosoftBuildingPolygon / fetchBuildingPolygon are no longer
-// used to RE-CENTER the satellite tile (see resolveBuildingCenter
-// rationale below). They're still consumed by reconcileRoofPolygon
-// downstream — that import chain stays in lib/reconcile-roof-polygon.ts
-// where it belongs.
+// fetchBuildingPolygon is used here ONLY as a tile-centering aid when
+// Solar disagrees with the geocoded address by more than SOLAR_DRIFT_THRESHOLD_M,
+// or when Solar has no coverage for the region. Its residence-aware ranker
+// (drops outbuildings, prefers addr:housenumber matches) makes it a stronger
+// signal than Solar's "closest building" in those cases. The reconciler
+// still owns its own GIS lookup for cross-checking SAM3's trace.
 
 export const runtime = "nodejs";
 // 90s allows for SAM3 cold starts (which can take 30-60s on Roboflow's
@@ -60,10 +62,18 @@ interface Sam3CachedResult extends ReconciledRoof {
   computedAt: string;
 }
 
-/** Pixels per FOOT at zoom 20 / scale 2 for a given latitude.
- *  Web Mercator: m/px = 156543.03392 × cos(lat) / 2^21. */
-function pixelsPerFoot(lat: number): number {
-  const mPerPx = (156_543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, 21);
+/** Pixels per FOOT for a given latitude at the supplied zoom and scale.
+ *  Web Mercator: m/px = 156543.03392 × cos(lat) / 2^(zoom + log2(scale)).
+ *  At the default zoom 20 / scale 2 → effective zoom 21. When the tile is
+ *  fetched at zoom 19 / scale 2 (rural-fallback path), effective zoom 20
+ *  and ground resolution is exactly half — pixelsPerFoot must follow,
+ *  otherwise SAM3's `pixels_per_unit` calibration is off by 2× and the
+ *  prompt/area heuristics misfire. */
+function pixelsPerFoot(lat: number, zoom = 20, scale = 2): number {
+  const effectiveZoom = zoom + Math.log2(scale);
+  const mPerPx =
+    (156_543.03392 * Math.cos((lat * Math.PI) / 180)) /
+    Math.pow(2, effectiveZoom);
   const ftPerPx = mPerPx * 3.28084;
   return 1 / ftPerPx;
 }
@@ -108,17 +118,24 @@ function douglasPeucker(
   return [points[0], points[points.length - 1]];
 }
 
-/** Convert pixel polygon to lat/lng using the same projection as the rest
- *  of the pipeline (zoom 20, scale 2 → 1280×1280 ground frame). When the
- *  workflow returns image dimensions different from 1280 (e.g. it resized
- *  internally), we scale pixel coords back to the 1280 frame before
- *  applying the geo-projection. */
+/** Convert pixel polygon to lat/lng using the projection of the tile the
+ *  polygon was traced on. Tile size for the geo-projection is `tilePx`
+ *  (defaults to 1280 = 640px × scale 2). When the workflow returns image
+ *  dimensions different from `tilePx` (e.g. it resized internally), we
+ *  scale pixel coords back to that frame before applying the projection.
+ *
+ *  `zoom` and `scale` must match the satellite tile the polygon came
+ *  from — at zoom 19 scale 2 ground frame is twice as wide (per pixel),
+ *  so using zoom 20 here would shrink the polygon by 2× and place it
+ *  in roughly the right spot but at half real size. */
 function pixelPolygonToLatLng(opts: {
   pixels: Array<[number, number]>;
   centerLat: number;
   centerLng: number;
-  /** Width of the image the polygon was traced on (defaults to 1280 — our
-   *  zoom-20 scale-2 tile size). */
+  zoom?: number;
+  scale?: number;
+  /** Width of the image the polygon was traced on (defaults to 1280 —
+   *  our default tile size of 640px × scale 2). */
   imageWidth?: number;
   /** Height of the image the polygon was traced on (defaults to 1280). */
   imageHeight?: number;
@@ -127,18 +144,22 @@ function pixelPolygonToLatLng(opts: {
     pixels,
     centerLat,
     centerLng,
+    zoom = 20,
+    scale = 2,
     imageWidth = 1280,
     imageHeight = 1280,
   } = opts;
-  const mPerPx = (156_543.03392 * Math.cos((centerLat * Math.PI) / 180)) / Math.pow(2, 21);
+  const effectiveZoom = zoom + Math.log2(scale);
+  const mPerPx =
+    (156_543.03392 * Math.cos((centerLat * Math.PI) / 180)) /
+    Math.pow(2, effectiveZoom);
   const cosLat = Math.cos((centerLat * Math.PI) / 180);
-  // Polygon coords are in `imageWidth × imageHeight` space. We project
-  // each axis independently relative to the image centre, treating the
-  // image as covering 1280px worth of ground in each axis (Google Static
-  // Maps zoom-20 scale-2 frame). When the source image isn't 1280, the
-  // ratio (1280/imageWidth) stretches the polygon back to ground frame.
-  const xScale = 1280 / imageWidth;
-  const yScale = 1280 / imageHeight;
+  // Ground frame width in px for this zoom/scale combo. At zoom 20 scale
+  // 2 → 1280 px wide (640 sizePx × 2). At zoom 19 scale 2 → 1280 px wide
+  // but each px covers twice the ground.
+  const tilePx = 640 * scale;
+  const xScale = tilePx / imageWidth;
+  const yScale = tilePx / imageHeight;
   return pixels.map(([x, y]) => {
     const dxM = (x - imageWidth / 2) * xScale * mPerPx;
     const dyM = (imageHeight / 2 - y) * yScale * mPerPx;
@@ -338,60 +359,113 @@ function coercePolygon(input: unknown): Array<[number, number]> | null {
   return null;
 }
 
-/** Resolve the best available "actual building center" for the address.
+type ResolvedCenter = {
+  lat: number;
+  lng: number;
+  /** Provenance string for logs / response diagnostics. Stable values:
+   *    "click-override"
+   *    "solar-buildingCenter" | "solar-buildingCenter-direct"
+   *    "solar-mask-centroid"
+   *    "osm-centroid-after-solar-drift" | "osm-centroid-no-solar"
+   *    "address-solar-drift-fallback" | "address" */
+  source: string;
+  /** Zoom level the satellite tile should be fetched at. Lower means a
+   *  wider ground frame — used when we're not confident the building
+   *  centre is correct, so the SAM3 picker still has a chance to find
+   *  the right structure even if our centre is off. */
+  zoomHint: 19 | 20;
+  /** Distance (m) from the geocoded address to the resolved centre.
+   *  Surfaced in logs to spot-check pipeline behaviour over time. */
+  driftFromAddressM: number;
+  /** When Solar findClosest returned a centre, the distance (m) from
+   *  the geocoded address to Solar's suggestion — regardless of whether
+   *  we ended up using it. Lets us audit Solar's accuracy retroactively. */
+  solarSuggestedDriftM: number | null;
+};
+
+/** Solar findClosest returns the closest building to the query point.
+ *  On rural setback parcels (and dense suburban lots with outbuildings)
+ *  "closest" can be an outbuilding rather than the residence. When
+ *  Solar's returned centre is further than this from the geocoded
+ *  address, we treat Solar's pick as suspect and fall through to OSM /
+ *  a widened tile. 40m is wider than typical residential building
+ *  diameters (≤30m) so it doesn't trip on normal addresses where Solar
+ *  picked the same building as the geocoder, but tight enough to catch
+ *  the shop-vs-house case (typically 50-150m of separation). */
+const SOLAR_DRIFT_THRESHOLD_M = 40;
+
+function metersBetween(
+  aLat: number,
+  aLng: number,
+  bLat: number,
+  bLng: number,
+): number {
+  const cosLat = Math.cos((aLat * Math.PI) / 180);
+  const dLatM = (bLat - aLat) * 111_320;
+  const dLngM = (bLng - aLng) * 111_320 * cosLat;
+  return Math.hypot(dLatM, dLngM);
+}
+
+function centroidLatLng(
+  poly: ReadonlyArray<{ lat: number; lng: number }>,
+): { lat: number; lng: number } {
+  let cLat = 0;
+  let cLng = 0;
+  for (const v of poly) {
+    cLat += v.lat;
+    cLng += v.lng;
+  }
+  return { lat: cLat / poly.length, lng: cLng / poly.length };
+}
+
+/** Resolve the best available "actual building centre" for the address.
  *
- *  IMPORTANT — this function is the answer to the question "where should
- *  the satellite tile be centered before SAM3 traces?" Google Places API
- *  already returns rooftop-precise lat/lng for residential addresses
- *  (it's what Google Maps shows you when you search the address). The
- *  job here is NOT to re-snap that — it's to OPTIONALLY refine it when
- *  we have evidence that's at least as authoritative as Google's own.
+ *  Why this function exists: Google's geocoder gives us a lat/lng near
+ *  the addressed building, but at zoom 20 / scale 2 the ground frame is
+ *  only ~84 m across. If the geocoder sits 50 m off the actual roof
+ *  (which happens on rural setback lots and some non-ROOFTOP precision
+ *  results) the building can fall outside the tile and SAM3 can't see
+ *  it. So we try to refine the centre before fetching.
  *
- *  Old behavior (BROKEN on rural lots): tried Solar → Solar mask → MS
- *  Buildings → OSM in priority order. On a rural FL parcel where Google
- *  correctly placed the address on the house, but MS/OSM only had a
- *  polygon for the shop (closer to the road), this re-snapped the tile
- *  center onto the shop — and SAM3 then traced the shop. Effectively we
- *  were throwing away Google's correct data and replacing it with worse.
+ *  Cascade:
+ *    1. Solar findClosest's buildingCenter (cached → direct). When
+ *       Solar's centre is within SOLAR_DRIFT_THRESHOLD_M of the
+ *       geocoded address, Solar identified the same building Google's
+ *       geocoder pointed at — trust it.
+ *    2. If Solar's centre is FURTHER than the threshold, Solar may have
+ *       picked an outbuilding closer to the road. Skip Solar mask (same
+ *       data source, same potential bias) and try OSM via
+ *       fetchBuildingPolygon — its residence-aware ranker drops
+ *       outbuildings and prefers `addr:housenumber` matches. Falling
+ *       through to a wider zoom 19 tile centred on the geocoded address
+ *       if OSM has no coverage.
+ *    3. If Solar didn't return anything at all (no coverage), try Solar
+ *       mask, then OSM, then geocoded.
  *
- *  New behavior:
- *    1. If Solar API returns a building center (cached or fresh), use it.
- *       Solar uses Google's same internal building-detection that Maps
- *       uses, so it's the only data source that can plausibly outrank
- *       the geocoded address. AND it implicitly identifies the principal
- *       residence (the one with high-quality solar imagery available).
- *    2. Otherwise STAY ON Google's geocoded lat/lng. Don't re-snap to
- *       MS/OSM — those are used downstream for footprint OVERRIDES
- *       (via reconcileRoofPolygon), but NOT for tile centering.
- *
- *  Result: rural lots with outbuildings now trace the house because the
- *  tile center stays where Google put it.
- */
+ *  Result on the rural FL failure mode:
+ *    - Solar returns shop centre (60m from geocoded address)
+ *    - Drift > 40m → fall through to OSM
+ *    - OSM finds house polygon at the addressed point (addr:housenumber
+ *      match short-circuits the ranker)
+ *    - Tile centred on house, SAM3 traces house. */
 async function resolveBuildingCenter(
   lat: number,
   lng: number,
-): Promise<{ lat: number; lng: number; source: string }> {
-  // 1. Solar findClosest's buildingCenter (try Redis cache first, fall
-  //    through to a direct Solar API call if the cache is empty).
-  //
-  //    Why the direct call — the page fires /api/solar AND /api/sam3-roof
-  //    in parallel. /api/sam3-roof reaches resolveBuildingCenter at the
-  //    very start of the route (before its 5-15s Roboflow workflow), so
-  //    /api/solar typically hasn't finished and written to cache yet.
-  //    Without a direct fallback we end up using the address as the
-  //    reference, which is exactly what we're trying to avoid.
+  houseNumber: string | undefined,
+): Promise<ResolvedCenter> {
+  // ─── 1. Solar findClosest (cached, then direct) ──────────────────────
+  // Solar buildingCenter is Google's "what building is at this point"
+  // signal. Cache first (cheap), then a direct API call (Solar is keyed
+  // separately from the /api/solar route that populates the cache, so
+  // we may race ahead of it on the very first request for an address).
+  let solarCenter: { lat: number; lng: number } | null = null;
   const solarCached = await getCached<SolarSummary>("solar", lat, lng).catch(() => null);
   if (solarCached?.buildingCenter) {
-    return {
+    solarCenter = {
       lat: solarCached.buildingCenter.lat,
       lng: solarCached.buildingCenter.lng,
-      source: "solar-buildingCenter",
     };
-  }
-  // Cache miss — call Solar findClosest directly. Just need data.center;
-  // we don't need to parse the full SolarSummary here. /api/solar will
-  // race-write the full summary into cache shortly anyway.
-  if (!solarCached) {
+  } else {
     const solarKey =
       process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
     if (solarKey) {
@@ -412,10 +486,9 @@ async function resolveBuildingCenter(
             typeof data.center?.latitude === "number" &&
             typeof data.center?.longitude === "number"
           ) {
-            return {
+            solarCenter = {
               lat: data.center.latitude,
               lng: data.center.longitude,
-              source: "solar-buildingCenter-direct",
             };
           }
         }
@@ -425,36 +498,103 @@ async function resolveBuildingCenter(
     }
   }
 
-  // 2. Solar mask polygon centroid — Solar Mask is also a Google product
-  //    and uses the same building-detection, so it CAN outrank the
-  //    geocoded point. (Cached by /api/solar-mask if it fired already.)
+  const solarDriftM = solarCenter
+    ? metersBetween(lat, lng, solarCenter.lat, solarCenter.lng)
+    : null;
+
+  // Solar agrees with the geocoder — trust it, normal path.
+  if (solarCenter && solarDriftM !== null && solarDriftM <= SOLAR_DRIFT_THRESHOLD_M) {
+    return {
+      lat: solarCenter.lat,
+      lng: solarCenter.lng,
+      source: solarCached?.buildingCenter
+        ? "solar-buildingCenter"
+        : "solar-buildingCenter-direct",
+      zoomHint: 20,
+      driftFromAddressM: solarDriftM,
+      solarSuggestedDriftM: solarDriftM,
+    };
+  }
+
+  // ─── 2. Solar disagreed by > threshold → OSM, then widened geocode ──
+  // Solar mask comes from the same data source as findClosest — if
+  // findClosest picked an outbuilding for this address, the mask will
+  // too. Skip it. OSM is independent.
+  if (solarCenter) {
+    const osm = await fetchBuildingPolygon({ lat, lng, houseNumber }).catch(() => null);
+    if (osm && osm.latLng.length >= 3) {
+      const c = centroidLatLng(osm.latLng);
+      return {
+        lat: c.lat,
+        lng: c.lng,
+        source: "osm-centroid-after-solar-drift",
+        zoomHint: 20,
+        driftFromAddressM: metersBetween(lat, lng, c.lat, c.lng),
+        solarSuggestedDriftM: solarDriftM,
+      };
+    }
+    // OSM blank — drop to zoom 19 around the geocoded address. The wider
+    // ground frame (~168 m across vs ~84 m) usually contains both Solar's
+    // (wrong) pick and the actual house, so the picker's
+    // residence-aware scoring can choose between them.
+    return {
+      lat,
+      lng,
+      source: "address-solar-drift-fallback",
+      zoomHint: 19,
+      driftFromAddressM: 0,
+      solarSuggestedDriftM: solarDriftM,
+    };
+  }
+
+  // ─── 3. No Solar findClosest result — try Solar mask, then OSM ──────
+  // Solar mask is sometimes populated even when findClosest isn't (e.g.
+  // edge of coverage). Use its centroid if available.
   const solarMask = await getCached<SolarMaskPolygon | null>(
     "solar-mask",
     lat,
     lng,
   ).catch(() => null);
   if (solarMask?.latLng?.length) {
-    let cLat = 0;
-    let cLng = 0;
-    for (const v of solarMask.latLng) {
-      cLat += v.lat;
-      cLng += v.lng;
-    }
+    const c = centroidLatLng(solarMask.latLng);
     return {
-      lat: cLat / solarMask.latLng.length,
-      lng: cLng / solarMask.latLng.length,
+      lat: c.lat,
+      lng: c.lng,
       source: "solar-mask-centroid",
+      zoomHint: 20,
+      driftFromAddressM: metersBetween(lat, lng, c.lat, c.lng),
+      solarSuggestedDriftM: null,
     };
   }
 
-  // 3. NOTHING ELSE — return Google's geocoded lat/lng as the tile
-  //    center. MS Buildings and OSM are deliberately NOT consulted here.
-  //    Their polygons are still used downstream by reconcileRoofPolygon
-  //    to OVERRIDE the SAM3 trace when SAM3 returns garbage, but they
-  //    must NOT re-snap the tile center because on rural lots they
-  //    return outbuilding polygons that would move the tile away from
-  //    the (correctly-geocoded) house.
-  return { lat, lng, source: "address" };
+  // OSM as the last refinement step before bare geocode. Universal
+  // coverage (modulo data gaps), residence-aware ranker, free.
+  const osm = await fetchBuildingPolygon({ lat, lng, houseNumber }).catch(() => null);
+  if (osm && osm.latLng.length >= 3) {
+    const c = centroidLatLng(osm.latLng);
+    return {
+      lat: c.lat,
+      lng: c.lng,
+      source: "osm-centroid-no-solar",
+      zoomHint: 20,
+      driftFromAddressM: metersBetween(lat, lng, c.lat, c.lng),
+      solarSuggestedDriftM: null,
+    };
+  }
+
+  // Bare geocoded address — no refinement source returned anything. Stay
+  // at zoom 20: without Solar drift we have no positive signal that the
+  // centre is wrong, and the wider frame at zoom 19 has its own costs
+  // (the picker has to discriminate between more buildings, with lower
+  // pixel density per building).
+  return {
+    lat,
+    lng,
+    source: "address",
+    zoomHint: 20,
+    driftFromAddressM: 0,
+    solarSuggestedDriftM: null,
+  };
 }
 
 export async function GET(req: Request) {
@@ -592,23 +732,44 @@ export async function GET(req: Request) {
   // Geocoded addresses often sit on the road, not on the house. Centre
   // the satellite tile on the resolved building location so SAM3 sees
   // the target building dead-centre and the picker can trivially pick it.
-  const tileCenter = hasClickOverride
-    ? { lat: clickLat, lng: clickLng, source: "click-override" }
-    : await resolveBuildingCenter(lat, lng);
+  const tileCenter: ResolvedCenter = hasClickOverride
+    ? {
+        lat: clickLat,
+        lng: clickLng,
+        source: "click-override",
+        zoomHint: 20,
+        driftFromAddressM: metersBetween(lat, lng, clickLat, clickLng),
+        solarSuggestedDriftM: null,
+      }
+    : await resolveBuildingCenter(lat, lng, houseNumber);
+  // Structured single-line log so it's greppable in Vercel logs:
+  //   key=value pairs let us run `vercel logs | grep tile_center_source=`
+  //   and compute fallback-rate / drift distribution over time.
   console.log(
-    `[sam3-roof] tile centered on ${tileCenter.source}: ` +
-      `(${tileCenter.lat.toFixed(6)}, ${tileCenter.lng.toFixed(6)}) ` +
-      `for address (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
+    `[sam3-roof] tile_center_source=${tileCenter.source} ` +
+      `zoom=${tileCenter.zoomHint} ` +
+      `center_lat=${tileCenter.lat.toFixed(6)} ` +
+      `center_lng=${tileCenter.lng.toFixed(6)} ` +
+      `addr_lat=${lat.toFixed(6)} ` +
+      `addr_lng=${lng.toFixed(6)} ` +
+      `drift_from_addr_m=${tileCenter.driftFromAddressM.toFixed(1)} ` +
+      `solar_suggested_drift_m=${
+        tileCenter.solarSuggestedDriftM !== null
+          ? tileCenter.solarSuggestedDriftM.toFixed(1)
+          : "n/a"
+      }`,
   );
 
   // ─── Fetch the satellite tile ─────────────────────────────────────────
+  const tileZoom = tileCenter.zoomHint;
+  const tileScale = 2;
   const img = await fetchSatelliteImage({
     lat: tileCenter.lat,
     lng: tileCenter.lng,
     googleApiKey: googleMapsKey,
     sizePx: 640,
-    zoom: 20,
-    scale: 2,
+    zoom: tileZoom,
+    scale: tileScale,
   });
   if (!img) {
     return NextResponse.json(
@@ -662,7 +823,7 @@ export async function GET(req: Request) {
         inputs: {
           image: { type: "base64", value: img.base64 },
           prompt: SAM3_PROMPT,
-          pixels_per_unit: pixelsPerFoot(lat),
+          pixels_per_unit: pixelsPerFoot(lat, tileZoom, tileScale),
           confidence: SAM3_CONFIDENCE,
         },
       }),
@@ -749,19 +910,32 @@ export async function GET(req: Request) {
     // Strategy (mirrors lib/buildings.ts):
     //   - At zoom 20 scale 2, 1 px ≈ 0.066m so 1 px² ≈ 0.0044 m². An
     //     80 m² residence floor ≈ 18,000 px².
-    //   - Filter predictions with pixelArea < 18,000 (sheds, AC pads).
+    //   - Filter predictions with pixelArea < that residence floor
+    //     (sheds, AC pads).
     //   - Rural-mode switch: if the closest passing prediction is small
-    //     and within 100px of image center, but a ≥1.6× larger
-    //     prediction exists within 400px of center, prefer the larger.
+    //     and within ~7m of image center, but a ≥1.6× larger
+    //     prediction exists within ~26m of center, prefer the larger.
     //   - Otherwise pick closest-to-center.
-    const RESIDENCE_MIN_PX2 = 18_000;
+    //
+    // When the satellite tile is fetched at zoom 19 (rural-fallback path
+    // from resolveBuildingCenter), every threshold here that's expressed
+    // in pixels has to scale: an 80 m² building at zoom 19 covers ~1/4
+    // the pixels it did at zoom 20, and a 26 m radius is ~1/2 as many
+    // pixels. Without that scaling the filter eats every prediction and
+    // we fall back to closest-to-center, which is exactly the failure
+    // mode this picker exists to avoid.
+    const zoomScaleFactor = Math.pow(2, 20 - tileZoom);
+    const RESIDENCE_MIN_PX2 = Math.round(
+      18_000 / (zoomScaleFactor * zoomScaleFactor),
+    );
+    const NEAR_CENTER_PX = 100 / zoomScaleFactor;
+    const RURAL_PROBE_PX = 400 / zoomScaleFactor;
     const sizable = summaries.filter((s) => s.areaPx >= RESIDENCE_MIN_PX2);
     const pool = sizable.length > 0 ? sizable : summaries;
     pool.sort((a, b) => a.distPx - b.distPx);
     const closest = pool[0];
     let chosenIdx = closest.idx;
-    if (closest.distPx < 100) {
-      const RURAL_PROBE_PX = 400;
+    if (closest.distPx < NEAR_CENTER_PX) {
       const SIZE_DOMINANCE = 1.6;
       let bestRural: (typeof closest) | null = null;
       for (const s of pool) {
@@ -787,10 +961,12 @@ export async function GET(req: Request) {
           ? douglasPeucker(chosen.pixels, epsilon)
           : chosen.pixels;
       const distPx = Math.sqrt(bestDistSqPx);
+      const effectiveZoom = tileZoom + Math.log2(tileScale);
       const mPerPx =
         (156_543.03392 * Math.cos((tileCenter.lat * Math.PI) / 180)) /
-        Math.pow(2, 21);
-      const distM = distPx * mPerPx * (1280 / extracted.imageWidth);
+        Math.pow(2, effectiveZoom);
+      const groundFramePx = 640 * tileScale;
+      const distM = distPx * mPerPx * (groundFramePx / extracted.imageWidth);
       const altSummary = summaries
         .sort((a, b) => a.distPx - b.distPx)
         .slice(0, 5)
@@ -813,6 +989,8 @@ export async function GET(req: Request) {
         pixels: pickedPixels,
         centerLat: tileCenter.lat,
         centerLng: tileCenter.lng,
+        zoom: tileZoom,
+        scale: tileScale,
         imageWidth: extracted.imageWidth,
         imageHeight: extracted.imageHeight,
       })

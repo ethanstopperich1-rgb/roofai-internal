@@ -211,15 +211,7 @@ export default function DashboardChrome({
                 day: "numeric",
               })}
             </div>
-            {isDemo ? (
-              <>
-                <DemoRolePicker activeRole={role} />
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber/30 bg-amber/10 text-[11px] font-mono tabular uppercase tracking-[0.14em] text-amber">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber shadow-[0_0_6px_rgba(243,177,75,0.6)]" />
-                  Demo
-                </span>
-              </>
-            ) : (
+            {isDemo ? null : (
               <>
                 <div className="text-xs text-white/65 font-mono tabular flex flex-col items-end leading-tight">
                   <span>{userEmail ?? "staff@voxaris.io"}</span>
@@ -267,69 +259,6 @@ export default function DashboardChrome({
           </div>
         </div>
       </main>
-    </div>
-  );
-}
-
-// ─── Demo role picker ─────────────────────────────────────────────────
-//
-// Visible only on /demo. Lets the user toggle between rep / manager /
-// owner views without a real Supabase login. Writes voxaris_demo_role
-// cookie via /api/demo/role and refreshes Server Components.
-
-function DemoRolePicker({ activeRole }: { activeRole: string }) {
-  const router = useRouter();
-  const [pending, setPending] = useState<string | null>(null);
-  const roles: Array<{ key: string; label: string }> = [
-    { key: "rep", label: "Rep" },
-    { key: "manager", label: "Manager" },
-    { key: "owner", label: "Owner" },
-  ];
-  async function pick(roleKey: string) {
-    if (roleKey === activeRole) return;
-    setPending(roleKey);
-    try {
-      await fetch("/api/demo/role", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: roleKey }),
-      });
-      router.refresh();
-    } finally {
-      setPending(null);
-    }
-  }
-  return (
-    <div
-      role="radiogroup"
-      aria-label="Preview demo as role"
-      className="inline-flex items-center rounded-full border border-white/[0.08] bg-white/[0.03] p-0.5"
-    >
-      <span className="text-[10px] font-mono tabular text-white/40 uppercase tracking-[0.14em] px-2.5">
-        as
-      </span>
-      {roles.map((r) => {
-        const active = r.key === activeRole;
-        const isPending = pending === r.key;
-        return (
-          <button
-            key={r.key}
-            role="radio"
-            aria-checked={active}
-            disabled={isPending}
-            onClick={() => pick(r.key)}
-            className={[
-              "px-2.5 py-1 rounded-full text-[10.5px] font-mono tabular uppercase tracking-[0.14em] transition-colors",
-              active
-                ? "bg-white/[0.12] text-white"
-                : "text-white/55 hover:text-white hover:bg-white/[0.06]",
-              isPending ? "opacity-60" : "",
-            ].join(" ")}
-          >
-            {r.label}
-          </button>
-        );
-      })}
     </div>
   );
 }
