@@ -7,6 +7,7 @@ import {
   LEAD_STATUSES,
   fmtDate,
   fmtDateTime,
+  fmtLeadSource,
   fmtUSD,
   fmtDuration,
   outcomeStyle,
@@ -149,7 +150,7 @@ export default function LeadsTable({
           onChange={setSourceFilter}
           options={[
             { value: "all", label: "All sources" },
-            ...sources.map((s) => ({ value: s, label: s })),
+            ...sources.map((s) => ({ value: s, label: fmtLeadSource(s) })),
           ]}
         />
         <div className="text-[10.5px] font-mono tabular text-white/45 uppercase tracking-[0.16em] ml-auto px-2">
@@ -221,7 +222,7 @@ export default function LeadsTable({
                     />
                   </td>
                   <td className="px-4 py-3 text-white/55 text-[12.5px] hidden lg:table-cell">
-                    {l.source ?? "—"}
+                    {fmtLeadSource(l.source)}
                   </td>
                 </tr>
               ))}
@@ -369,7 +370,7 @@ function LeadDrawer({
               mono
             />
             <Row label="Sqft" value={lead.estimated_sqft?.toLocaleString() ?? "—"} mono />
-            <Row label="Source" value={lead.source ?? "—"} />
+            <Row label="Source" value={fmtLeadSource(lead.source)} />
             <Row label="ZIP" value={lead.zip ?? "—"} mono />
             <Row label="County" value={lead.county ?? "—"} />
             <Row

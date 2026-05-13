@@ -122,6 +122,40 @@ export function monthStartISO(): string {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString();
 }
 
+/** Map the internal `leads.source` string into a human-readable label
+ *  for the dashboard. Internal strings (e.g. "quote-wizard-step-1",
+ *  "embed-acme", "sydney_inbound") leak directly from the capture
+ *  endpoints — fine as analytics keys but confusing on the rep table.
+ *  Unknown values get a graceful title-case fallback so a future
+ *  source string doesn't show up as raw kebab-case. */
+export function fmtLeadSource(raw: string | null | undefined): string {
+  if (!raw) return "—";
+  // Embedded widget on a partner site — preserve the brand suffix if any
+  if (raw.startsWith("embed-")) {
+    const brand = raw.slice("embed-".length).trim();
+    if (!brand || brand === "default") return "Embed widget";
+    return `Embed · ${titleCase(brand)}`;
+  }
+  const map: Record<string, string> = {
+    "quote-wizard-step-1": "Web · address entry",
+    "quote-wizard-confirmed": "Web · confirmed quote",
+    "quote_form": "Web · quote form",
+    "embed": "Embed widget",
+    "sydney_inbound": "Sydney · inbound call",
+    "sydney_outbound": "Sydney · outbound call",
+  };
+  if (map[raw]) return map[raw];
+  return titleCase(raw);
+}
+function titleCase(s: string): string {
+  return s
+    .replace(/[_-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
 export function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
