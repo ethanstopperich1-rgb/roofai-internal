@@ -165,13 +165,14 @@ export default function StormsPage() {
             What we cross-reference
           </div>
           <h2 className="font-display text-[28px] sm:text-[40px] font-semibold tracking-[-0.025em] text-slate-50 leading-tight mb-3">
-            Five Central Florida counties, wired.
+            Every parcel in Florida, layered.
           </h2>
           <p className="text-[14.5px] text-slate-400 max-w-prose leading-relaxed mb-10">
-            Every storm hit gets cross-referenced against the county tax
-            roll and parcel polygons — owner name, situs address,
-            assessed value, year built. Direct from each county's
-            official open-data portal.
+            9 million parcels statewide from the Florida Department of
+            Revenue's official compilation, with daily and nightly
+            overlays for the 5 Central Florida counties we run hot.
+            Every storm hit cross-references against owner name, situs,
+            assessed value, year built, parcel polygon.
           </p>
 
           <CountyDataSourcesCard />

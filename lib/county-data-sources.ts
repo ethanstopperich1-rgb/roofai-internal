@@ -54,6 +54,40 @@ export interface CountyDataSource {
   ownerNamesIncluded: boolean;
 }
 
+/**
+ * Statewide parcel coverage — the Florida Department of Revenue's
+ * compilation of all 67 county tax rolls, distributed by the Florida
+ * Geographic Information Office (FGIO). Functions as the BACKBONE layer
+ * beneath the fast county feeds below: every FL parcel exists here from
+ * day one, daily county feeds overwrite the statewide snapshot for our 5
+ * priority counties where freshness matters most.
+ *
+ * Treat this as a singleton — there's only one statewide layer. The
+ * /storms marketing card renders it above the county tier to communicate
+ * the architecture ("statewide baseline + fast county overlay").
+ */
+export const STATEWIDE_FL_PARCELS = {
+  name: "Florida Statewide Parcels",
+  publisher: "Florida Dept. of Revenue · distributed by FGIO",
+  homepage:
+    "https://geodata.floridagio.gov/datasets/FGIO::florida-statewide-parcels",
+  /** Direct dataset page on the FGIO ArcGIS Open Data portal — links to
+   *  the shapefile / file geodatabase / GeoJSON download options. */
+  downloadUrl:
+    "https://geodata.floridagio.gov/datasets/FGIO::florida-statewide-parcels",
+  /** Approximate parcel count across all 67 FL counties (2024 snapshot). */
+  parcelCountApprox: 9_000_000,
+  /** Approximate residents covered (state of Florida total population). */
+  populationApprox: 22_900_000,
+  updateCadence: "annual" as UpdateCadence,
+  format: "gdb" as const,
+  ownerNamesIncluded: true,
+  contents:
+    "Statewide compilation: owner name, situs address, parcel polygon, land-use code, just/assessed value, year built, building sqft. All 67 counties normalized to one schema by DOR.",
+  notes:
+    "Backbone layer. Every FL parcel exists in our system from day one of activation, regardless of which counties we have fast feeds for. County-level daily/nightly feeds overwrite this baseline where they're available.",
+};
+
 export const COUNTY_DATA_SOURCES: CountyDataSource[] = [
   {
     slug: "seminole",

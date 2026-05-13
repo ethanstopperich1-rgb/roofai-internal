@@ -1,8 +1,8 @@
-import { Database, ExternalLink } from "lucide-react";
+import { Database, ExternalLink, Layers } from "lucide-react";
 import {
   COUNTY_DATA_SOURCES,
+  STATEWIDE_FL_PARCELS,
   cadenceLabel,
-  totalApproxPopulation,
 } from "@/lib/county-data-sources";
 
 /**
@@ -16,7 +16,6 @@ import {
  * shows up here automatically.
  */
 export default function CountyDataSourcesCard() {
-  const totalPop = totalApproxPopulation();
   return (
     <section
       aria-labelledby="county-data-heading"
@@ -38,10 +37,10 @@ export default function CountyDataSourcesCard() {
               Parcel + property-appraiser feeds
             </h3>
             <p className="text-[13px] text-white/55 mt-1.5 max-w-xl leading-relaxed">
-              Every canvass address Voxaris surfaces is anchored to the
-              official county tax roll — owner name, situs, assessed
-              value, polygon. Direct from each county's open-data
-              portal, refreshed automatically.
+              Every canvass address Voxaris surfaces is anchored to an
+              official tax roll — owner name, situs, assessed value,
+              parcel polygon. Statewide baseline below, with daily/nightly
+              fast feeds layered over our 5 priority counties.
             </p>
           </div>
         </div>
@@ -50,13 +49,54 @@ export default function CountyDataSourcesCard() {
             Coverage
           </div>
           <div className="font-mono tabular text-[18px] text-cy-300 mt-1">
-            {(totalPop / 1_000_000).toFixed(2)}M
+            {(STATEWIDE_FL_PARCELS.populationApprox / 1_000_000).toFixed(1)}M
           </div>
           <div className="text-[11px] text-white/45 font-mono tabular">
-            residents · {COUNTY_DATA_SOURCES.length} counties
+            residents · {(STATEWIDE_FL_PARCELS.parcelCountApprox / 1_000_000).toFixed(1)}M parcels
           </div>
         </div>
       </header>
+
+      {/* Tier 1 — statewide baseline. Single hero card, sets the floor
+          for total coverage. */}
+      <div className="mb-3 text-[10px] uppercase tracking-[0.16em] text-white/45 font-mono">
+        Tier 1 · Statewide baseline
+      </div>
+      <div className="mb-6 rounded-xl border border-cy-300/20 bg-gradient-to-br from-cy-300/[0.05] to-cy-300/[0.01] p-5">
+        <div className="flex items-start justify-between gap-3 mb-2 flex-wrap">
+          <div className="flex items-start gap-2.5 min-w-0">
+            <div className="rounded-lg border border-cy-300/30 bg-cy-300/[0.08] p-1.5 mt-0.5">
+              <Layers className="w-4 h-4 text-cy-300" aria-hidden />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[14px] font-medium text-white">
+                {STATEWIDE_FL_PARCELS.name}
+              </div>
+              <div className="text-[11px] text-white/55">
+                {STATEWIDE_FL_PARCELS.publisher}
+              </div>
+            </div>
+          </div>
+          <span className="text-[10px] uppercase tracking-wider font-mono px-2 py-0.5 rounded-full text-cy-300 border border-cy-300/30 bg-cy-300/[0.06] whitespace-nowrap">
+            {cadenceLabel(STATEWIDE_FL_PARCELS.updateCadence)}
+          </span>
+        </div>
+        <dl className="text-[11.5px] mt-3">
+          <SourceRow
+            label="Dataset"
+            name="FGIO Open Data portal"
+            href={STATEWIDE_FL_PARCELS.downloadUrl}
+            suffix={STATEWIDE_FL_PARCELS.format.toUpperCase()}
+          />
+        </dl>
+        <p className="text-[11px] text-white/55 mt-3 leading-relaxed">
+          All 67 FL counties · {(STATEWIDE_FL_PARCELS.parcelCountApprox / 1_000_000).toFixed(1)}M parcels · normalized schema. {STATEWIDE_FL_PARCELS.notes}
+        </p>
+      </div>
+
+      <div className="mb-3 text-[10px] uppercase tracking-[0.16em] text-white/45 font-mono">
+        Tier 2 · Priority county fast feeds
+      </div>
 
       <ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {COUNTY_DATA_SOURCES.map((c) => (
@@ -100,10 +140,12 @@ export default function CountyDataSourcesCard() {
       </ul>
 
       <p className="text-[11px] text-white/40 mt-5 leading-relaxed">
-        Sources are public records published by each county's Property
-        Appraiser and GIS office under Florida's Sunshine Law. No
-        scraping, no anti-bot evasion — direct from the open-data
-        portal each county maintains for civic use.
+        All sources are public records — Florida Department of Revenue's
+        statewide compilation distributed by FGIO at the state level, and
+        each county's Property Appraiser + GIS office at the county
+        level. Published under Florida's Sunshine Law. No scraping, no
+        anti-bot evasion — direct from the open-data portals each agency
+        maintains for civic use.
       </p>
     </section>
   );
