@@ -490,17 +490,26 @@ function LeadDrawer({
                       </div>
                     )}
 
-                    <div className="flex items-center justify-between text-[11px]">
+                    <div className="flex items-center justify-between text-[11px] gap-3 flex-wrap">
                       <span className="text-white/40 font-mono tabular">
                         {p.public_id.slice(0, 16)}…
                       </span>
-                      <Link
-                        href={`/p/${p.public_id}`}
-                        target="_blank"
-                        className="text-cy-300 hover:text-white inline-flex items-center gap-1"
-                      >
-                        Open share link <ExternalLink className="w-3 h-3" />
-                      </Link>
+                      <div className="flex items-center gap-3">
+                        <Link
+                          href={`/dashboard/proposals/${p.public_id}`}
+                          className="text-cy-300 hover:text-white inline-flex items-center gap-1"
+                        >
+                          Rep view
+                        </Link>
+                        <span className="text-white/20">·</span>
+                        <Link
+                          href={`/p/${p.public_id}`}
+                          target="_blank"
+                          className="text-white/55 hover:text-white inline-flex items-center gap-1"
+                        >
+                          Customer link <ExternalLink className="w-3 h-3" />
+                        </Link>
+                      </div>
                     </div>
                   </li>
                 );

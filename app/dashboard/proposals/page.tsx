@@ -167,22 +167,31 @@ export default async function ProposalsPage() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      {p.isDemo ? (
-                        <span
-                          title="Demo data — live proposal links require Supabase."
-                          className="inline-flex items-center gap-1 text-xs text-white/35 cursor-not-allowed"
-                        >
-                          Demo <ExternalLink className="w-3 h-3" />
-                        </span>
-                      ) : (
+                      <div className="inline-flex items-center gap-3 text-xs">
                         <Link
-                          href={`/p/${p.public_id}`}
-                          target="_blank"
-                          className="inline-flex items-center gap-1 text-xs text-cy-300 hover:text-white"
+                          href={`/dashboard/proposals/${p.public_id}`}
+                          className="text-cy-300 hover:text-white"
                         >
-                          Open <ExternalLink className="w-3 h-3" />
+                          Rep view
                         </Link>
-                      )}
+                        <span className="text-white/20">·</span>
+                        {p.isDemo ? (
+                          <span
+                            title="Demo data — live customer links require Supabase."
+                            className="inline-flex items-center gap-1 text-white/35 cursor-not-allowed"
+                          >
+                            Customer <ExternalLink className="w-3 h-3" />
+                          </span>
+                        ) : (
+                          <Link
+                            href={`/p/${p.public_id}`}
+                            target="_blank"
+                            className="inline-flex items-center gap-1 text-white/55 hover:text-white"
+                          >
+                            Customer <ExternalLink className="w-3 h-3" />
+                          </Link>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
