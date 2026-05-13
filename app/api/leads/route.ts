@@ -12,6 +12,12 @@ import {
 } from "@/lib/supabase";
 
 export const runtime = "nodejs";
+// Function needs to live long enough to (a) finish the synchronous lead
+// insert + initial /api/dispatch-outbound forward, and (b) hold the
+// 30-second pre-dispatch delay inside waitUntil so the customer's phone
+// doesn't ring the instant they submit. 45s gives that comfortably under
+// Vercel's nodejs default cap.
+export const maxDuration = 45;
 
 interface LeadPayload {
   name: string;
@@ -43,6 +49,14 @@ interface LeadPayload {
    *  the same public_id so the final submit updates instead of inserting
    *  a duplicate. Server requires the same email as the original row. */
   existingLeadPublicId?: string;
+  /** Full customer-side Estimate snapshot. When set on the FINAL /quote
+   *  submit (not the step-1 partial), the server writes a `proposals`
+   *  row pinned to this lead so the rep dashboard's lead drawer surfaces
+   *  the homeowner's saved estimate alongside any rep-generated ones.
+   *  Loose `unknown` type because the full Estimate shape lives in
+   *  types/estimate.ts and is broad — we validate the few fields we
+   *  need (id, baseLow/High) at write time, store the rest as-is. */
+  estimate?: unknown;
 }
 
 /** TCPA disclosure text — the exact wording the customer agrees to.
@@ -249,6 +263,44 @@ export async function POST(req: Request) {
               ip_address: consentIp,
               user_agent: consentUserAgent,
             });
+
+            // Companion proposals row — when the final /quote submit
+            // carries a full Estimate snapshot, persist it so the
+            // dashboard's lead drawer "Saved estimates" panel surfaces
+            // the customer's self-served quote alongside any rep-built
+            // ones. Defensive: snapshot type is `unknown` from the
+            // wire, so we validate the minimum needed fields and
+            // store the JSON round-trip for the rest.
+            if (body.estimate && typeof body.estimate === "object") {
+              const est = body.estimate as Record<string, unknown>;
+              const estId = typeof est.id === "string" ? est.id : null;
+              const baseLow =
+                typeof est.baseLow === "number" ? est.baseLow : null;
+              const baseHigh =
+                typeof est.baseHigh === "number" ? est.baseHigh : null;
+              if (estId && /^[a-z0-9_-]{8,64}$/i.test(estId)) {
+                const { error: propErr } = await supabase
+                  .from("proposals")
+                  .upsert(
+                    {
+                      office_id: officeId,
+                      lead_id: data.id,
+                      public_id: estId,
+                      snapshot: JSON.parse(JSON.stringify(body.estimate)),
+                      total_low: baseLow,
+                      total_high: baseHigh,
+                      generated_by: "customer-quote",
+                    },
+                    { onConflict: "public_id" },
+                  );
+                if (propErr) {
+                  console.error(
+                    "[leads] proposal-attach insert failed:",
+                    propErr.message,
+                  );
+                }
+              }
+            }
           }
         }
       }
@@ -401,36 +453,48 @@ export async function POST(req: Request) {
   if (phoneE164 && process.env.INTERNAL_DISPATCH_SECRET && hasEstimate) {
     const origin = new URL(req.url).origin;
     const dispatchSecret = process.env.INTERNAL_DISPATCH_SECRET;
-    console.log("[leads] firing outbound dispatch", {
+    // Hold the dispatch for a beat so the customer has a moment to
+    // dismiss the form and read the confirmation card before their
+    // phone rings. 30s was the empirically chosen pause — short enough
+    // that the customer still feels "instant", long enough that the
+    // call doesn't land on top of the submit animation.
+    const DISPATCH_DELAY_MS = 30_000;
+    console.log("[leads] queuing outbound dispatch", {
       leadId,
       phoneE164,
       isLeadUpdate,
       source: body.source ?? null,
+      delayMs: DISPATCH_DELAY_MS,
     });
     waitUntil(
-      fetch(`${origin}/api/dispatch-outbound`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-dispatch-secret": dispatchSecret,
-        },
-        body: JSON.stringify({
-          leadId,
-          name: body.name,
-          phone: phoneE164,
-          address: body.address,
-          estimateLow: body.estimateLow,
-          estimateHigh: body.estimateHigh,
-          material: body.material,
-          // Tenancy — pass the SAME office that we just persisted the
-          // lead row under. Sydney's outbound script reads this from
-          // ctx.job.metadata so the caller hears "Sydney with <that
-          // office's company name>." Backend tenancy and voice brand
-          // are now unified — one office routes the entire flow.
-          office: officeSlug,
-          estimatedSqft: body.estimatedSqft,
-        }),
-      })
+      new Promise<void>((resolve) =>
+        setTimeout(() => resolve(), DISPATCH_DELAY_MS),
+      )
+        .then(() =>
+          fetch(`${origin}/api/dispatch-outbound`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-dispatch-secret": dispatchSecret,
+            },
+            body: JSON.stringify({
+              leadId,
+              name: body.name,
+              phone: phoneE164,
+              address: body.address,
+              estimateLow: body.estimateLow,
+              estimateHigh: body.estimateHigh,
+              material: body.material,
+              // Tenancy — pass the SAME office that we just persisted the
+              // lead row under. Sydney's outbound script reads this from
+              // ctx.job.metadata so the caller hears "Sydney with <that
+              // office's company name>." Backend tenancy and voice brand
+              // are now unified — one office routes the entire flow.
+              office: officeSlug,
+              estimatedSqft: body.estimatedSqft,
+            }),
+          }),
+        )
         .then(async (r) => {
           const text = await r.text().catch(() => "");
           if (!r.ok) {

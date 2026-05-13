@@ -24,7 +24,14 @@ import {
 } from "@/components/quote/BelowFold";
 import EditableRoofMap from "@/components/quote/EditableRoofMap";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
-import type { AddressInfo, Material } from "@/types/estimate";
+import type {
+  AddressInfo,
+  Assumptions,
+  AddOn,
+  Estimate,
+  Material,
+  Pitch,
+} from "@/types/estimate";
 import { BRAND_CONFIG } from "@/lib/branding";
 
 // 3D viewer is heavy (Cesium + 3D Tiles) — lazy-load it so the initial
@@ -527,6 +534,40 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
     setSubmitError("");
     setSubmitting(true);
     try {
+      // Build a customer-side Estimate snapshot from the wizard state.
+      // The server attaches this to the lead's `proposals.snapshot`
+      // jsonb column so the dashboard's "Saved estimates" panel shows
+      // the customer's self-served quote — mirrors what the rep tool
+      // saves via OutputButtons + /api/proposals, just with a lighter
+      // shape (no Xactimate line items, no field photos, no insurance
+      // claim metadata — those are rep-only by design).
+      const customerEstimate: Estimate = {
+        id: `est_${crypto.randomUUID().replace(/-/g, "")}`,
+        createdAt: new Date().toISOString(),
+        staff: "Customer · self-served",
+        customerName: lead.name,
+        address: (address ?? { formatted: lead.address }) as AddressInfo,
+        assumptions: {
+          sqft: sqft ?? 0,
+          pitch: (pitch ?? "6/12") as Pitch,
+          material,
+          ageYears: 15,
+          laborMultiplier: 1,
+          materialMultiplier: 1,
+          serviceType: "reroof-tearoff",
+          complexity: "moderate",
+        } satisfies Assumptions,
+        addOns: addOns.map((a) => ({
+          id: a.id,
+          label: a.label,
+          price: a.price,
+          enabled: a.enabled,
+        })) satisfies AddOn[],
+        total: Math.round((range.low + range.high) / 2),
+        baseLow: range.low,
+        baseHigh: range.high,
+      };
+
       const res = await fetch("/api/leads", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -547,6 +588,9 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
           office,
           source: "quote-wizard-confirmed",
           existingLeadPublicId: existingLeadPublicIdRef.current ?? undefined,
+          // Full Estimate snapshot — server writes a proposals row
+          // pinned to this lead so the dashboard surfaces it.
+          estimate: customerEstimate,
           // TCPA consent carried forward from step-1 form. The
           // server re-validates on this final post too.
           tcpaConsent: lead.tcpaConsent,
