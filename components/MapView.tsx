@@ -91,6 +91,40 @@ export default function MapView({
   onPickBuildingRef.current = onPickBuilding;
   const pickingBuildingRef = useRef(pickingBuilding);
   pickingBuildingRef.current = pickingBuilding;
+
+  // While in "pick the right building" mode the polygon must NOT eat
+  // clicks — otherwise a tap on the rendered (wrong-building) polygon
+  // never reaches the map's click handler and onPickBuilding never
+  // fires. We also flip the map's draggableCursor to a crosshair so the
+  // rep gets visual confirmation they're in pick mode.
+  //
+  // Runs whenever pickingBuilding flips. Iterates `polysRef.current`
+  // (the live Polygon instances) and sets clickable=false +
+  // editable=false during pick mode, then restores both when pick mode
+  // ends. The polygon's `editable` flag from props is captured via
+  // closure when the polygons were created — that's why we restore to
+  // `editable !== false` (truthy semantics matching the original
+  // create-time value).
+  useEffect(() => {
+    if (!mapRef.current) return;
+    if (pickingBuilding) {
+      mapRef.current.setOptions({
+        draggableCursor: "crosshair",
+        draggingCursor: "crosshair",
+      });
+      polysRef.current.forEach((p) => {
+        p.setOptions({ clickable: false, editable: false });
+      });
+    } else {
+      mapRef.current.setOptions({
+        draggableCursor: null,
+        draggingCursor: null,
+      });
+      polysRef.current.forEach((p) => {
+        p.setOptions({ clickable: editable, editable });
+      });
+    }
+  }, [pickingBuilding, editable]);
   const mapEl = useRef<HTMLDivElement>(null);
   const svEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);

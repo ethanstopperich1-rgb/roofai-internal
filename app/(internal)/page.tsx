@@ -1671,7 +1671,14 @@ function HomePageInner() {
               )
             }
           />
-          {/* ─── Map hero — satellite + 3D side-by-side, full width ─────── */}
+          {/* ─── Map hero — satellite + 3D side-by-side, full width ───────
+               Strict 2-column grid: MapView (which internally stacks
+               satellite over street view) on the left, Roof3DViewer
+               on the right. The "Wrong building? Click to pick"
+               affordance moved OUT of this section into its own block
+               below — adding it here gave the grid 3 children and broke
+               the side-by-side layout (3D viewer wrapped to row 2,
+               overflowing the fixed-height section). */}
           <section className="grid lg:grid-cols-2 gap-4 h-[420px] sm:h-[520px] lg:h-[640px] float-in relative">
             <MapView
               lat={address?.lat}
@@ -1728,62 +1735,77 @@ function HomePageInner() {
                   .finally(() => setPickingLoading(false));
               }}
             />
-            {/* "Pick the right building" affordance — surfaced when a
-                polygon is on-screen so the rep can quickly redirect SAM3
-                to the actual house on multi-building rural parcels. */}
-            {polygonReady && polygonSource !== "none" && (
-              <div className="mt-3 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPickingBuilding((p) => !p)}
-                  className="glass-button-secondary text-[12px] font-mono uppercase tracking-[0.14em]"
-                  disabled={pickingLoading}
-                >
-                  {pickingLoading
-                    ? "Re-tracing…"
-                    : pickingBuilding
-                      ? "Tap the right building (Esc to cancel)"
-                      : "Wrong building? Click to pick"}
-                </button>
-                {pickingBuilding && (
-                  <span className="font-mono text-[11px] text-cy-300/70">
-                    Click anywhere on the actual house in the satellite tile.
-                  </span>
-                )}
+            {/* ─── Photorealistic 3D mesh (Google Map Tiles 3D via Cesium) ───
+                 Sits in column 2 of the grid, beside MapView in column 1.
+                 Mounts only after the polygon resolution has settled so
+                 Cesium isn't re-drawing the draped outline as polygons
+                 race in. `key` forces a hard remount on address change so
+                 the previous Cesium camera + tile cache can't linger.
+                 interactive=true for rep workflow (they need to pan,
+                 zoom, change angle to inspect damage). When no polygon
+                 is on-screen yet we render a placeholder div instead of
+                 nothing, so the grid layout doesn't collapse to single-
+                 column and orphan the MapView. */}
+            {polygonReady &&
+            polygonSource !== "none" &&
+            address?.lat != null &&
+            address?.lng != null ? (
+              <div
+                className="glass-panel overflow-hidden h-full relative"
+                aria-label={`3D photorealistic view of the roof at ${address.formatted ?? "this property"}`}
+                role="img"
+              >
+                <Roof3DViewer
+                  key={`${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
+                  lat={address.lat}
+                  lng={address.lng}
+                  address={address.formatted}
+                  polygons={activePolygons}
+                  polygonSource={polygonSource}
+                  imageryDate={solar?.imageryDate}
+                  expectedFootprintSqft={
+                    solar?.buildingFootprintSqft ?? null
+                  }
+                  interactive
+                />
+              </div>
+            ) : (
+              // Placeholder keeps the 2-column grid intact while SAM3
+              // is in flight. Falls back to a soft glass panel mirroring
+              // the eventual 3D mount so the layout doesn't shift when
+              // the mesh appears.
+              <div className="glass-panel h-full flex items-center justify-center text-slate-500 text-[12px] font-mono uppercase tracking-[0.14em]">
+                3D mesh loads after measurement…
               </div>
             )}
-            {/* ─── Photorealistic 3D mesh (Google Map Tiles 3D via Cesium) ─── */}
-            {/* Mounts only after the polygon resolution has settled — that
-                gating ensures Cesium isn't re-drawing the draped outline
-                as polygons race in. `key` forces a hard remount on address
-                change so the previous Cesium camera + tile cache can't
-                linger. interactive=true for rep workflow (they need to pan,
-                zoom, change angle to inspect damage). */}
-            {polygonReady &&
-              polygonSource !== "none" &&
-              address?.lat != null &&
-              address?.lng != null && (
-                <div
-                  className="glass-panel overflow-hidden aspect-video relative"
-                  aria-label={`3D photorealistic view of the roof at ${address.formatted ?? "this property"}`}
-                  role="img"
-                >
-                  <Roof3DViewer
-                    key={`${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
-                    lat={address.lat}
-                    lng={address.lng}
-                    address={address.formatted}
-                    polygons={activePolygons}
-                    polygonSource={polygonSource}
-                    imageryDate={solar?.imageryDate}
-                    expectedFootprintSqft={
-                      solar?.buildingFootprintSqft ?? null
-                    }
-                    interactive
-                  />
-                </div>
-              )}
           </section>
+
+          {/* "Pick the right building" affordance — rendered OUTSIDE the
+              2-column grid so it sits below the MapView+3D row at full
+              width. Previously this lived inside the grid as a third
+              child, which shoved the 3D viewer onto row 2 and made the
+              fixed-height grid section overflow. */}
+          {polygonReady && polygonSource !== "none" && (
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPickingBuilding((p) => !p)}
+                className="glass-button-secondary text-[12px] font-mono uppercase tracking-[0.14em]"
+                disabled={pickingLoading}
+              >
+                {pickingLoading
+                  ? "Re-tracing…"
+                  : pickingBuilding
+                    ? "Tap the right building (Esc to cancel)"
+                    : "Wrong building? Click to pick"}
+              </button>
+              {pickingBuilding && (
+                <span className="font-mono text-[11px] text-cy-300/70">
+                  Click anywhere on the actual house in the satellite tile.
+                </span>
+              )}
+            </div>
+          )}
 
           {/* The "Roof geometry" section (parametric 3D + architectural
               blueprint card) was removed — same reason as above. The
