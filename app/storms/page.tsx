@@ -16,7 +16,7 @@ const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? "";
 
 export default function StormsPage() {
   return (
-    <div className="min-h-screen relative" style={{ background: "#07090d" }}>
+    <div className="min-h-[100dvh] relative" style={{ background: "#07090d" }}>
       {/* Shared PublicHeader. Previously /storms rolled its own header
           with a TEXT wordmark (just the word "Voxaris" in a span) —
           inconsistent with every other public page which uses the
@@ -45,7 +45,7 @@ export default function StormsPage() {
         }
       />
 
-      <main className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 py-12 sm:py-20 space-y-20 sm:space-y-28">
+      <main id="main-content" className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 py-12 sm:py-20 space-y-20 sm:space-y-28">
         {/* HERO — outcome first, no glow */}
         <section>
           <div

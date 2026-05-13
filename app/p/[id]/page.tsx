@@ -219,7 +219,7 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
  *  pattern dropping out of chrome on edge cases. */
 function ProposalShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-[100dvh] flex flex-col">
       {/* `.no-print` on header + footer so when the customer prints
           the proposal they get the proposal CONTENT only — not nav
           chrome that would look like fax-machine garbage on paper.
@@ -228,7 +228,7 @@ function ProposalShell({ children }: { children: React.ReactNode }) {
       <div className="no-print contents">
         <PublicHeader chip={undefined} rightSlot={null} logoHref="/quote" />
       </div>
-      <main className="flex-1 px-4 sm:px-6 py-8 sm:py-12 proposal-print-root">{children}</main>
+      <main id="main-content" className="flex-1 px-4 sm:px-6 py-8 sm:py-12 proposal-print-root">{children}</main>
       <div className="no-print contents">
         <PublicFooter />
       </div>

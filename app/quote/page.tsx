@@ -597,7 +597,7 @@ export default function QuotePage() {
   // Steps 2–4 — wizard with stepper, floating over the visionOS Liquid Glass
   // background environment (layered radial washes behind the glass panels).
   return (
-    <div className="min-h-screen flex flex-col relative z-[1] lg-env">
+    <div className="min-h-[100dvh] flex flex-col relative z-[1] lg-env">
       <PublicHeader
         chip="Quick Quote"
         nav={[
@@ -606,7 +606,7 @@ export default function QuotePage() {
           { label: "FAQ", href: "/quote#faq" },
         ]}
       />
-      <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-10 sm:py-16 space-y-8">
+      <main id="main-content" className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-10 sm:py-16 space-y-8">
         {!submitted && <Stepper current={stepIdx} />}
 
         {step === "Roof" && !submitted && commercialFootprintSqft != null && (

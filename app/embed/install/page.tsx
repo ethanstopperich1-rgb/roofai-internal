@@ -17,9 +17,9 @@ import PublicFooter from "@/components/ui/public-footer";
  */
 export default function EmbedInstallPage() {
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-[100dvh] flex flex-col">
       <PublicHeader chip="Install" />
-      <main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-10 py-12 sm:py-20 space-y-12">
+      <main id="main-content" className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-10 py-12 sm:py-20 space-y-12">
       <header className="space-y-3">
         <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-cy-300/90 px-2 py-0.5 rounded-full border border-cy-300/30 bg-cy-300/5">
           embed · v1

@@ -18,9 +18,9 @@ import LegalTOC from "@/components/ui/legal-toc";
  */
 export default function LegalLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-[100dvh] flex flex-col">
       <PublicHeader chip="Legal" />
-      <main className="relative z-[1] flex-1 px-4 sm:px-6 py-12 sm:py-20">
+      <main id="main-content" className="relative z-[1] flex-1 px-4 sm:px-6 py-12 sm:py-20">
         <div className="max-w-3xl mx-auto">
           {/* Auto-generated TOC from <article> h2 elements. Hides
               itself for short docs (<3 sections). Helps readers

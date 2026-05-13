@@ -66,7 +66,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="en"
       className={`dark ${geist.variable} ${geistMono.variable} ${bricolage.variable} ${spaceGrotesk.variable} ${spaceMono.variable}`}
     >
-      <body className="min-h-screen antialiased relative">
+      <body className="min-h-[100dvh] antialiased relative">
         <GradientBackground />
         {/* Header self-hides on /quote and /p/[id] (customer-facing routes
             render their own dedicated chrome). */}

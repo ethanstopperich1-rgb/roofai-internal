@@ -2007,3 +2007,29 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
     font-size: 36px !important;
   }
 }
+
+/* ─── Display-headline text balance ───────────────────────────────────
+ *
+ * text-wrap: balance — distributes words across lines of multi-line
+ * headlines so no single word orphans on its own line. Particularly
+ * helpful on responsive viewports where a headline that fits two lines
+ * cleanly on desktop ends up three lines on mobile with one word
+ * dangling.
+ *
+ * text-wrap: pretty — for body paragraphs, prevents awkward last-line
+ * single-word widows.
+ *
+ * Both are progressive-enhancement only: browsers that don't support
+ * them just fall back to default wrapping. Supported in Chrome 114+,
+ * Safari 17.5+, Firefox 121+ — covers ~95%+ of 2026 traffic.
+ *
+ * Scoped to display headlines + paragraphs in legal articles so we
+ * don't accidentally affect data-dense UI labels where balance can
+ * actually hurt readability. */
+h1, h2, .font-display {
+  text-wrap: balance;
+}
+article p,
+.prose p {
+  text-wrap: pretty;
+}

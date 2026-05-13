@@ -58,6 +58,19 @@ export default function PublicHeader({
   logoHref = "/quote",
 }: PublicHeaderProps) {
   return (
+    <>
+      {/* Skip-to-content link. Visually hidden by default (sr-only),
+          reveals on keyboard focus. Lets keyboard users bypass the
+          entire nav and jump straight to <main id="main-content">.
+          Required for WCAG 2.1 2.4.1 "Bypass Blocks" compliance, and
+          a real productivity gain for screen-reader users on pages
+          with deep nav like the quote wizard. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:px-4 focus:py-2 focus:rounded-lg focus:bg-cy-300 focus:text-[#051019] focus:font-medium focus:text-sm focus:shadow-[0_4px_20px_rgba(20,136,252,0.55)] focus:outline-none focus:ring-2 focus:ring-cy-300 focus:ring-offset-2 focus:ring-offset-[#07090d]"
+      >
+        Skip to content
+      </a>
     <header
       className="relative z-30"
       style={{
@@ -107,5 +120,6 @@ export default function PublicHeader({
         {rightSlot ?? <span aria-hidden="true" />}
       </div>
     </header>
+    </>
   );
 }
