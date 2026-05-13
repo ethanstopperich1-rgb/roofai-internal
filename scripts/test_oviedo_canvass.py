@@ -396,6 +396,9 @@ def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> Permit
     if debug_dir:
         try:
             page.screenshot(path=str(debug_dir / f"{street_num}_{street_name_clean[:20]}_results.png"))
+            (debug_dir / f"{street_num}_{street_name_clean[:20]}_results.html").write_text(
+                page.content(), encoding="utf-8"
+            )
         except Exception:
             pass
 
