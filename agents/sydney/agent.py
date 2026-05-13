@@ -570,14 +570,18 @@ async def entrypoint(ctx: JobContext) -> None:
         }
         outcome = recorded_outcome or outcome_map.get(reason, "unknown")
 
-        # One-line operator telemetry for the dashboard (Twilio is downstream
-        # of LiveKit on the SIP trunk; SIP codes on tool rows matter for triage).
-        op_summary = (
-            f"[telemetry] shutdown_reason={reason}; "
-            f"room={ctx.room.name}; "
-            f"path=LiveKit SIP ↔ Twilio Elastic SIP trunk ↔ PSTN. "
-            f"See call drawer → Voice & SIP for transfer tool SIP codes."
-        )
+        # No op_summary in the call_ended payload. The earlier
+        # implementation pushed a "[telemetry] shutdown_reason=X;
+        # path=LiveKit SIP ↔ Twilio Elastic SIP trunk ↔ PSTN; see call
+        # drawer for SIP codes" string here, which surfaced as a
+        # SESSION TELEMETRY block in the call drawer that exposed
+        # Twilio as the underlying carrier. That's an implementation
+        # detail prospects and clients should never see during a demo
+        # (and arguably even ops don't need it in the dashboard —
+        # shutdown_reason + room are already in worker logs).
+        # Setting summary=None means the dashboard's
+        # `call.summary && (...)` conditional renders nothing.
+        op_summary = None
 
         # LK Cloud Inference rough cost model — keep this in agent.py
         # rather than in the API route so it travels with the prompt /

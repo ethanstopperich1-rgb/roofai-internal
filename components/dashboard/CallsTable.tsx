@@ -173,7 +173,13 @@ function CallDrawer({
   onClose: () => void;
 }) {
   const style = outcomeStyle(call.outcome);
-  const isTelemetrySummary = Boolean(call.summary?.includes("[telemetry]"));
+  // Hide the legacy "[telemetry] ... LiveKit ↔ Twilio Elastic SIP ..."
+  // summary block. Twilio is an implementation detail; surfacing it in
+  // the demo dashboard leaked trunk infrastructure to viewers. Going
+  // forward Sydney emits summary=null, but existing rows in the calls
+  // table still carry the old text — this guard skips rendering them.
+  const summaryToRender =
+    call.summary && !call.summary.includes("[telemetry]") ? call.summary : null;
   const xferRows = transferDiagnostics(events);
 
   useEffect(() => {
@@ -223,19 +229,13 @@ function CallDrawer({
           <Stat label="Turns" value={call.turn_count?.toString() ?? "—"} />
         </section>
 
-        {call.summary && (
+        {summaryToRender && (
           <section className="glass-panel p-4">
             <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-2">
-              {isTelemetrySummary ? "Session telemetry" : "Summary"}
+              Summary
             </div>
-            <p
-              className={
-                isTelemetrySummary
-                  ? "text-[12px] text-white/75 font-mono leading-relaxed whitespace-pre-wrap"
-                  : "text-sm text-white/85 leading-relaxed whitespace-pre-wrap"
-              }
-            >
-              {call.summary}
+            <p className="text-sm text-white/85 leading-relaxed whitespace-pre-wrap">
+              {summaryToRender}
             </p>
           </section>
         )}

@@ -1,13 +1,17 @@
 /**
  * Client-safe copy + helpers for the /dashboard/calls drawer.
- * Explains LiveKit ↔ Twilio Elastic SIP ↔ PSTN and surfaces tool payloads.
+ * Surfaces tool payloads + a sanitized voice-path blurb (no
+ * underlying-carrier vendor names — Twilio is an implementation
+ * detail we don't expose in the dashboard).
  */
 
 import type { Event } from "@/lib/dashboard-format";
 
-/** Shown in the operator console — matches how numbers are wired in prod. */
+/** Shown in the operator console. Sanitized: refers generically to
+ *  "carrier SIP trunk" instead of naming Twilio — that detail is
+ *  internal-ops and shouldn't surface to demo viewers. */
 export const VOICE_PATH_BLURB =
-  "Audio to the PSTN is carried as SIP between LiveKit and your Twilio Elastic SIP trunk; Twilio completes the carrier leg. A SIP status on a failed bridge usually means Twilio rejected or could not route the INVITE (trunk ACL, origination URI, termination, or caller-ID / number attachment).";
+  "Audio to the PSTN is carried as SIP between LiveKit and the carrier SIP trunk; the carrier completes the call leg. A SIP status on a failed bridge usually means the carrier rejected or could not route the INVITE (trunk ACL, origination URI, termination, or caller-ID / number attachment).";
 
 export function toolFiredEvents(events: Event[]): Event[] {
   return events.filter((e) => e.type.startsWith("tool_fired:"));
