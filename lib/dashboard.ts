@@ -92,8 +92,14 @@ export {
 export type SupabaseService = SupabaseClient<Database>;
 
 /** Fallback office slug for the HTTP-Basic transition path. Once every
- *  rep has migrated to magic-link login, this constant goes away. */
-export const FALLBACK_OFFICE_SLUG = "voxaris";
+ *  rep has migrated to magic-link login this constant goes away — the
+ *  office_id will come from the rep's JWT instead.
+ *
+ *  Set to "nolands" because that's the only live customer office today.
+ *  When a second customer onboards, flip this to a sentinel like
+ *  "voxaris" (the platform-internal tenant) and force reps to bookmark
+ *  /dashboard with their JWT so we don't have an implicit default. */
+export const FALLBACK_OFFICE_SLUG = "nolands";
 
 /** Legacy alias kept for existing call sites. */
 export const DASHBOARD_OFFICE_SLUG = FALLBACK_OFFICE_SLUG;

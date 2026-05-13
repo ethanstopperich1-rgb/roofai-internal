@@ -132,15 +132,15 @@ export async function POST(req: Request) {
   const submittedAt = new Date().toISOString();
   const emailNorm = body.email.trim().toLowerCase();
   // Tenancy — every lead MUST land in a specific business. Allow the
-  // caller to omit `office` for back-compat (defaults to "voxaris", the
-  // platform brand) but VALIDATE the slug shape + active-status against
-  // the offices table before we accept it. Unknown / inactive slugs get
-  // rejected so a misconfigured embed snippet doesn't silently drop
-  // leads into the wrong office.
+  // caller to omit `office` for back-compat (defaults to "nolands", the
+  // only live customer today) but VALIDATE the slug shape + active-
+  // status against the offices table before we accept it. Unknown /
+  // inactive slugs get rejected so a misconfigured embed snippet
+  // doesn't silently drop leads into the wrong office.
   const rawOfficeSlug =
     typeof body.office === "string" && body.office.trim()
       ? body.office.trim().toLowerCase()
-      : "voxaris";
+      : "nolands";
   if (!/^[a-z0-9][a-z0-9-]{1,40}$/i.test(rawOfficeSlug)) {
     return NextResponse.json(
       { error: "invalid_office", message: "office must be a slug like 'nolands'." },

@@ -108,10 +108,10 @@ const VISION_MATERIAL_TO_ASSUMPTION: Partial<
 export default function HomePage() {
   // Tenancy — which business this rep is working under. Until staff
   // auth is wired through (Supabase JWT), reps bookmark `/?office=nolands`
-  // for their company. Defaults to "voxaris" (platform / demo) when
-  // the tool is opened bare.
+  // for their company. Defaults to "nolands" — the only live customer
+  // today — so bare visits still save under the right tenant.
   const searchParams = useSearchParams();
-  const office = (searchParams.get("office") ?? "voxaris").trim().toLowerCase();
+  const office = (searchParams.get("office") ?? "nolands").trim().toLowerCase();
   const [addressText, setAddressText] = useState("");
   const [address, setAddress] = useState<AddressInfo | null>(null);
   const [assumptions, setAssumptions] = useState<Assumptions>(DEFAULT_ASSUMPTIONS);

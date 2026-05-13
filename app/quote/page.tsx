@@ -105,12 +105,13 @@ interface QuotePageProps {
   /** Business slug this estimator is branded for. Drives the `office`
    *  field on every /api/leads submission so the resulting lead lands
    *  in the right office_id and Sydney's outbound call brands as the
-   *  correct company. Defaults to "voxaris" when /quote is hit without
-   *  a path segment — the generic platform brand. */
+   *  correct company. Defaults to "nolands" because that's the only
+   *  live customer today — bare /quote visitors should go there. The
+   *  `/quote/[office]` branded route always overrides this. */
   office?: string;
 }
 
-export default function QuotePage({ office = "voxaris" }: QuotePageProps = {}) {
+export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
   const [step, setStep] = useState<StepKey>("Lead");
   const [lead, setLead] = useState<QuoteHeroFormValues | null>(null);
   const [address, setAddress] = useState<AddressInfo | null>(null);

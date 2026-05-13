@@ -71,11 +71,13 @@ export async function POST(req: Request) {
   // `?office=` query param (and eventually from the rep's Supabase
   // JWT). Validate the slug shape + active-status against the offices
   // table — unknown slugs get rejected so a typo in the URL doesn't
-  // silently file the proposal under the wrong business.
+  // silently file the proposal under the wrong business. Defaults
+  // to "nolands" — the only live customer today — for callers that
+  // haven't been updated to pass `office` yet.
   const officeSlug =
     typeof body.office === "string" && body.office.trim()
       ? body.office.trim().toLowerCase()
-      : "voxaris";
+      : "nolands";
   if (!/^[a-z0-9][a-z0-9-]{1,40}$/i.test(officeSlug)) {
     return NextResponse.json(
       { error: "invalid_office", message: "office must be a slug like 'nolands'." },
