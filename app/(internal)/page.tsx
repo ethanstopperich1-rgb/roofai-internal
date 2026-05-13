@@ -125,6 +125,13 @@ function HomePageInner() {
   // today — so bare visits still save under the right tenant.
   const searchParams = useSearchParams();
   const office = (searchParams.get("office") ?? "nolands").trim().toLowerCase();
+  // `?nocache=1` URL param — debug toggle so the rep can force a
+  // fresh SAM3 round-trip during the demo (bypasses the Redis cache
+  // for the resolved polygon). Forwarded as a query suffix to the
+  // /api/sam3-roof fetch below; the route's `noCache` handling already
+  // exists, this just plumbs the front-end toggle through.
+  const sam3NoCacheSuffix =
+    searchParams.get("nocache") === "1" ? "&nocache=1" : "";
   const [addressText, setAddressText] = useState("");
   const [address, setAddress] = useState<AddressInfo | null>(null);
   const [assumptions, setAssumptions] = useState<Assumptions>(DEFAULT_ASSUMPTIONS);
@@ -1275,7 +1282,8 @@ function HomePageInner() {
     setSam3InFlight(true);
     const sam3Promise = fetch(
       `/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}` +
-        `&address=${encodeURIComponent(addr.formatted)}`,
+        `&address=${encodeURIComponent(addr.formatted)}` +
+        sam3NoCacheSuffix,
     )
       .then(async (r) => {
         if (!r.ok) return null;

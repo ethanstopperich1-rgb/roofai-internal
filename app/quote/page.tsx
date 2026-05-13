@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { BotIdClient } from "botid/client";
 import {
@@ -119,6 +119,23 @@ interface QuotePageProps {
 }
 
 export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
+  // `?nocache=1` URL param — debug toggle so the user can force a
+  // fresh SAM3 round-trip during the demo (bypasses the Redis cache
+  // for the resolved polygon). Read once on mount via
+  // window.location.search instead of useSearchParams because the
+  // latter triggers a CSR-bailout that would require this page to
+  // be wrapped in <Suspense> — costly refactor relative to the
+  // value of the flag, which never needs to change mid-session.
+  // Falls safely to false during SSR / when the param isn't set.
+  const [noCacheParam, setNoCacheParam] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setNoCacheParam(
+      new URLSearchParams(window.location.search).get("nocache") === "1",
+    );
+  }, []);
+  const sam3NoCacheSuffix = noCacheParam ? "&nocache=1" : "";
+
   const [step, setStep] = useState<StepKey>("Lead");
   const [lead, setLead] = useState<QuoteHeroFormValues | null>(null);
   const [address, setAddress] = useState<AddressInfo | null>(null);
@@ -356,7 +373,8 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
           // already did this; /quote was missing it.
           fetch(
             `/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}` +
-              `&address=${encodeURIComponent(addr.formatted ?? "")}`,
+              `&address=${encodeURIComponent(addr.formatted ?? "")}` +
+              sam3NoCacheSuffix,
           ).catch(() => null),
         ]);
 
