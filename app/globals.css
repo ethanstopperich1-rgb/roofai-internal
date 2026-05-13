@@ -1080,6 +1080,15 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   pointer-events: none;
   background: radial-gradient(ellipse 70% 100% at 50% 110%, rgba(56,197,238,0.10) 0%, transparent 70%);
 }
+/* Subtle film grain — fixed full-viewport overlay sitting above the
+ * background layers but below content. Defeats the "vector flat" feel
+ * of digital surfaces. Inline SVG noise (no asset request). */
+.theme-terminal > * { position: relative; z-index: 1; }
+.theme-terminal {
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.035 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-blend-mode: overlay;
+}
 
 /* ── Panel overrides ── */
 .theme-terminal .glass-panel,
@@ -1089,10 +1098,14 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   -webkit-backdrop-filter: none;
   border: 1px solid rgba(103,220,255,0.10);
   border-radius: 10px;
+  /* Tinted cyan drop-shadow instead of flat black — adds depth that
+   * matches the accent rather than a generic neutral shadow */
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.025),
-    0 1px 0 rgba(0,0,0,0.4);
-  transition: border-color 200ms ease, background 200ms ease;
+    0 1px 0 rgba(0,0,0,0.4),
+    0 16px 40px -24px rgba(56,197,238,0.18);
+  transition: border-color 200ms ease, background 200ms ease,
+              box-shadow 200ms ease, transform 120ms ease;
 }
 .theme-terminal .glass-panel::before,
 .theme-terminal .glass-panel::after,
@@ -1312,8 +1325,11 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   }
 }
 @media (min-width: 1024px) {
+  /* Asymmetric column widths: the Pipeline tile (3rd) is the headline
+   * KPI in our layout, so it gets ~1.4x the width. Breaks the
+   * four-equal-columns AI-default look (per taste-skill audit). */
   .theme-terminal .scoreboard {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: 1fr 1fr 1.4fr 1fr;
   }
 }
 .theme-terminal .scoreboard-tile {
@@ -1326,6 +1342,31 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   gap: 0.7rem;
   min-height: 152px;
   isolation: isolate;
+  transition: background 200ms ease, box-shadow 240ms ease, transform 120ms ease;
+}
+/* Link-style tiles get a subtle cyan spotlight on hover — the
+ * radial-gradient sits behind content via z-index:-1 so it never
+ * affects text legibility */
+.theme-terminal a.scoreboard-tile:hover {
+  background:
+    radial-gradient(circle at 28% 0%, rgba(103,220,255,0.06) 0%, transparent 55%),
+    rgba(15,19,28,0.55);
+  box-shadow: inset 0 0 0 1px rgba(103,220,255,0.16);
+}
+.theme-terminal a.scoreboard-tile:active {
+  transform: translateY(1px);
+}
+.theme-terminal a.scoreboard-tile.accent-mint:hover {
+  background:
+    radial-gradient(circle at 28% 0%, rgba(95,227,176,0.06) 0%, transparent 55%),
+    rgba(15,19,28,0.55);
+  box-shadow: inset 0 0 0 1px rgba(95,227,176,0.16);
+}
+.theme-terminal a.scoreboard-tile.accent-amber:hover {
+  background:
+    radial-gradient(circle at 28% 0%, rgba(243,177,75,0.06) 0%, transparent 55%),
+    rgba(15,19,28,0.55);
+  box-shadow: inset 0 0 0 1px rgba(243,177,75,0.18);
 }
 @media (min-width: 1024px) {
   .theme-terminal .scoreboard-tile {
@@ -1379,11 +1420,11 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   font-family: var(--font-mono);
   font-feature-settings: "tnum", "zero";
   font-variant-numeric: tabular-nums;
-  font-size: clamp(2rem, 4vw, 3.2rem);
-  font-weight: 500;
-  letter-spacing: -0.03em;
+  font-size: clamp(2.1rem, 4.2vw, 3.4rem);
+  font-weight: 600;
+  letter-spacing: -0.045em;
   color: rgb(248 253 255);
-  line-height: 0.95;
+  line-height: 0.92;
 }
 .theme-terminal .scoreboard-tile.size-hero .value {
   font-size: clamp(2.8rem, 5.2vw, 4.4rem);

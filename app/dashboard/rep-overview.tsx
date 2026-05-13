@@ -77,9 +77,9 @@ export default function RepOverview({
       <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
         <div>
           <span className="glass-eyebrow">My Console · {monthLabel()}</span>
-          <h1 className="text-[22px] sm:text-[26px] lg:text-[30px] tracking-tight font-medium leading-tight mt-3 text-white/92">
+          <h1 className="text-[28px] sm:text-[34px] lg:text-[40px] tracking-[-0.025em] font-semibold leading-[1.04] mt-3 text-white/95">
             <span className="iridescent-text">{firstName}</span>{" "}
-            <span className="text-white/45">/ today</span>
+            <span className="text-white/40 font-medium">/ today</span>
           </h1>
         </div>
         <Link
