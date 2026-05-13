@@ -213,11 +213,21 @@ export default function DashboardChrome({
             </div>
             {isDemo ? null : (
               <>
-                <div className="text-xs text-white/65 font-mono tabular flex flex-col items-end leading-tight">
-                  <span>{userEmail ?? "staff@voxaris.io"}</span>
-                  <span className="text-[10px] text-white/40 uppercase tracking-[0.16em]">
-                    {role}
-                  </span>
+                {/* Email + role on a single line. The role chip only renders
+                 *  when we have a real Supabase user — under Basic Auth the
+                 *  role would be the "staff" code-fallback, which paired
+                 *  with the admin@voxaris.io fallback email reads as
+                 *  contradictory; better to hide it until auth is real. */}
+                <div className="text-[12px] text-white/70 font-mono tabular flex items-center gap-2 leading-none">
+                  <span>{userEmail ?? "admin@voxaris.io"}</span>
+                  {userEmail && (
+                    <>
+                      <span className="text-white/25">·</span>
+                      <span className="text-[10px] text-white/45 uppercase tracking-[0.16em]">
+                        {role}
+                      </span>
+                    </>
+                  )}
                 </div>
                 <form action="/auth/signout" method="POST">
                   <button
