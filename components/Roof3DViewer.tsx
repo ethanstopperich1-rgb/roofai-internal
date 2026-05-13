@@ -825,6 +825,38 @@ export default function Roof3DViewer({
     },
     null,
   ) ?? null;
+
+  // Marker-follows-polygon. The red ground pin is created once at init
+  // using the geocoded (lat, lng), which is where Google THINKS the
+  // address is. On rural setback parcels (and any case where the rep
+  // overrides via "Wrong roof? Click to pick" or "Draw outline") the
+  // actual building is somewhere else. Snap the marker to the polygon
+  // centroid whenever a polygon is on screen so reps + customers see
+  // the pin sitting ON the measured roof, not next to it.
+  //
+  // Uses the primaryPolygon (largest polygon — same one verification
+  // uses), so multi-section polygons still anchor on the main mass.
+  // Falls back to the geocoded (lat, lng) when no polygon exists
+  // (initial load, or after a Reset).
+  const markerLat = primaryPolygon
+    ? primaryPolygon.reduce((s, p) => s + p.lat, 0) / primaryPolygon.length
+    : lat;
+  const markerLng = primaryPolygon
+    ? primaryPolygon.reduce((s, p) => s + p.lng, 0) / primaryPolygon.length
+    : lng;
+  useEffect(() => {
+    if (status !== "ready") return;
+    const ent = markerEntityRef.current as
+      | { position?: unknown }
+      | null;
+    if (!ent) return;
+    const Cesium = window.Cesium;
+    if (!Cesium) return;
+    // Mutate the entity's position in place — much cheaper than
+    // removing + re-adding, and keeps any animations/binding that
+    // Cesium has attached to the entity.
+    ent.position = Cesium.Cartesian3.fromDegrees(markerLng, markerLat, 0);
+  }, [markerLat, markerLng, status]);
   const verifyEligible =
     !!primaryPolygon &&
     !!polygonSource &&
