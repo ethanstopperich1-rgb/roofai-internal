@@ -198,7 +198,18 @@ export function BoltStyleHero({
         {/* Headline */}
         <div className={`text-center ${embedMode ? "mb-6" : "mb-10"}`}>
           <h1
-            className="font-display leading-[0.95] tracking-[-0.035em] font-semibold text-white"
+            // leading-[1.02] (not 0.95): italic glyphs like "f" have
+            // longer descenders than upright text, and the tighter
+            // leading was clipping the bottom of "roof" in "to
+            // *replace your roof*?". 1.02 is still dramatically tight
+            // for a display headline but leaves enough room for italic
+            // descenders + the bg-clip-text gradient paint box.
+            //
+            // pb-[0.08em] gives the gradient paint box a tiny bit more
+            // vertical room on the italic span specifically — belt-and-
+            // suspenders so even at the largest clamp sizes the tail
+            // never gets eaten by the parent's border-box.
+            className="font-display leading-[1.02] tracking-[-0.035em] font-semibold text-white"
             style={
               embedMode
                 ? { fontSize: "clamp(28px, 5.5vw, 44px)" }
@@ -207,7 +218,7 @@ export function BoltStyleHero({
           >
             {title}{" "}
             <span
-              className="bg-gradient-to-b from-cy-300 via-cy-300 to-white bg-clip-text text-transparent italic"
+              className="bg-gradient-to-b from-cy-300 via-cy-300 to-white bg-clip-text text-transparent italic pb-[0.08em]"
               style={
                 accentHex
                   ? {
