@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import {
   fmtDateTime,
@@ -111,7 +111,16 @@ export default function CallsTable({
                   <tr
                     key={c.id}
                     onClick={() => setOpenId(c.id)}
-                    className="border-b border-white/[0.04] last:border-b-0 cursor-pointer hover:bg-white/[0.03] transition-colors"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setOpenId(c.id);
+                      }
+                    }}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Open call from ${c.caller_number ?? "unknown caller"}`}
+                    className="border-b border-white/[0.04] last:border-b-0 cursor-pointer hover:bg-white/[0.03] focus:bg-white/[0.05] focus:outline-none focus-visible:ring-1 focus-visible:ring-cy-300/40 transition-colors"
                   >
                     <td className="px-4 py-3 text-white/85 font-mono tabular text-[12.5px] whitespace-nowrap">
                       {fmtDateTime(c.started_at)}
@@ -168,8 +177,15 @@ function CallDrawer({
   const isTelemetrySummary = Boolean(call.summary?.includes("[telemetry]"));
   const xferRows = transferDiagnostics(events);
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex">
+    <div className="fixed inset-0 z-50 flex" role="dialog" aria-modal="true" aria-label="Call detail">
       <div
         className="flex-1 bg-black/40 backdrop-blur-sm"
         onClick={onClose}

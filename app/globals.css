@@ -873,6 +873,162 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   color: #8aeec5;
 }
 
+/* ─── Operator console: section rule, marquee KPI, live ribbon ───────
+ *
+ * Extends the existing Liquid Glass system with three new primitives the
+ * dashboard hero relies on for "mission control" presence:
+ *
+ *   .console-section-rule — labeled chapter divider that breaks the page
+ *     into rhythm (HERO / OPERATIONS / PIPELINE) without dropping
+ *     floor-glass weight on every section header
+ *
+ *   .marquee-kpi-value — the dominant tabular numeric in the hero. Big
+ *     enough to read across the room during a demo; subtle scan-line
+ *     texture overlay so it reads as "telemetry", not "billboard"
+ *
+ *   .live-ribbon-cell — repeating row of compact KPIs under the marquee.
+ *     Mono tabular. Inherits the hairline-divider language
+ *
+ *   .console-eyebrow — like .glass-eyebrow but tighter and uppercase
+ *     mono, paired with a left-side accent bar. Used for section labels
+ */
+
+.console-section-rule {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin: 0.25rem 0;
+}
+.console-section-rule::before {
+  content: "";
+  width: 22px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(103,220,255,0.55), rgba(103,220,255,0.05));
+  flex-shrink: 0;
+}
+.console-section-rule::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.10), transparent);
+}
+.console-section-rule > span {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.55);
+  white-space: nowrap;
+}
+.console-section-rule > .pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-mint);
+  box-shadow: 0 0 8px rgba(95,227,176,0.6);
+  flex-shrink: 0;
+  animation: pulse-dot 1.8s ease-in-out infinite;
+}
+
+.marquee-kpi-value {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum", "zero";
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
+  font-weight: 600;
+  background: linear-gradient(180deg, #f5fbff 0%, #c4ddef 50%, #7dd3fc 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.02);
+  position: relative;
+  line-height: 0.95;
+}
+.marquee-kpi-value::after {
+  /* Subtle horizontal scan-line texture overlay — gives the big numeric
+   * "telemetry display" feel without dropping legibility */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 2px,
+    rgba(255,255,255,0.025) 2px,
+    rgba(255,255,255,0.025) 3px
+  );
+  pointer-events: none;
+  mix-blend-mode: overlay;
+}
+
+.live-ribbon {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 0;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.live-ribbon-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.9rem 1rem;
+  border-right: 1px solid rgba(255,255,255,0.04);
+  position: relative;
+}
+.live-ribbon-cell:last-child { border-right: none; }
+.live-ribbon-cell .label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.42);
+  font-weight: 500;
+}
+.live-ribbon-cell .value {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum", "zero";
+  font-variant-numeric: tabular-nums;
+  font-size: 1.45rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.96);
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+.live-ribbon-cell .delta {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum";
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  margin-top: 0.15rem;
+}
+.live-ribbon-cell .delta.up   { color: var(--color-mint); }
+.live-ribbon-cell .delta.down { color: var(--color-rose); }
+
+/* Line panel — Tier-3 surface with NO heavy glass. A hairline frame and
+ * the inset gradient only. Used for dense data lists where stacking
+ * full glass-panels would over-foam the page. */
+.line-panel {
+  position: relative;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.06);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.018) 0%, rgba(255,255,255,0.004) 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
+}
+
+/* Toast notifier — used by the office switcher to surface failures so
+ * a sales demo doesn't dead-end in silence. Slides in top-right. */
+@keyframes toast-in {
+  0%   { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.console-toast {
+  animation: toast-in 280ms cubic-bezier(.2,.8,.2,1) backwards;
+}
+
 /* ─── Animated dots used by Roof3DViewer "Generating…" pill ─────────── */
 .generating-dots::after {
   content: "";

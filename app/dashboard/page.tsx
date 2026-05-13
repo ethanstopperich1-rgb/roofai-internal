@@ -210,67 +210,131 @@ async function loadOverview(): Promise<{
 export default async function OverviewPage() {
   const { metrics, activity } = await loadOverview();
 
+  // The marquee KPI is the *midpoint* of the pipeline range — a single
+  // bold number reads as "this is the live deal flow." Falls back to a
+  // sentinel when the office has no estimates yet.
+  const pipelineMid =
+    metrics.pipelineLow === 0 && metrics.pipelineHigh === 0
+      ? null
+      : Math.round((metrics.pipelineLow + metrics.pipelineHigh) / 2);
+
   return (
     <div className="flex flex-col gap-7 lg:gap-8">
-      {/* HERO — operator status banner */}
-      <header className="glass-panel-hero p-7 lg:p-9 relative overflow-hidden">
-        {/* Soft aurora bloom behind the hero copy */}
-        <div className="absolute inset-0 pointer-events-none opacity-60">
-          <div className="absolute -top-32 -right-20 w-[500px] h-[500px] rounded-full bg-cy-300/10 blur-[80px]" />
-          <div className="absolute -bottom-32 -left-10 w-[400px] h-[400px] rounded-full bg-violet-300/10 blur-[80px]" />
+      {/* HERO — marquee KPI + live ribbon */}
+      <header className="glass-panel-hero relative overflow-hidden">
+        {/* Aurora wash */}
+        <div className="absolute inset-0 pointer-events-none opacity-70">
+          <div className="absolute -top-40 -right-24 w-[560px] h-[560px] rounded-full bg-cy-300/12 blur-[90px]" />
+          <div className="absolute -bottom-40 -left-12 w-[420px] h-[420px] rounded-full bg-violet-300/12 blur-[90px]" />
         </div>
 
-        <div className="relative flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2.5 mb-4">
-              <span className="glass-eyebrow">Operator Console · {monthLabel()}</span>
-              <span className="flex items-center gap-1.5 text-[10.5px] font-mono tabular text-mint/85 uppercase tracking-[0.14em]">
-                <span className="relative flex items-center justify-center">
-                  <span className="absolute w-2.5 h-2.5 rounded-full bg-mint/35 animate-ping" />
-                  <span className="relative w-1.5 h-1.5 rounded-full bg-mint shadow-[0_0_8px_rgba(95,227,176,0.55)]" />
+        <div className="relative p-7 lg:p-9 pb-6 lg:pb-7">
+          <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-6 xl:gap-10">
+            {/* Marquee KPI block */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2.5 mb-4 flex-wrap">
+                <span className="glass-eyebrow">Operator Console · {monthLabel()}</span>
+                <span className="flex items-center gap-1.5 text-[10.5px] font-mono tabular text-mint/85 uppercase tracking-[0.14em]">
+                  <span className="relative flex items-center justify-center">
+                    <span className="absolute w-2.5 h-2.5 rounded-full bg-mint/35 animate-ping" />
+                    <span className="relative w-1.5 h-1.5 rounded-full bg-mint shadow-[0_0_8px_rgba(95,227,176,0.55)]" />
+                  </span>
+                  Live · streaming
                 </span>
-                Live
-              </span>
-            </div>
-            <h1 className="text-3xl sm:text-4xl lg:text-[44px] tracking-tight font-semibold leading-[1.05]">
-              <span className="iridescent-text">Voxaris pipeline.</span>
-              <br />
-              <span className="text-white/85">Every lead. Every call. Every office.</span>
-            </h1>
-            <p className="text-[14.5px] text-white/65 mt-4 max-w-2xl leading-relaxed">
-              Real-time operator view across leads, Sydney calls, and proposals — multi-office
-              architecture with row-level isolation. Updates the instant Sydney books an inspection
-              or a customer requests a quote.
-            </p>
-          </div>
+              </div>
 
-          {/* Hero-right: Sydney status card */}
-          <div className="lg:w-80 shrink-0">
-            <div className="rounded-2xl border border-white/[0.10] bg-white/[0.04] backdrop-blur-2xl p-5 relative overflow-hidden">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Radio className="w-3.5 h-3.5 text-mint" />
-                  <span className="text-[12px] font-medium text-white/90">Sydney</span>
+              <div className="text-[10.5px] font-mono tabular uppercase tracking-[0.18em] text-white/50 mb-2">
+                Pipeline value · midpoint
+              </div>
+              <div className="flex items-baseline gap-3 flex-wrap">
+                <div className="marquee-kpi-value text-[64px] sm:text-[80px] lg:text-[104px]">
+                  {pipelineMid === null ? "—" : fmtUSD(pipelineMid, 0)}
                 </div>
-                <span className="text-[10px] font-mono tabular text-mint uppercase tracking-[0.14em] flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-mint shadow-[0_0_6px_rgba(95,227,176,0.6)]" />
-                  Online
-                </span>
+                {pipelineMid !== null && (
+                  <div className="text-[12px] font-mono tabular text-white/55 pb-2.5">
+                    range{" "}
+                    <span className="text-white/85">
+                      {fmtUSD(metrics.pipelineLow, 0)}
+                    </span>
+                    {" – "}
+                    <span className="text-white/85">
+                      {fmtUSD(metrics.pipelineHigh, 0)}
+                    </span>
+                  </div>
+                )}
               </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="font-mono tabular text-3xl font-semibold text-white tracking-tight">
-                  {metrics.callsThisMonth}
-                </span>
-                <span className="text-[12px] text-white/55">calls this month</span>
-              </div>
-              <div className="mt-3 pt-3 border-t border-white/[0.05] flex items-center justify-between text-[11px] text-white/50">
-                <span>Avg pickup</span>
-                <span className="font-mono tabular text-white/80">&lt; 5s</span>
+              <p className="text-[13.5px] text-white/65 mt-4 max-w-2xl leading-relaxed">
+                Real-time operator view across leads, Sydney calls, and proposals — multi-office
+                architecture with row-level isolation. Updates the instant Sydney books an
+                inspection or a customer requests a quote.
+              </p>
+            </div>
+
+            {/* Sydney status card */}
+            <div className="xl:w-72 shrink-0">
+              <div className="rounded-2xl border border-white/[0.10] bg-white/[0.04] backdrop-blur-2xl p-5 relative overflow-hidden">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Radio className="w-3.5 h-3.5 text-mint" />
+                    <span className="text-[12px] font-medium text-white/90">Sydney</span>
+                  </div>
+                  <span className="text-[10px] font-mono tabular text-mint uppercase tracking-[0.14em] flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-mint shadow-[0_0_6px_rgba(95,227,176,0.6)]" />
+                    Online
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="font-mono tabular text-3xl font-semibold text-white tracking-tight">
+                    {metrics.callsThisMonth}
+                  </span>
+                  <span className="text-[12px] text-white/55">calls this month</span>
+                </div>
+                <div className="mt-3 pt-3 border-t border-white/[0.05] flex items-center justify-between text-[11px] text-white/50">
+                  <span>Avg pickup</span>
+                  <span className="font-mono tabular text-white/80">&lt; 5s</span>
+                </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Live ribbon — compact tabular telemetry strip */}
+        <div className="live-ribbon relative">
+          <div className="live-ribbon-cell">
+            <span className="label">Leads · MTD</span>
+            <span className="value">{metrics.leadsThisMonth.toLocaleString()}</span>
+          </div>
+          <div className="live-ribbon-cell">
+            <span className="label">Sydney calls</span>
+            <span className="value">{metrics.callsThisMonth.toLocaleString()}</span>
+          </div>
+          <div className="live-ribbon-cell">
+            <span className="label">Proposals</span>
+            <span className="value">{metrics.proposalsThisMonth.toLocaleString()}</span>
+          </div>
+          <div className="live-ribbon-cell">
+            <span className="label">Supplement · MTD</span>
+            <span className="value">{fmtUSD(metrics.supplementRecoveredMtd, 0)}</span>
+            {metrics.supplementVsPrevMonthPct !== 0 && (
+              <span
+                className={[
+                  "delta",
+                  metrics.supplementVsPrevMonthPct > 0 ? "up" : "down",
+                ].join(" ")}
+              >
+                {metrics.supplementVsPrevMonthPct > 0 ? "▲" : "▼"}{" "}
+                {Math.abs(metrics.supplementVsPrevMonthPct)}% vs {prevMonthLabel()}
+              </span>
+            )}
           </div>
         </div>
       </header>
+
+      {/* OPERATIONS chapter */}
+      <div className="console-section-rule">
+        <span className="pulse" aria-hidden="true" />
+        <span>Operations · jump back in</span>
+      </div>
 
       {/* STAT GRID */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -312,6 +376,12 @@ export default async function OverviewPage() {
           accent="amber"
           dense
         />
+      </div>
+
+      {/* LIVE FEED chapter */}
+      <div className="console-section-rule">
+        <span className="pulse" aria-hidden="true" />
+        <span>Live feed · last 60 minutes</span>
       </div>
 
       {/* ACTIVITY + JUMP-IN */}

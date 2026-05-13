@@ -15,6 +15,7 @@ import {
   X,
   Radio,
   Check,
+  AlertTriangle,
 } from "lucide-react";
 import type { DemoOffice } from "@/lib/dashboard-demo";
 import { VOICE_PATH_BLURB } from "@/lib/telephony-dashboard";
@@ -219,7 +220,11 @@ function OfficeSwitcher({
   const router = useRouter();
   const [open, setOpen] = useState(variant === "drawer");
   const [pendingSlug, setPendingSlug] = useState<string | null>(null);
+  const [errorToast, setErrorToast] = useState<string | null>(null);
+  // Index of the option currently focused via keyboard. -1 = none.
+  const [highlightIdx, setHighlightIdx] = useState<number>(-1);
   const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   // Close on outside click (topbar variant only)
   useEffect(() => {
@@ -232,6 +237,24 @@ function OfficeSwitcher({
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open, variant]);
+
+  // Reset keyboard highlight when the dropdown opens — start on the
+  // currently active office so Enter immediately = no-op (sensible default).
+  useEffect(() => {
+    if (open) {
+      const activeIdx = offices.findIndex((o) => o.slug === activeOffice.slug);
+      setHighlightIdx(activeIdx >= 0 ? activeIdx : 0);
+    } else {
+      setHighlightIdx(-1);
+    }
+  }, [open, offices, activeOffice.slug]);
+
+  // Auto-dismiss the error toast after a few seconds.
+  useEffect(() => {
+    if (!errorToast) return;
+    const t = setTimeout(() => setErrorToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [errorToast]);
 
   async function pick(slug: string) {
     if (slug === activeOffice.slug) {
@@ -247,10 +270,10 @@ function OfficeSwitcher({
         body: JSON.stringify({ slug }),
       });
       if (!res.ok) throw new Error(`switch_failed_${res.status}`);
-      // Refresh all Server Components so they re-read the cookie.
       router.refresh();
     } catch (err) {
       console.error("[office-switch] failed:", err);
+      setErrorToast("Couldn't switch office — please try again.");
     } finally {
       setPendingSlug(null);
       setOpen(false);
@@ -258,16 +281,62 @@ function OfficeSwitcher({
     }
   }
 
+  // Keyboard nav on the dropdown — Escape closes, arrows navigate, Home/End
+  // jump, Enter/Space picks. Applies to both topbar and drawer variants.
+  function onListKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (!open) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      buttonRef.current?.focus();
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightIdx((i) => (i + 1) % offices.length);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightIdx((i) => (i - 1 + offices.length) % offices.length);
+      return;
+    }
+    if (e.key === "Home") {
+      e.preventDefault();
+      setHighlightIdx(0);
+      return;
+    }
+    if (e.key === "End") {
+      e.preventDefault();
+      setHighlightIdx(offices.length - 1);
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      if (highlightIdx >= 0 && highlightIdx < offices.length) {
+        e.preventDefault();
+        pick(offices[highlightIdx].slug);
+      }
+    }
+  }
+
   const isTopbar = variant === "topbar";
 
   return (
-    <div ref={rootRef} className={isTopbar ? "relative" : ""}>
+    <div ref={rootRef} className={isTopbar ? "relative" : ""} onKeyDown={onListKeyDown}>
       {isTopbar && (
         <button
+          ref={buttonRef}
           type="button"
           onClick={() => setOpen((v) => !v)}
+          onKeyDown={(e) => {
+            if ((e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") && !open) {
+              e.preventDefault();
+              setOpen(true);
+            }
+          }}
           aria-haspopup="listbox"
           aria-expanded={open}
+          aria-label={`Office: ${activeOffice.name}. Press Enter to switch.`}
           className="flex items-center gap-2.5 px-3 py-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06] transition-colors"
         >
           <span
@@ -299,10 +368,12 @@ function OfficeSwitcher({
       {open && (
         <div
           role="listbox"
+          aria-label="Switch office"
+          tabIndex={-1}
           className={
             isTopbar
-              ? "absolute z-40 mt-2 left-0 w-72 rounded-2xl border border-white/[0.08] bg-[rgba(8,11,17,0.92)] backdrop-blur-2xl shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)] p-1.5"
-              : "flex flex-col gap-1"
+              ? "absolute z-40 mt-2 left-0 w-72 rounded-2xl border border-white/[0.08] bg-[rgba(8,11,17,0.92)] backdrop-blur-2xl shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)] p-1.5 outline-none"
+              : "flex flex-col gap-1 outline-none"
           }
         >
           {isTopbar && (
@@ -310,9 +381,10 @@ function OfficeSwitcher({
               Switch office
             </div>
           )}
-          {offices.map((o) => {
+          {offices.map((o, i) => {
             const isActiveOffice = o.slug === activeOffice.slug;
             const isPending = pendingSlug === o.slug;
+            const isHighlighted = i === highlightIdx;
             return (
               <button
                 key={o.slug}
@@ -321,11 +393,14 @@ function OfficeSwitcher({
                 aria-selected={isActiveOffice}
                 disabled={isPending}
                 onClick={() => pick(o.slug)}
+                onMouseEnter={() => setHighlightIdx(i)}
                 className={[
                   "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors",
                   isActiveOffice
                     ? "bg-white/[0.06] border border-white/[0.08]"
-                    : "border border-transparent hover:bg-white/[0.04]",
+                    : isHighlighted
+                      ? "bg-white/[0.05] border border-white/[0.06]"
+                      : "border border-transparent hover:bg-white/[0.04]",
                   isPending ? "opacity-60" : "",
                 ].join(" ")}
               >
@@ -349,6 +424,36 @@ function OfficeSwitcher({
               </button>
             );
           })}
+        </div>
+      )}
+
+      {errorToast && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className={[
+            "console-toast pointer-events-auto fixed z-[60] flex items-start gap-2.5",
+            "right-4 top-4 lg:right-6 lg:top-6 max-w-[320px]",
+            "px-3.5 py-3 rounded-2xl border border-rose-400/30",
+            "bg-[rgba(28,12,16,0.92)] backdrop-blur-2xl",
+            "shadow-[0_18px_36px_-12px_rgba(255,122,138,0.45)]",
+          ].join(" ")}
+        >
+          <AlertTriangle className="w-4 h-4 text-rose-300 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[11px] font-mono tabular text-rose-300/85 uppercase tracking-[0.16em]">
+              Switch failed
+            </div>
+            <div className="text-[12.5px] text-white/85 leading-snug mt-0.5">{errorToast}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setErrorToast(null)}
+            aria-label="Dismiss error"
+            className="text-white/45 hover:text-white/85 transition-colors flex-shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
     </div>
