@@ -86,14 +86,14 @@ _RECORDING_DISCLOSURE = (
 )
 
 OPENER_BUSINESS_HOURS = (
-    "Thanks for calling Noland's Roofing, this is Sydney, your virtual "
-    "booking assistant. " + _RECORDING_DISCLOSURE +
+    "Thanks for calling Noland's Roofing, this is Sydney. "
+    + _RECORDING_DISCLOSURE +
     "How can I help you today?"
 )
 
 OPENER_AFTER_HOURS = (
-    "Thanks for calling Noland's Roofing, this is Sydney, your virtual "
-    "booking assistant. " + _RECORDING_DISCLOSURE +
+    "Thanks for calling Noland's Roofing, this is Sydney. "
+    + _RECORDING_DISCLOSURE +
     "Our offices are closed right now, but I can get you on the schedule "
     "or take down your info and have someone reach out first thing. "
     "What's going on?"
@@ -147,8 +147,13 @@ def build_outbound_opener(lead: "dict[str, object]") -> str:
         f"Hey {first_name}, this is Sydney with {company}. "
         "Thanks so much for running your roof through our estimator a "
         "few minutes ago. I wanted to personally follow up, answer any "
-        "questions you have, and see if we can get you on the schedule "
-        "for one of our project managers to come take a look."
+        "questions you have, and see if we can get one of our project "
+        "managers out to take a look. "
+        # Closing question — gives the customer a clear next action and
+        # keeps the call moving forward. Open-ended "what works best"
+        # rather than yes/no so we don't dead-end the conversation.
+        "Do you have a couple minutes right now to find a time that "
+        "works for you?"
     )
 
 
@@ -723,8 +728,9 @@ async def entrypoint(ctx: JobContext) -> None:
                     "Thanks so much for running your roof through our "
                     "estimator a few minutes ago. I wanted to personally "
                     "follow up, answer any questions you have, and see if "
-                    "we can get you on the schedule for one of our project "
-                    "managers to come take a look.'\n"
+                    "we can get one of our project managers out to take a "
+                    "look. Do you have a couple minutes right now to find "
+                    "a time that works for you?'\n"
                     "Wait for their first reply before doing anything else.\n\n"
                     "─── STAGE 2 — CONFIRMATION ───────────────────────────\n"
                     "Right after their first reply, confirm the property "
