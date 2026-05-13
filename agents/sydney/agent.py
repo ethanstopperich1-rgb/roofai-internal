@@ -324,34 +324,34 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
     ])
 
-    # ─── TTS — Rime mistv3 "Moraine" primary ─────────────────────────────────
-    # Switched FROM Cartesia Sonic-3 Southern Woman after live-call
-    # testing showed Cartesia produced inconsistent address-number
-    # pronunciation ("eleven thousand five hundred thirty-two" style
-    # mis-reads on numbers like "11532") and intermittent speed/slur
-    # drift. Rime mistv3 + Moraine speaker handles digit sequences
-    # noticeably cleaner. Demo-grade voice consistency is the goal.
+    # ─── TTS — Cartesia Sonic-3 "Southern Woman" primary (REVERTED) ─────────
+    # Briefly switched to Rime mistv3 + Moraine to address Cartesia's
+    # number-pronunciation issues, but live-call testing showed the Rime
+    # primary failed to produce usable audio ("TTS starts, nothing
+    # happens, sounds super weird"). Reverted to the known-good Cartesia
+    # config for the demo. Re-investigate Rime offline: validate
+    # mistv3 + moraine voice name combo, check LiveKit Inference
+    # supports this model+voice pair, test in agent console mode before
+    # putting back into the FallbackTTS primary slot.
     #
-    # Voice config locked: { speakerId: "moraine", modelId: "mistv3",
-    #                        lang: "eng" } per direct request.
-    # LiveKit Inference takes `voice` (speakerId) + `model` (provider/id)
-    # + `language` (ISO 2-letter — "en" not "eng"; framework normalizes).
-    #
-    # Fallback: Cartesia Sonic-3 with the original client-confirmed
-    # Southern Woman voice ID kept as a safety net so a Rime outage
-    # doesn't drop calls into silence. If/when the client re-locks
-    # the Cartesia voice, this fallback order can flip back.
+    # Voice ID f9836c6e + speed 0.95 are client-confirmed.
+    # Fallback 1: Cartesia Sonic-2 with the SAME voice ID — degraded
+    #             model, same voice, no audible drift if Sonic-3 5xx's.
+    # Fallback 2: Rime Arcana luna — different vendor, last-resort
+    #             fallback. Slight voice drift but ensures the call
+    #             doesn't go silent.
     tts = FallbackTTS([
-        inference.TTS(
-            model="rime/mistv3",
-            voice="moraine",
-            language="en",
-        ),
         inference.TTS(
             model="cartesia/sonic-3",
             voice=CARTESIA_VOICE_ID,
             extra_kwargs={"speed": SYDNEY_TTS_SPEED},
         ),
+        inference.TTS(
+            model="cartesia/sonic-2",
+            voice=CARTESIA_VOICE_ID,
+            extra_kwargs={"speed": SYDNEY_TTS_SPEED},
+        ),
+        inference.TTS(model="rime/arcana", voice="luna"),
     ])
 
     session = AgentSession(
