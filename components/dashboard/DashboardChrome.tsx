@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   PhoneCall,
@@ -14,7 +14,9 @@ import {
   Menu,
   X,
   Radio,
+  Check,
 } from "lucide-react";
+import type { DemoOffice } from "@/lib/dashboard-demo";
 
 /**
  * Operator console chassis.
@@ -23,35 +25,58 @@ import {
  * wrapper, glass sidebar floating over the canvas, status pulse at the
  * top, "Sydney online" indicator that telegraphs the platform is alive.
  *
- * Layout uses min-h-screen on the outer flex container + flex-grow on
- * main + a footer ribbon, so short pages never leave a black void
- * below the content.
+ * Office switcher: the chip in the topbar opens a glass dropdown of all
+ * seeded offices. Picking one POSTs to /api/office/switch (which sets
+ * the `voxaris_demo_office` cookie) and router-refreshes so every
+ * Server Component re-reads the demo data for the new office.
  */
 
-const NAV = [
-  { href: "/dashboard", label: "Overview", icon: LayoutDashboard, match: "exact" as const },
-  { href: "/dashboard/calls", label: "Sydney Calls", icon: PhoneCall, match: "prefix" as const },
-  { href: "/dashboard/leads", label: "Leads", icon: Users, match: "prefix" as const },
-  { href: "/dashboard/proposals", label: "Proposals", icon: FileText, match: "prefix" as const },
-  { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3, match: "prefix" as const },
-  { href: "/dashboard/settings", label: "Settings", icon: SettingsIcon, match: "prefix" as const },
-  { href: "/dashboard/admin", label: "Admin", icon: ShieldCheck, match: "prefix" as const },
+type NavItem = {
+  segment: "" | "/calls" | "/leads" | "/proposals" | "/analytics" | "/settings" | "/admin";
+  label: string;
+  icon: typeof LayoutDashboard;
+  match: "exact" | "prefix";
+  internalOnly?: boolean; // Hidden on the public /demo route
+};
+
+const NAV: NavItem[] = [
+  { segment: "", label: "Overview", icon: LayoutDashboard, match: "exact" },
+  { segment: "/calls", label: "Sydney Calls", icon: PhoneCall, match: "prefix" },
+  { segment: "/leads", label: "Leads", icon: Users, match: "prefix" },
+  { segment: "/proposals", label: "Proposals", icon: FileText, match: "prefix" },
+  { segment: "/analytics", label: "Analytics", icon: BarChart3, match: "prefix" },
+  { segment: "/settings", label: "Settings", icon: SettingsIcon, match: "prefix", internalOnly: true },
+  { segment: "/admin", label: "Admin", icon: ShieldCheck, match: "prefix", internalOnly: true },
 ];
 
-function isActive(pathname: string, item: (typeof NAV)[number]): boolean {
-  if (item.match === "exact") return pathname === item.href;
-  return pathname === item.href || pathname.startsWith(item.href + "/");
+function isActive(pathname: string, item: NavItem, basePath: string): boolean {
+  const href = basePath + item.segment;
+  if (item.match === "exact") return pathname === href;
+  return pathname === href || pathname.startsWith(href + "/");
 }
 
-export default function DashboardChrome({ children }: { children: ReactNode }) {
-  const pathname = usePathname() ?? "/dashboard";
+interface DashboardChromeProps {
+  children: ReactNode;
+  offices: DemoOffice[];
+  activeOffice: DemoOffice;
+}
+
+export default function DashboardChrome({
+  children,
+  offices,
+  activeOffice,
+}: DashboardChromeProps) {
+  const rawPathname = usePathname() ?? "/dashboard";
+  const isDemo = rawPathname === "/demo" || rawPathname.startsWith("/demo/");
+  const basePath = isDemo ? "/demo" : "/dashboard";
+  const pathname = rawPathname;
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
     <div className="relative min-h-screen flex flex-col lg:flex-row">
       {/* Mobile top bar */}
       <div className="lg:hidden sticky top-0 z-30 px-4 py-3 flex items-center justify-between border-b border-white/[0.06] bg-[rgba(8,11,17,0.72)] backdrop-blur-xl">
-        <Link href="/dashboard" className="flex items-center">
+        <Link href={basePath} className="flex items-center">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/brand/logo-wordmark-alpha.png"
@@ -70,42 +95,40 @@ export default function DashboardChrome({ children }: { children: ReactNode }) {
         </button>
       </div>
 
-      {/* Sidebar — desktop. Floats over the aurora canvas with a soft
-          right border and lots of breathing room. */}
+      {/* Sidebar — desktop */}
       <aside className="hidden lg:flex lg:w-72 xl:w-80 shrink-0 flex-col gap-5 px-6 py-7 border-r border-white/[0.06] sticky top-0 h-screen bg-[rgba(8,11,17,0.32)] backdrop-blur-2xl">
-        <SidebarContent pathname={pathname} />
+        <SidebarContent pathname={pathname} basePath={basePath} isDemo={isDemo} />
       </aside>
 
       {/* Drawer — mobile */}
       {drawerOpen && (
         <div className="lg:hidden border-b border-white/[0.06] px-4 py-4 bg-[rgba(8,11,17,0.86)] backdrop-blur-xl">
-          <SidebarContent pathname={pathname} onNavigate={() => setDrawerOpen(false)} />
+          <SidebarContent
+            pathname={pathname}
+            basePath={basePath}
+            isDemo={isDemo}
+            onNavigate={() => setDrawerOpen(false)}
+          />
+          <div className="mt-4 pt-4 border-t border-white/[0.06]">
+            <div className="text-[10px] font-mono tabular uppercase tracking-[0.18em] text-white/40 mb-2 px-1">
+              Active office
+            </div>
+            <OfficeSwitcher
+              offices={offices}
+              activeOffice={activeOffice}
+              variant="drawer"
+              onSwitched={() => setDrawerOpen(false)}
+            />
+          </div>
         </div>
       )}
 
-      {/* Main column — flex column so footer can pin to bottom on short pages */}
       <main className="flex-1 min-w-0 flex flex-col">
-        {/* Desktop top bar — operator status strip */}
+        {/* Desktop top bar */}
         <div className="hidden lg:flex items-center justify-between px-8 py-5 border-b border-white/[0.06] bg-[rgba(8,11,17,0.22)] backdrop-blur-xl">
           <div className="flex items-center gap-6">
-            {/* Office switcher chip — implies multi-tenancy */}
-            <button
-              type="button"
-              className="flex items-center gap-2.5 px-3 py-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06] transition-colors"
-            >
-              <div className="h-5 w-5 rounded-md bg-gradient-to-br from-cy-300/40 to-violet-300/30 border border-white/10 flex items-center justify-center text-[10px] font-bold text-white">
-                V
-              </div>
-              <span className="text-[13px] text-white/85 font-medium">Voxaris</span>
-              <span className="text-[10px] font-mono tabular text-white/40 uppercase tracking-wider ml-1">
-                Office
-              </span>
-              <svg className="w-3 h-3 text-white/40 ml-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="6 9 12 15 18 9" />
-              </svg>
-            </button>
+            <OfficeSwitcher offices={offices} activeOffice={activeOffice} variant="topbar" />
 
-            {/* Sydney live indicator */}
             <div className="flex items-center gap-2 text-[12px] text-white/65">
               <div className="relative flex items-center justify-center">
                 <span className="absolute w-3 h-3 rounded-full bg-mint/40 animate-ping" />
@@ -127,24 +150,32 @@ export default function DashboardChrome({ children }: { children: ReactNode }) {
                 day: "numeric",
               })}
             </div>
-            <div className="text-xs text-white/60 font-mono tabular">admin@voxaris.io</div>
-            <form action="/auth/signout" method="POST">
-              <button
-                type="submit"
-                className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/45 hover:text-white/85 transition-colors"
-              >
-                Sign out
-              </button>
-            </form>
+            {isDemo ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber/30 bg-amber/10 text-[11px] font-mono tabular uppercase tracking-[0.14em] text-amber">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber shadow-[0_0_6px_rgba(243,177,75,0.6)]" />
+                Demo mode
+              </span>
+            ) : (
+              <>
+                <div className="text-xs text-white/60 font-mono tabular">admin@voxaris.io</div>
+                <form action="/auth/signout" method="POST">
+                  <button
+                    type="submit"
+                    className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/45 hover:text-white/85 transition-colors"
+                  >
+                    Sign out
+                  </button>
+                </form>
+              </>
+            )}
           </div>
         </div>
 
-        {/* Content — flex-1 so any leftover vertical space stays balanced */}
         <div className="flex-1 px-4 sm:px-6 lg:px-8 py-6 lg:py-8 max-w-[1400px] mx-auto w-full">
           {children}
         </div>
 
-        {/* Footer ribbon — pins to bottom on short pages, kills the void */}
+        {/* Footer ribbon */}
         <div className="border-t border-white/[0.06] px-4 sm:px-6 lg:px-8 py-4 mt-auto bg-[rgba(8,11,17,0.28)] backdrop-blur-xl">
           <div className="max-w-[1400px] mx-auto flex flex-wrap items-center justify-between gap-3 text-[11px] font-mono tabular uppercase tracking-[0.16em] text-white/40">
             <div className="flex items-center gap-3">
@@ -155,7 +186,9 @@ export default function DashboardChrome({ children }: { children: ReactNode }) {
               <span className="text-white/15">·</span>
               <span>Sydney online</span>
               <span className="text-white/15">·</span>
-              <span>Multi-office RLS active</span>
+              <span>
+                {offices.length} offices · routed to {activeOffice.shortName}
+              </span>
             </div>
             <div className="flex items-center gap-3">
               <span>Voxaris AI</span>
@@ -169,17 +202,174 @@ export default function DashboardChrome({ children }: { children: ReactNode }) {
   );
 }
 
+// ─── Office switcher ──────────────────────────────────────────────────
+
+function OfficeSwitcher({
+  offices,
+  activeOffice,
+  variant,
+  onSwitched,
+}: {
+  offices: DemoOffice[];
+  activeOffice: DemoOffice;
+  variant: "topbar" | "drawer";
+  onSwitched?: () => void;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(variant === "drawer");
+  const [pendingSlug, setPendingSlug] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click (topbar variant only)
+  useEffect(() => {
+    if (variant !== "topbar" || !open) return;
+    function onDocClick(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open, variant]);
+
+  async function pick(slug: string) {
+    if (slug === activeOffice.slug) {
+      setOpen(false);
+      onSwitched?.();
+      return;
+    }
+    setPendingSlug(slug);
+    try {
+      const res = await fetch("/api/office/switch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug }),
+      });
+      if (!res.ok) throw new Error(`switch_failed_${res.status}`);
+      // Refresh all Server Components so they re-read the cookie.
+      router.refresh();
+    } catch (err) {
+      console.error("[office-switch] failed:", err);
+    } finally {
+      setPendingSlug(null);
+      setOpen(false);
+      onSwitched?.();
+    }
+  }
+
+  const isTopbar = variant === "topbar";
+
+  return (
+    <div ref={rootRef} className={isTopbar ? "relative" : ""}>
+      {isTopbar && (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          className="flex items-center gap-2.5 px-3 py-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06] transition-colors"
+        >
+          <span
+            className="h-5 w-5 rounded-md border border-white/10 flex items-center justify-center text-[10px] font-bold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]"
+            style={{
+              background: `linear-gradient(135deg, ${activeOffice.brand}66, ${activeOffice.brand}33)`,
+            }}
+          >
+            {activeOffice.initial}
+          </span>
+          <span className="text-[13px] text-white/85 font-medium">{activeOffice.shortName}</span>
+          <span className="text-[10px] font-mono tabular text-white/40 uppercase tracking-wider ml-1">
+            Office
+          </span>
+          <svg
+            className={`w-3 h-3 text-white/40 ml-0.5 transition-transform ${open ? "rotate-180" : ""}`}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+      )}
+
+      {open && (
+        <div
+          role="listbox"
+          className={
+            isTopbar
+              ? "absolute z-40 mt-2 left-0 w-72 rounded-2xl border border-white/[0.08] bg-[rgba(8,11,17,0.92)] backdrop-blur-2xl shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)] p-1.5"
+              : "flex flex-col gap-1"
+          }
+        >
+          {isTopbar && (
+            <div className="px-3 pt-2 pb-1.5 text-[10px] font-mono tabular uppercase tracking-[0.18em] text-white/40">
+              Switch office
+            </div>
+          )}
+          {offices.map((o) => {
+            const isActiveOffice = o.slug === activeOffice.slug;
+            const isPending = pendingSlug === o.slug;
+            return (
+              <button
+                key={o.slug}
+                type="button"
+                role="option"
+                aria-selected={isActiveOffice}
+                disabled={isPending}
+                onClick={() => pick(o.slug)}
+                className={[
+                  "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors",
+                  isActiveOffice
+                    ? "bg-white/[0.06] border border-white/[0.08]"
+                    : "border border-transparent hover:bg-white/[0.04]",
+                  isPending ? "opacity-60" : "",
+                ].join(" ")}
+              >
+                <span
+                  className="h-7 w-7 rounded-lg border border-white/10 flex items-center justify-center text-[11px] font-bold text-white shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]"
+                  style={{
+                    background: `linear-gradient(135deg, ${o.brand}66, ${o.brand}33)`,
+                  }}
+                >
+                  {o.initial}
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-[13px] text-white/90 font-medium leading-tight truncate">
+                    {o.name}
+                  </span>
+                  <span className="block text-[11px] text-white/45 leading-tight mt-0.5 truncate">
+                    {o.city}, {o.state}
+                  </span>
+                </span>
+                {isActiveOffice && <Check className="w-3.5 h-3.5 text-mint shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SidebarContent({
   pathname,
+  basePath,
+  isDemo,
   onNavigate,
 }: {
   pathname: string;
+  basePath: string;
+  isDemo: boolean;
   onNavigate?: () => void;
 }) {
+  const navItems = isDemo ? NAV.filter((n) => !n.internalOnly) : NAV;
   return (
     <>
       <Link
-        href="/dashboard"
+        href={basePath}
         onClick={onNavigate}
         className="hidden lg:flex flex-col items-start gap-1.5 px-1"
       >
@@ -191,19 +381,20 @@ function SidebarContent({
           draggable={false}
         />
         <span className="text-[10px] font-mono tabular uppercase tracking-[0.18em] text-white/40 pl-0.5">
-          Operator Console
+          {isDemo ? "Demo Console" : "Operator Console"}
         </span>
       </Link>
       <div className="hidden lg:block glass-divider mt-2" />
 
       <nav className="flex flex-col gap-1">
-        {NAV.map((item) => {
-          const active = isActive(pathname, item);
+        {navItems.map((item) => {
+          const href = basePath + item.segment;
+          const active = isActive(pathname, item, basePath);
           const Icon = item.icon;
           return (
             <Link
-              key={item.href}
-              href={item.href}
+              key={href}
+              href={href}
               onClick={onNavigate}
               className={[
                 "group flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13.5px] font-medium transition-all",
@@ -231,7 +422,6 @@ function SidebarContent({
         })}
       </nav>
 
-      {/* Sidebar footer — Sydney status card, gives the sidebar weight */}
       <div className="hidden lg:flex mt-auto flex-col gap-3">
         <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] backdrop-blur-xl p-3.5">
           <div className="flex items-center gap-2 mb-2">

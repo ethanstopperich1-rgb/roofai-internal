@@ -170,6 +170,26 @@ export function middleware(req: NextRequest): NextResponse {
     return res;
   }
 
+  // Public demo surface — pitch.voxaris.io/demo lets prospects play
+  // with the dashboard without auth. Internally rewrite to /dashboard
+  // so the same Server Components render, then set the demo header
+  // so lib/dashboard.ts forces the demo-data fallback (never touches
+  // real Supabase rows even when SUPABASE_* env vars are set in prod).
+  //
+  // URL stays /demo in the browser — DashboardChrome reads
+  // usePathname() to detect the prefix and rewrites its nav links.
+  if (pathname === "/demo" || pathname.startsWith("/demo/")) {
+    const target = pathname === "/demo" ? "/dashboard" : "/dashboard" + pathname.slice(5);
+    const url = req.nextUrl.clone();
+    url.pathname = target;
+    const reqHeaders = new Headers(req.headers);
+    reqHeaders.set("x-voxaris-demo", "1");
+    const res = NextResponse.rewrite(url, { request: { headers: reqHeaders } });
+    // Don't let search engines index the demo or its rewritten target.
+    res.headers.set("X-Robots-Tag", "noindex, nofollow");
+    return res;
+  }
+
   // Root-domain landing: redirect unauthenticated visitors to the
   // customer-facing /quote page so a buyer pasting the bare URL
   // (`pitch.voxaris.io/`) doesn't hit the staff-auth 503. Authenticated

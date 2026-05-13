@@ -5,7 +5,6 @@ import { X } from "lucide-react";
 import {
   fmtDateTime,
   fmtDuration,
-  fmtUSD,
   outcomeStyle,
   type Call,
   type Event,
@@ -89,7 +88,6 @@ export default function CallsTable({
                 <th className="text-left font-medium px-4 py-3">Caller</th>
                 <th className="text-right font-medium px-4 py-3">Duration</th>
                 <th className="text-left font-medium px-4 py-3">Outcome</th>
-                <th className="text-right font-medium px-4 py-3">Cost</th>
                 <th className="text-right font-medium px-4 py-3 hidden lg:table-cell">Turns</th>
                 <th className="text-right font-medium px-4 py-3 hidden lg:table-cell">Lead</th>
               </tr>
@@ -97,7 +95,7 @@ export default function CallsTable({
             <tbody>
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-white/55 text-sm">
+                  <td colSpan={6} className="px-4 py-10 text-center text-white/55 text-sm">
                     No calls match this filter.
                   </td>
                 </tr>
@@ -125,9 +123,6 @@ export default function CallsTable({
                       >
                         {style.label}
                       </span>
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono tabular text-[12.5px]">
-                      {fmtUSD(c.estimated_cost_usd)}
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular text-[12.5px] hidden lg:table-cell text-white/65">
                       {c.turn_count ?? "—"}
@@ -200,10 +195,9 @@ function CallDrawer({
           </button>
         </header>
 
-        <section className="grid grid-cols-3 gap-3">
+        <section className="grid grid-cols-2 gap-3">
           <Stat label="Duration" value={fmtDuration(call.duration_sec)} />
           <Stat label="Turns" value={call.turn_count?.toString() ?? "—"} />
-          <Stat label="Cost" value={fmtUSD(call.estimated_cost_usd)} />
         </section>
 
         {call.summary && (
@@ -247,25 +241,6 @@ function CallDrawer({
           )}
         </section>
 
-        <section className="glass-panel p-4">
-          <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-2">
-            Cost breakdown
-          </div>
-          <dl className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-[12.5px] font-mono tabular">
-            <dt className="text-white/55">LLM prompt tokens</dt>
-            <dd className="text-right text-white/85">{call.llm_prompt_tokens ?? "—"}</dd>
-            <dt className="text-white/55">LLM completion tokens</dt>
-            <dd className="text-right text-white/85">{call.llm_completion_tokens ?? "—"}</dd>
-            <dt className="text-white/55">STT seconds</dt>
-            <dd className="text-right text-white/85">{call.stt_secs ?? "—"}</dd>
-            <dt className="text-white/55">TTS characters</dt>
-            <dd className="text-right text-white/85">{call.tts_chars ?? "—"}</dd>
-            <dt className="text-white/55 border-t border-white/[0.08] pt-1.5 mt-1">Total</dt>
-            <dd className="text-right text-mint border-t border-white/[0.08] pt-1.5 mt-1">
-              {fmtUSD(call.estimated_cost_usd)}
-            </dd>
-          </dl>
-        </section>
       </aside>
     </div>
   );

@@ -3,15 +3,16 @@ import {
   daysAgoISO,
   fmtUSD,
   getDashboardOfficeId,
+  getDashboardOfficeSlug,
   getDashboardSupabase,
   outcomeStyle,
 } from "@/lib/dashboard";
 import {
-  DEMO_FUNNEL,
-  DEMO_OUTCOMES,
-  DEMO_TOP_MATERIALS,
-  DEMO_TOTAL_CALLS,
   getDemoCallsByDay,
+  getDemoFunnel,
+  getDemoOutcomes,
+  getDemoTopMaterials,
+  getDemoTotalCalls,
 } from "@/lib/dashboard-demo";
 
 export const dynamic = "force-dynamic";
@@ -51,16 +52,18 @@ interface AnalyticsData {
 }
 
 async function load(): Promise<AnalyticsData> {
+  const officeSlug = await getDashboardOfficeSlug();
   const officeId = await getDashboardOfficeId();
   const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) {
-    // No Supabase → demo data so analytics never renders an empty void.
+    // No Supabase → demo data, keyed to the active office slug from the
+    // switcher cookie so analytics tracks the same office as overview.
     return {
-      funnel: DEMO_FUNNEL,
-      callsByDay: getDemoCallsByDay(),
-      topMaterials: DEMO_TOP_MATERIALS,
-      outcomeBreakdown: DEMO_OUTCOMES,
-      totalCalls: DEMO_TOTAL_CALLS,
+      funnel: getDemoFunnel(officeSlug),
+      callsByDay: getDemoCallsByDay(officeSlug),
+      topMaterials: getDemoTopMaterials(officeSlug),
+      outcomeBreakdown: getDemoOutcomes(officeSlug),
+      totalCalls: getDemoTotalCalls(officeSlug),
       hasData: true,
     };
   }
@@ -145,11 +148,11 @@ async function load(): Promise<AnalyticsData> {
   // the moment they land in Supabase.
   if (!realHasData) {
     return {
-      funnel: DEMO_FUNNEL,
-      callsByDay: getDemoCallsByDay(),
-      topMaterials: DEMO_TOP_MATERIALS,
-      outcomeBreakdown: DEMO_OUTCOMES,
-      totalCalls: DEMO_TOTAL_CALLS,
+      funnel: getDemoFunnel(officeSlug),
+      callsByDay: getDemoCallsByDay(officeSlug),
+      topMaterials: getDemoTopMaterials(officeSlug),
+      outcomeBreakdown: getDemoOutcomes(officeSlug),
+      totalCalls: getDemoTotalCalls(officeSlug),
       hasData: true,
     };
   }

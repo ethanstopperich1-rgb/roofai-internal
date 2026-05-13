@@ -4,18 +4,35 @@ import {
   fmtDate,
   fmtUSD,
   getDashboardOfficeId,
+  getDashboardOfficeSlug,
   getDashboardSupabase,
   type Lead,
   type Proposal,
 } from "@/lib/dashboard";
+import { getDemoLeads, getDemoProposals } from "@/lib/dashboard-demo-rows";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-async function load(): Promise<{ rows: Array<Proposal & { lead?: Lead | null }> }> {
+function buildDemoRows(slug: Parameters<typeof getDemoProposals>[0]) {
+  const leads = getDemoLeads(slug);
+  const leadsById: Record<string, Lead> = {};
+  for (const l of leads) leadsById[l.id] = l;
+  const rows = getDemoProposals(slug).map((p) => ({
+    ...p,
+    lead: p.lead_id ? leadsById[p.lead_id] ?? null : null,
+    isDemo: true as const,
+  }));
+  return { rows };
+}
+
+async function load(): Promise<{
+  rows: Array<Proposal & { lead?: Lead | null; isDemo?: boolean }>;
+}> {
+  const officeSlug = await getDashboardOfficeSlug();
   const officeId = await getDashboardOfficeId();
   const supabase = await getDashboardSupabase();
-  if (!officeId || !supabase) return { rows: [] };
+  if (!officeId || !supabase) return buildDemoRows(officeSlug);
 
   const { data: proposals } = await supabase
     .from("proposals")
@@ -35,6 +52,8 @@ async function load(): Promise<{ rows: Array<Proposal & { lead?: Lead | null }> 
       .in("id", leadIds);
     for (const l of leads ?? []) leadsById[l.id] = l;
   }
+
+  if (rows.length === 0) return buildDemoRows(officeSlug);
 
   return {
     rows: rows.map((p) => ({ ...p, lead: p.lead_id ? leadsById[p.lead_id] ?? null : null })),
@@ -111,13 +130,22 @@ export default async function ProposalsPage() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <Link
-                        href={`/p/${p.public_id}`}
-                        target="_blank"
-                        className="inline-flex items-center gap-1 text-xs text-cy-300 hover:text-white"
-                      >
-                        Open <ExternalLink className="w-3 h-3" />
-                      </Link>
+                      {p.isDemo ? (
+                        <span
+                          title="Demo data — live proposal links require Supabase."
+                          className="inline-flex items-center gap-1 text-xs text-white/35 cursor-not-allowed"
+                        >
+                          Demo <ExternalLink className="w-3 h-3" />
+                        </span>
+                      ) : (
+                        <Link
+                          href={`/p/${p.public_id}`}
+                          target="_blank"
+                          className="inline-flex items-center gap-1 text-xs text-cy-300 hover:text-white"
+                        >
+                          Open <ExternalLink className="w-3 h-3" />
+                        </Link>
+                      )}
                     </td>
                   </tr>
                 ))}

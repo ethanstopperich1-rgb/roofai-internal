@@ -9,18 +9,19 @@ import {
   Activity,
   Radio,
   BarChart3,
+  Wallet,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import {
   fmtDateTime,
   fmtUSD,
   getDashboardOfficeId,
+  getDashboardOfficeSlug,
   getDashboardSupabase,
   monthStartISO,
 } from "@/lib/dashboard";
-import {
-  DEMO_OVERVIEW_METRICS,
-  getDemoActivity,
-} from "@/lib/dashboard-demo";
+import { getDemoActivity, getDemoMetrics } from "@/lib/dashboard-demo";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -31,6 +32,9 @@ interface OverviewMetrics {
   proposalsThisMonth: number;
   pipelineLow: number;
   pipelineHigh: number;
+  supplementRecoveredMtd: number;
+  supplementClaimsCount: number;
+  supplementVsPrevMonthPct: number;
 }
 
 interface ActivityItem {
@@ -46,16 +50,17 @@ async function loadOverview(): Promise<{
   activity: ActivityItem[];
   configured: boolean;
 }> {
+  const officeSlug = await getDashboardOfficeSlug();
   const officeId = await getDashboardOfficeId();
   const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) {
     // No Supabase wiring → fall back to demo data so the dashboard
-    // never renders an empty void. Demo values mirror the Figma
-    // operator-console mocks; as soon as real rows land the live
-    // queries below take over automatically.
+    // never renders an empty void. The active demo office comes from
+    // the `voxaris_demo_office` cookie set by the switcher in the
+    // chrome, so each company's data shows when its slug is picked.
     return {
-      metrics: DEMO_OVERVIEW_METRICS,
-      activity: getDemoActivity().slice(0, 8),
+      metrics: getDemoMetrics(officeSlug),
+      activity: getDemoActivity(officeSlug).slice(0, 8),
       configured: false,
     };
   }
@@ -174,11 +179,17 @@ async function loadOverview(): Promise<{
 
   if (isEmpty) {
     return {
-      metrics: DEMO_OVERVIEW_METRICS,
-      activity: getDemoActivity().slice(0, 8),
+      metrics: getDemoMetrics(officeSlug),
+      activity: getDemoActivity(officeSlug).slice(0, 8),
       configured: true,
     };
   }
+
+  // Supplement Recovery is not yet a live-tracked metric — we surface
+  // the per-office demo values alongside live lead/call counts so the
+  // tile never goes blank while a real `supplements` table is being
+  // wired up. Swap to a live count + sum once 0007_supplements.sql lands.
+  const demoSupp = getDemoMetrics(officeSlug);
 
   return {
     metrics: {
@@ -187,6 +198,9 @@ async function loadOverview(): Promise<{
       proposalsThisMonth: proposalsCount,
       pipelineLow,
       pipelineHigh,
+      supplementRecoveredMtd: demoSupp.supplementRecoveredMtd,
+      supplementClaimsCount: demoSupp.supplementClaimsCount,
+      supplementVsPrevMonthPct: demoSupp.supplementVsPrevMonthPct,
     },
     activity: activity.slice(0, 10),
     configured: true,
@@ -277,12 +291,13 @@ export default async function OverviewPage() {
           accent="cy"
         />
         <StatCard
-          icon={FileText}
-          label="Proposals"
-          sublabel="sent to homeowners"
-          value={metrics.proposalsThisMonth.toString()}
+          icon={Wallet}
+          label="Supplement recovery"
+          sublabel={`${metrics.supplementClaimsCount} claims supplemented`}
+          value={fmtUSD(metrics.supplementRecoveredMtd, 0)}
           href="/dashboard/proposals"
-          accent="amber"
+          accent="mint"
+          deltaPct={metrics.supplementVsPrevMonthPct}
         />
         <StatCard
           icon={TrendingUp}
@@ -294,7 +309,7 @@ export default async function OverviewPage() {
               : `${fmtUSD(metrics.pipelineLow, 0)}–${fmtUSD(metrics.pipelineHigh, 0)}`
           }
           href="/dashboard/leads"
-          accent="mint"
+          accent="amber"
           dense
         />
       </div>
@@ -388,6 +403,7 @@ function StatCard({
   href,
   accent,
   dense,
+  deltaPct,
 }: {
   icon: typeof Users;
   label: string;
@@ -396,6 +412,7 @@ function StatCard({
   href: string;
   accent: "cy" | "mint" | "amber";
   dense?: boolean;
+  deltaPct?: number;
 }) {
   const accentColor =
     accent === "mint"
@@ -440,9 +457,35 @@ function StatCard({
       >
         {value}
       </div>
-      <div className="text-[11.5px] text-white/45 mt-1.5">{sublabel}</div>
+      <div className="flex items-center gap-2 mt-1.5">
+        <div className="text-[11.5px] text-white/45">{sublabel}</div>
+        {typeof deltaPct === "number" && deltaPct !== 0 && (
+          <span
+            className={[
+              "inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-mono tabular font-medium",
+              deltaPct > 0
+                ? "bg-mint/12 text-mint border border-mint/25"
+                : "bg-red-500/12 text-red-300 border border-red-400/25",
+            ].join(" ")}
+          >
+            {deltaPct > 0 ? (
+              <ArrowUp className="w-2.5 h-2.5" />
+            ) : (
+              <ArrowDown className="w-2.5 h-2.5" />
+            )}
+            {Math.abs(deltaPct)}%
+            <span className="text-white/40 ml-0.5">vs {prevMonthLabel()}</span>
+          </span>
+        )}
+      </div>
     </Link>
   );
+}
+
+function prevMonthLabel(): string {
+  const d = new Date();
+  d.setMonth(d.getMonth() - 1);
+  return d.toLocaleDateString("en-US", { month: "short" });
 }
 
 function JumpLink({

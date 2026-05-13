@@ -1,5 +1,12 @@
 import { PhoneCall } from "lucide-react";
-import { getDashboardOfficeId, getDashboardSupabase, type Call, type Event } from "@/lib/dashboard";
+import {
+  getDashboardOfficeId,
+  getDashboardOfficeSlug,
+  getDashboardSupabase,
+  type Call,
+  type Event,
+} from "@/lib/dashboard";
+import { getDemoCalls, getDemoEventsByCall } from "@/lib/dashboard-demo-rows";
 import CallsTable from "@/components/dashboard/CallsTable";
 
 export const dynamic = "force-dynamic";
@@ -12,10 +19,18 @@ async function loadCalls(): Promise<{
   eventsByCall: Record<string, Event[]>;
   configured: boolean;
 }> {
+  const officeSlug = await getDashboardOfficeSlug();
   const officeId = await getDashboardOfficeId();
   const supabase = await getDashboardSupabase();
   if (!officeId || !supabase) {
-    return { calls: [], eventsByCall: {}, configured: false };
+    // No Supabase wiring → per-office demo data so the inbox never
+    // renders empty during a sales pitch. Real rows take over the
+    // moment the office has a Sydney call land.
+    return {
+      calls: getDemoCalls(officeSlug),
+      eventsByCall: getDemoEventsByCall(officeSlug),
+      configured: false,
+    };
   }
 
   const { data: calls } = await supabase
@@ -40,6 +55,17 @@ async function loadCalls(): Promise<{
       if (!e.call_id) continue;
       (eventsByCall[e.call_id] ??= []).push(e);
     }
+  }
+
+  // If this office has zero live rows, return demo data so the pitch
+  // shows a populated inbox. Real rows take over the moment a Sydney
+  // call lands for this office.
+  if (callRows.length === 0) {
+    return {
+      calls: getDemoCalls(officeSlug),
+      eventsByCall: getDemoEventsByCall(officeSlug),
+      configured: true,
+    };
   }
 
   return { calls: callRows, eventsByCall, configured: true };

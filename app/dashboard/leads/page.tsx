@@ -1,24 +1,46 @@
 import { Users } from "lucide-react";
 import {
   getDashboardOfficeId,
+  getDashboardOfficeSlug,
   getDashboardSupabase,
   type Lead,
   type Call,
   type Proposal,
 } from "@/lib/dashboard";
+import {
+  getDemoCalls,
+  getDemoLeads,
+  getDemoProposals,
+} from "@/lib/dashboard-demo-rows";
 import LeadsTable from "@/components/dashboard/LeadsTable";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+
+function buildDemoBundle(slug: Parameters<typeof getDemoLeads>[0]) {
+  const leads = getDemoLeads(slug);
+  const callsByLead: Record<string, Call[]> = {};
+  const proposalsByLead: Record<string, Proposal[]> = {};
+  for (const c of getDemoCalls(slug)) {
+    if (!c.lead_id) continue;
+    (callsByLead[c.lead_id] ??= []).push(c);
+  }
+  for (const p of getDemoProposals(slug)) {
+    if (!p.lead_id) continue;
+    (proposalsByLead[p.lead_id] ??= []).push(p);
+  }
+  return { leads, callsByLead, proposalsByLead };
+}
 
 async function loadLeads(): Promise<{
   leads: Lead[];
   callsByLead: Record<string, Call[]>;
   proposalsByLead: Record<string, Proposal[]>;
 }> {
+  const officeSlug = await getDashboardOfficeSlug();
   const officeId = await getDashboardOfficeId();
   const supabase = await getDashboardSupabase();
-  if (!officeId || !supabase) return { leads: [], callsByLead: {}, proposalsByLead: {} };
+  if (!officeId || !supabase) return buildDemoBundle(officeSlug);
 
   const { data: leads } = await supabase
     .from("leads")
@@ -45,6 +67,9 @@ async function loadLeads(): Promise<{
       (proposalsByLead[p.lead_id] ??= []).push(p);
     }
   }
+  // Empty office → demo bundle, same pattern as the calls page.
+  if (leadRows.length === 0) return buildDemoBundle(officeSlug);
+
   return { leads: leadRows, callsByLead, proposalsByLead };
 }
 

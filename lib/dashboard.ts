@@ -25,7 +25,7 @@
  */
 
 import "server-only";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import {
   createServerClient,
   createServiceRoleClient,
@@ -33,8 +33,32 @@ import {
   supabaseConfigured,
   supabaseServiceRoleConfigured,
 } from "@/lib/supabase";
+import {
+  DEFAULT_OFFICE_SLUG,
+  DEMO_OFFICES,
+  isDemoOfficeSlug,
+  type DemoOfficeSlug,
+} from "@/lib/dashboard-demo";
 import type { Database } from "@/types/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
+
+/** Name of the cookie used by /api/office/switch to pin the active
+ *  demo office. Read by every dashboard page so the switcher in the
+ *  chrome propagates everywhere. */
+export const OFFICE_COOKIE = "voxaris_demo_office";
+
+/** True when middleware rewrote /demo/* to /dashboard/*. Forces every
+ *  dashboard page onto the demo-data fallback even if SUPABASE_*
+ *  env vars are set — so the public /demo URL never leaks real
+ *  customer rows. */
+async function isDemoRoute(): Promise<boolean> {
+  try {
+    const h = await headers();
+    return h.get("x-voxaris-demo") === "1";
+  } catch {
+    return false;
+  }
+}
 
 // Re-export the client-safe formatters + types so existing call sites
 // in app/dashboard/* keep working without changing imports.
@@ -94,6 +118,7 @@ async function hasSession(): Promise<boolean> {
  *  the JWT user. When no session, fall back to the seed Voxaris office.
  *  Returns null when Supabase isn't configured at all. */
 export async function getDashboardOfficeId(): Promise<string | null> {
+  if (await isDemoRoute()) return null;
   if (!supabaseConfigured()) return null;
   if (await hasSession()) {
     try {
@@ -111,8 +136,25 @@ export async function getDashboardOfficeId(): Promise<string | null> {
   return resolveOfficeIdBySlug(FALLBACK_OFFICE_SLUG);
 }
 
+/** Resolve the slug of the office the dashboard should render for. Used
+ *  by the demo-data fallback so the switcher in the chrome propagates
+ *  to every page. Reads the `voxaris_demo_office` cookie set by
+ *  /api/office/switch; falls back to Noland's when missing/invalid. */
+export async function getDashboardOfficeSlug(): Promise<DemoOfficeSlug> {
+  const cookieStore = await cookies();
+  const raw = cookieStore.get(OFFICE_COOKIE)?.value;
+  return isDemoOfficeSlug(raw) ? raw : DEFAULT_OFFICE_SLUG;
+}
+
+/** Convenience: return the active demo office record. */
+export async function getActiveDemoOffice() {
+  const slug = await getDashboardOfficeSlug();
+  return DEMO_OFFICES.find((o) => o.slug === slug) ?? DEMO_OFFICES[0];
+}
+
 /** Return the right Supabase client for the request. */
 export async function getDashboardSupabase(): Promise<SupabaseService | null> {
+  if (await isDemoRoute()) return null;
   if (!supabaseConfigured()) return null;
   if (await hasSession()) {
     try {
