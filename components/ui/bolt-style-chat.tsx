@@ -226,15 +226,22 @@ export function BoltStyleHero({
             }
           >
             {title}{" "}
+            {/* Solid cyan, not gradient. Previously this used
+                `bg-clip-text text-transparent` with a vertical
+                gradient — pretty, but `bg-clip-text` clips the
+                gradient paint to the SPAN's background-box, not
+                the glyph outline. Italic Bricolage Grotesque "f"
+                has a long descender that extends BELOW that
+                background-box on every viewport — pixels in the
+                descender area had no gradient to paint with and
+                rendered transparent (looking exactly like the
+                glyph was sliced off). Leading + padding tweaks
+                couldn't fix the paint-box bug, only mask its
+                worst symptoms. Solid color renders the full glyph
+                including descenders, every viewport, every browser. */}
             <span
-              className="bg-gradient-to-b from-cy-300 via-cy-300 to-white bg-clip-text text-transparent italic"
-              style={
-                accentHex
-                  ? {
-                      backgroundImage: `linear-gradient(to bottom, ${accentHex}, ${accentHex}, #ffffff)`,
-                    }
-                  : undefined
-              }
+              className="italic"
+              style={{ color: accentHex ?? "#67dcff" }}
             >
               {titleAccent}
             </span>
