@@ -198,18 +198,27 @@ export function BoltStyleHero({
         {/* Headline */}
         <div className={`text-center ${embedMode ? "mb-6" : "mb-10"}`}>
           <h1
-            // leading-[1.02] (not 0.95): italic glyphs like "f" have
-            // longer descenders than upright text, and the tighter
-            // leading was clipping the bottom of "roof" in "to
-            // *replace your roof*?". 1.02 is still dramatically tight
-            // for a display headline but leaves enough room for italic
-            // descenders + the bg-clip-text gradient paint box.
+            // Italic Bricolage Grotesque has an unusually long
+            // descender on the lowercase "f" — line-height alone
+            // can't accommodate it without making the headline feel
+            // loose. Two-pronged fix:
             //
-            // pb-[0.08em] gives the gradient paint box a tiny bit more
-            // vertical room on the italic span specifically — belt-and-
-            // suspenders so even at the largest clamp sizes the tail
-            // never gets eaten by the parent's border-box.
-            className="font-display leading-[1.02] tracking-[-0.035em] font-semibold text-white"
+            //   1. leading-[1.12]: enough for upright + most italic
+            //      descenders, still dramatically tight for a display
+            //      headline.
+            //   2. pb-[0.18em] on the h1 itself: extends the element's
+            //      paint box past the last line-box bottom so an
+            //      especially-deep italic descender (the "f" in "roof")
+            //      can render in full. Padding on the H1 element
+            //      affects the H1's own content area, unlike padding
+            //      on an inline span which the line-box doesn't honor
+            //      for layout. This is the actual fix; leading bump
+            //      alone wasn't enough.
+            //
+            // Belt-and-suspenders. Tested against "What will it cost
+            // *to replace your roof*?" at the max clamp size (84px) —
+            // the f no longer gets sliced.
+            className="font-display leading-[1.12] tracking-[-0.035em] font-semibold text-white pb-[0.18em]"
             style={
               embedMode
                 ? { fontSize: "clamp(28px, 5.5vw, 44px)" }
@@ -218,7 +227,7 @@ export function BoltStyleHero({
           >
             {title}{" "}
             <span
-              className="bg-gradient-to-b from-cy-300 via-cy-300 to-white bg-clip-text text-transparent italic pb-[0.08em]"
+              className="bg-gradient-to-b from-cy-300 via-cy-300 to-white bg-clip-text text-transparent italic"
               style={
                 accentHex
                   ? {
