@@ -198,7 +198,27 @@ export function BoltStyleHero({
         {/* Headline */}
         <div className={`text-center ${embedMode ? "mb-6" : "mb-10"}`}>
           <h1
-            className="font-display leading-[0.95] tracking-[-0.035em] font-semibold text-white"
+            // Italic Bricolage Grotesque has an unusually long
+            // descender on the lowercase "f" — line-height alone
+            // can't accommodate it without making the headline feel
+            // loose. Two-pronged fix:
+            //
+            //   1. leading-[1.12]: enough for upright + most italic
+            //      descenders, still dramatically tight for a display
+            //      headline.
+            //   2. pb-[0.18em] on the h1 itself: extends the element's
+            //      paint box past the last line-box bottom so an
+            //      especially-deep italic descender (the "f" in "roof")
+            //      can render in full. Padding on the H1 element
+            //      affects the H1's own content area, unlike padding
+            //      on an inline span which the line-box doesn't honor
+            //      for layout. This is the actual fix; leading bump
+            //      alone wasn't enough.
+            //
+            // Belt-and-suspenders. Tested against "What will it cost
+            // *to replace your roof*?" at the max clamp size (84px) —
+            // the f no longer gets sliced.
+            className="font-display leading-[1.12] tracking-[-0.035em] font-semibold text-white pb-[0.18em]"
             style={
               embedMode
                 ? { fontSize: "clamp(28px, 5.5vw, 44px)" }
@@ -338,6 +358,16 @@ export function BoltStyleHero({
                 <Zap size={11} className="text-cy-300" />
                 <span>Non-binding estimate · we never sell your info</span>
               </div>
+              {/* Tri-state submit button:
+                  - active: form valid + consent checked → solid cyan, fires submit
+                  - ghost:  form filled but consent missing → cyan border, no fill,
+                    still clickable (click triggers the validation hint). Signals
+                    "you're one tick away" instead of looking dead.
+                  - disabled: form incomplete → bg-white/10, cursor-not-allowed
+                  Per the bolt-style review (#9): users with a filled-out form
+                  and an unchecked consent box previously saw the same dead
+                  button as a user with empty fields, with no visual link to
+                  the checkbox they needed to tick. */}
               <button
                 onClick={submit}
                 disabled={submitting}
@@ -347,7 +377,9 @@ export function BoltStyleHero({
                     ? accentHex
                       ? "active:scale-[0.98] hover:opacity-90"
                       : "bg-cy-400 hover:bg-cy-300 text-[#051019] shadow-[0_0_24px_rgba(20,136,252,0.45)] active:scale-[0.98]"
-                    : "bg-white/10 text-slate-500 cursor-not-allowed"
+                    : fieldsValid && !tcpaConsent && !submitting
+                      ? "bg-transparent text-cy-300 border border-cy-300/55 hover:bg-cy-300/[0.08] cursor-pointer"
+                      : "bg-white/10 text-slate-500 cursor-not-allowed"
                 }`}
                 style={
                   valid && !submitting && accentHex
@@ -370,11 +402,13 @@ export function BoltStyleHero({
                 )}
               </button>
             </div>
-            {/* Accessible validation hint. Only renders once the user
-                has tried to submit (showValidationHint) and there's an
-                actual blocker. aria-live="polite" so screen readers
-                announce it without interrupting the user's flow. */}
-            {showValidationHint && validationHint && (
+            {/* Accessible validation hint. Shows automatically once the
+                fields are filled but consent isn't yet checked (so the
+                user doesn't have to click a dead-looking button to learn
+                what's missing). Also shows after a failed submit attempt
+                for the "fields incomplete" case. aria-live="polite" so
+                screen readers announce it without interrupting flow. */}
+            {((fieldsValid && !tcpaConsent) || showValidationHint) && validationHint && (
               <div
                 role="status"
                 aria-live="polite"
@@ -386,40 +420,20 @@ export function BoltStyleHero({
           </div>
         </div>
 
-          {/* Trust — full grid on /quote desktop, compact single-line on
-                /embed AND on /quote mobile. Customers on phones don't
-                need three glass cards under the form selling the form
-                they just looked at; one mono-strip line keeps the form
-                the hero. */}
-          {embedMode ? (
+          {/* Trust pill — embed mode only. On /quote, the bottom
+              TrustStrip already carries the reassurance text + the hero
+              form footer says "Non-binding estimate · we never sell
+              your info" two lines above. Three places saying the same
+              thing read as anxious. The trust trio that used to sit
+              here was deleted per the style review (#2): pick one
+              trust surface, not three. /embed is a different surface
+              (no TrustStrip below it, iframed onto a host site) so the
+              one-line pill stays for that mode. */}
+          {embedMode && (
             <div className="mt-5 flex items-center justify-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-400">
               <Sparkles size={11} className="text-cy-300" />
               <span>Voxaris in-house AI · Private · Powered by Voxaris Pitch</span>
             </div>
-          ) : (
-            <>
-              <div className="hidden sm:grid grid-cols-3 gap-3 mt-7">
-                <Trust
-                  icon={<Sparkles size={13} />}
-                  title="Voxaris In-House AI"
-                  body="Our proprietary roof model, trained exclusively on high-resolution imagery from Florida, Minnesota, and Texas. No third-party APIs."
-                />
-                <Trust
-                  icon={<ShieldCheck size={13} />}
-                  title="Private by Design"
-                  body="Your address and information are never sold or shared with anyone."
-                />
-                <Trust
-                  icon={<ShieldCheck size={13} />}
-                  title="See Your Price First"
-                  body="Get a real estimate range before you share anything else. Zero obligation."
-                />
-              </div>
-              <div className="sm:hidden mt-5 flex items-center justify-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-400 px-4">
-                <Sparkles size={11} className="text-cy-300" />
-                <span>Voxaris in-house AI · Private by design · No obligation</span>
-              </div>
-            </>
           )}
         </div>
       </div>
@@ -625,34 +639,6 @@ function AddressField({
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-/* ─── Trust pills ─────────────────────────────────────────────────────── */
-
-function Trust({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div
-      className="rounded-2xl px-4 py-3 border"
-      style={{
-        background: "rgba(15,17,22,0.55)",
-        borderColor: "rgba(255,255,255,0.06)",
-      }}
-    >
-      <div className="flex items-center gap-1.5 text-cy-300">
-        {icon}
-        <span className="text-[10px] font-mono uppercase tracking-[0.14em]">{title}</span>
-      </div>
-      <div className="text-[12.5px] text-slate-300 mt-1">{body}</div>
     </div>
   );
 }

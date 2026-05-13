@@ -130,7 +130,12 @@ export async function POST(req: Request) {
     estimateHigh: body.estimateHigh ?? null,
     estimatedSqft: body.estimatedSqft ?? null,
     material: body.material ?? null,
-    office: body.office ?? "voxaris",
+    // Default office is "nolands" so Sydney introduces herself as
+    // "Sydney with Noland's Roofing" (the brand the homeowner expects
+    // to hear from based on the inbound number routing). The platform
+    // brand "Voxaris" is reachable only when the caller explicitly
+    // submits office=voxaris.
+    office: body.office ?? "nolands",
   };
   const metadata = JSON.stringify(leadContext);
 
@@ -146,40 +151,113 @@ export async function POST(req: Request) {
     const dispatch = await dispatchClient.createDispatch(roomName, agentName, {
       metadata,
     });
+    console.log("[dispatch-outbound] agent dispatched", {
+      leadId: body.leadId,
+      room_name: roomName,
+      agent_name: agentName,
+      dispatch_id: dispatch?.id ?? null,
+    });
 
-    // 2. Place the SIP outbound call to the customer's phone. LiveKit
-    //    Telephony dials via the Twilio trunk (ST_GuYnNqX5KFor) and
-    //    routes the SIP leg into the same room. Sydney joins when she's
-    //    ready; SIP leg connects when the customer answers.
+    // 2. Place the SIP outbound call to the customer's phone — OR skip
+    //    this when the agent worker is configured to place the call
+    //    itself.
+    //
+    // SIP_PLACED_BY_AGENT=true means Sydney's worker handles the SIP
+    // participant creation inside its entrypoint (canonical LiveKit
+    // outbound pattern — matches Andie and /telephony/making-calls/
+    // outbound-calls/). The worker calls create_sip_participant with
+    // wait_until_answered=True, so the customer answer is synchronized
+    // with the agent being ready in the room. Previously placing the
+    // SIP leg here caused a race: cold worker → SIP leg connects →
+    // customer answers into an empty room.
+    //
+    // Default (flag unset/false): legacy behavior — this route places
+    // the SIP leg. Safe to leave on during deploys: the worker only
+    // creates a SIP participant when SYDNEY_PLACE_SIP_IN_AGENT=true on
+    // the worker side. Both flags off = legacy. Both flags on = double
+    // dial (don't do this). Worker-side on + API-side off = canonical.
+    //
+    // DIAGNOSTIC MODE: in legacy path, set SIP_WAIT_UNTIL_ANSWERED=true
+    // to make createSipParticipant BLOCK until the customer picks up so
+    // failures surface in logs instead of disappearing.
+    const sipPlacedByAgent =
+      (process.env.SIP_PLACED_BY_AGENT ?? "").toLowerCase() === "true";
+
+    if (sipPlacedByAgent) {
+      console.log("[dispatch-outbound] SIP placement delegated to agent", {
+        leadId: body.leadId,
+        room_name: roomName,
+      });
+      return NextResponse.json({
+        status: "dispatched",
+        room_name: roomName,
+        agent_name: agentName,
+        dispatch_id: dispatch?.id ?? null,
+        sip_placed_by: "agent",
+      });
+    }
+
     const sipClient = new SipClient(
       LIVEKIT_URL,
       LIVEKIT_API_KEY,
       LIVEKIT_API_SECRET,
     );
-    await sipClient.createSipParticipant(
+    const waitUntilAnswered =
+      (process.env.SIP_WAIT_UNTIL_ANSWERED ?? "").toLowerCase() === "true";
+    const sipParticipant = await sipClient.createSipParticipant(
       SIP_OUTBOUND_TRUNK_ID,
       body.phone,
       roomName,
       {
         participantIdentity: `customer-${safeLeadId}`,
         participantName: body.name,
-        // We DON'T set waitUntilAnswered — return as soon as the leg
-        // is initiated. Sydney's wait_for_participant in the agent
-        // handles the answer-or-timeout case.
+        waitUntilAnswered,
       },
     );
+    console.log("[dispatch-outbound] sip participant created", {
+      leadId: body.leadId,
+      room_name: roomName,
+      wait_until_answered: waitUntilAnswered,
+      // Whatever SipClient returns — usually includes participantId,
+      // participantIdentity, sipCallId, callStatus. Logged so the
+      // operator can correlate against LiveKit Cloud's SIP call view.
+      sip_participant: sipParticipant ?? null,
+    });
 
     return NextResponse.json({
       status: "dispatched",
       room_name: roomName,
       agent_name: agentName,
       dispatch_id: dispatch?.id ?? null,
+      sip_participant_id: (sipParticipant as { participantId?: string } | null)?.participantId ?? null,
+      sip_call_id: (sipParticipant as { sipCallId?: string } | null)?.sipCallId ?? null,
+      sip_placed_by: "api",
     });
   } catch (err) {
-    console.error("[dispatch-outbound] failed:", err);
-    const msg = err instanceof Error ? err.message : String(err);
+    // TwirpError carries metadata.sip_status_code / .twirp_message which
+    // tells us whether Twilio rejected, the trunk doesn't exist, the
+    // destination was unreachable, etc. Log it ALL so operators don't
+    // have to guess.
+    const e = err as {
+      message?: string;
+      code?: string;
+      metadata?: Record<string, unknown>;
+      status?: number;
+    };
+    console.error("[dispatch-outbound] FAILED", {
+      leadId: body.leadId,
+      room_name: roomName,
+      message: e?.message,
+      code: e?.code,
+      metadata: e?.metadata,
+      status: e?.status,
+    });
     return NextResponse.json(
-      { error: "dispatch_failed", message: msg },
+      {
+        error: "dispatch_failed",
+        message: e?.message ?? String(err),
+        sip_status_code: (e?.metadata as { sip_status_code?: string })?.sip_status_code ?? null,
+      },
       { status: 500 },
     );
   }

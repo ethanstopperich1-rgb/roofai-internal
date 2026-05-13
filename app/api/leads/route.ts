@@ -357,10 +357,28 @@ export async function POST(req: Request) {
   // (`void fetch(...)`) was DROPPING dispatches: Vercel freezes the
   // function as soon as we `return NextResponse.json(...)`, killing
   // the in-flight fetch before it lands. waitUntil is the canonical fix.
-  if (phoneE164 && process.env.INTERNAL_DISPATCH_SECRET && !isLeadUpdate) {
+  //
+  // GATE: dispatch ONLY when we have an estimate range. The /quote wizard
+  // posts TWICE — once at step 1 (hero form, no estimate) to capture the
+  // lead early, then again at final submit (full estimate). Calling on
+  // step 1 is the wrong moment (no estimate to talk about, wizard might
+  // not even complete) AND the previous `!isLeadUpdate` gate was the
+  // exact wrong shape — it dispatched on step 1 and SKIPPED the final
+  // submit, which is the moment the customer actually expects engagement.
+  // Now we dispatch when an estimate is present, which is exclusively the
+  // final-submit path, regardless of whether the row is an insert or an
+  // update of an earlier step-1 capture.
+  const hasEstimate =
+    typeof body.estimateLow === "number" && typeof body.estimateHigh === "number";
+  if (phoneE164 && process.env.INTERNAL_DISPATCH_SECRET && hasEstimate) {
     const origin = new URL(req.url).origin;
     const dispatchSecret = process.env.INTERNAL_DISPATCH_SECRET;
-    console.log("[leads] firing outbound dispatch", { leadId, phoneE164 });
+    console.log("[leads] firing outbound dispatch", {
+      leadId,
+      phoneE164,
+      isLeadUpdate,
+      source: body.source ?? null,
+    });
     waitUntil(
       fetch(`${origin}/api/dispatch-outbound`, {
         method: "POST",
@@ -376,7 +394,16 @@ export async function POST(req: Request) {
           estimateLow: body.estimateLow,
           estimateHigh: body.estimateHigh,
           material: body.material,
-          office: body.office ?? "voxaris",
+          // VOICE BRAND default — controls how Sydney introduces herself
+          // ("Sydney with [office company name]"). Default is "nolands"
+          // so the demo flow greets customers as "Sydney with Noland's
+          // Roofing." This is separate from the Supabase office_id used
+          // for lead storage (still defaults to "voxaris" at line 134
+          // because the dashboard's Basic-auth fallback office is
+          // voxaris, per migration 0006). Two distinct concerns:
+          // backend tenancy stays voxaris (dashboard sees the lead);
+          // voice brand goes through as nolands (caller hears Noland's).
+          office: body.office ?? "nolands",
           estimatedSqft: body.estimatedSqft,
         }),
       })
@@ -396,9 +423,14 @@ export async function POST(req: Request) {
           console.error("[leads] outbound dispatch failed:", err),
         ),
     );
-  } else if (phoneE164 && !isLeadUpdate) {
+  } else if (phoneE164 && hasEstimate && !process.env.INTERNAL_DISPATCH_SECRET) {
     console.warn(
       "[leads] outbound dispatch SKIPPED — INTERNAL_DISPATCH_SECRET not set",
+    );
+  } else if (phoneE164 && !hasEstimate) {
+    console.log(
+      "[leads] outbound dispatch HELD — no estimate yet (step 1 capture)",
+      { leadId, source: body.source ?? null },
     );
   }
 

@@ -2,16 +2,24 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy, ExternalLink } from "lucide-react";
+import PublicHeader from "@/components/ui/public-header";
+import PublicFooter from "@/components/ui/public-footer";
 
 /**
  * /embed/install — public-facing install instructions for the Voxaris Pitch
  * embed widget. Linkable URL we can hand to a roofer's webmaster: "paste
  * these two lines on your site." Renders a live preview iframe alongside the
  * snippet so they can see what they'll get before installing.
+ *
+ * Page is noindex,nofollow via app/embed/install/layout.tsx — this is
+ * docs for contractor webmasters, not a public marketing surface that
+ * homeowners should ever land on via Google.
  */
 export default function EmbedInstallPage() {
   return (
-    <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-10 py-12 sm:py-20 space-y-12">
+    <div className="min-h-screen flex flex-col">
+      <PublicHeader chip="Install" />
+      <main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-10 py-12 sm:py-20 space-y-12">
       <header className="space-y-3">
         <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-cy-300/90 px-2 py-0.5 rounded-full border border-cy-300/30 bg-cy-300/5">
           embed · v1
@@ -102,16 +110,22 @@ export default function EmbedInstallPage() {
         />
       </section>
 
-      <footer className="border-t border-white/[0.06] pt-6 text-[12px] text-slate-500 flex items-center justify-between flex-wrap gap-3">
-        <span>© 2026 Voxaris · Pitch embed v1</span>
+      {/* Page-specific contact strip — kept inside the main column
+          because it's contextual to the install docs ("got a custom
+          need? email us"). The site-wide PublicFooter renders below
+          for legal links + brand consistency. */}
+      <div className="border-t border-white/[0.06] pt-6 text-[12px] text-slate-500 flex items-center justify-between flex-wrap gap-3">
+        <span className="font-mono">Pitch embed · v1</span>
         <a
           href="mailto:hello@voxaris.io"
           className="inline-flex items-center gap-1.5 text-slate-300 hover:text-white"
         >
           Need a custom integration? <ExternalLink size={11} />
         </a>
-      </footer>
-    </main>
+      </div>
+      </main>
+      <PublicFooter />
+    </div>
   );
 }
 

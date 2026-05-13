@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "eval:truth": "npx tsx scripts/eval-truth.ts",
-    "ingest:mrms": "python3 scripts/ingest_mrms.py"
+    "ingest:mrms": "python3 scripts/ingest_mrms.py",
+    "e2e:dashboard": "npx tsx scripts/e2e-dashboard.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",

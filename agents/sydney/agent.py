@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
+from livekit import api  # for CreateSIPParticipantRequest + TwirpError in outbound entrypoint
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -195,12 +196,107 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as e:
         logger.warning("failed to parse job metadata: %s", e)
 
+    # ─── OUTBOUND mode: place the SIP call from inside entrypoint ────────
+    # Canonical LiveKit pattern (matches Andie + the official outbound docs
+    # at /telephony/making-calls/outbound-calls/). Previously the SIP leg
+    # was created by /api/dispatch-outbound BEFORE the agent worker had a
+    # chance to spin up — racey, because a cold worker meant the customer
+    # answered into an empty room. With `wait_until_answered=True` here,
+    # the API call blocks until the customer actually picks up, so when
+    # we proceed to wait_for_participant + session.start the agent is
+    # already in the room and ready to speak.
+    #
+    # Toggle via SYDNEY_PLACE_SIP_IN_AGENT=true on the Sydney worker once
+    # /api/dispatch-outbound stops creating the SIP participant. Default
+    # is "false" so an unsynced deploy (worker updated, API not yet) does
+    # NOT result in a duplicate SIP leg.
+    _sip_caller_identity_override: str | None = None
+    _place_sip_in_agent = (
+        os.environ.get("SYDNEY_PLACE_SIP_IN_AGENT", "").lower() == "true"
+    )
+    if _place_sip_in_agent and lead_context is not None:
+        _phone = lead_context.get("phone")
+        _trunk = os.environ.get("SIP_OUTBOUND_TRUNK_ID", "")
+        _lead_id = str(lead_context.get("leadId") or "unknown")
+        _safe_lead_id = "".join(c for c in _lead_id if c.isalnum() or c in "_-")[:48]
+        _participant_identity = f"customer-{_safe_lead_id}" if _safe_lead_id else "customer"
+        _sip_caller_identity_override = _participant_identity
+
+        if not _phone or not _trunk:
+            logger.error(
+                "outbound dial REFUSED — phone=%r SIP_OUTBOUND_TRUNK_ID=%r",
+                _phone, bool(_trunk),
+            )
+            ctx.shutdown()
+            return
+        try:
+            logger.info(
+                "outbound dialing phone=%s trunk=%s identity=%s",
+                _phone, _trunk[:8] + "…", _participant_identity,
+            )
+            # Caller-ID we present to the customer (the "from" number).
+            # Must be a DID the outbound trunk has authority to use —
+            # either a Twilio-purchased DID or a verified Caller ID.
+            # Without this field, the carrier rejects with
+            #   SIP 403: "Caller ID is unauthorized"
+            # which is exactly what the first live test surfaced.
+            #
+            # Default is +14072890294, the Twilio DID provably owned
+            # by this project's voxaris-vba-twilio-inbound trunk —
+            # verified via `lk sip inbound list`. (+13219851104 was
+            # Sydney's CONFIGURED inbound number in setup_sip.py but
+            # is NOT on the current Twilio trunk, so Twilio rejected
+            # outbound dials trying to use it as From.) Override via
+            # SYDNEY_OUTBOUND_CALLER_ID env on the worker.
+            # Matches Andie's TWILIO_VOICE_NUMBER default in
+            # voxaris-arrivia-agents.
+            _outbound_caller_id = os.environ.get(
+                "SYDNEY_OUTBOUND_CALLER_ID",
+                os.environ.get("TRANSFER_CALLER_ID", "+14072890294"),
+            )
+            await ctx.api.sip.create_sip_participant(
+                api.CreateSIPParticipantRequest(
+                    room_name=ctx.room.name,
+                    sip_trunk_id=_trunk,
+                    sip_call_to=str(_phone),
+                    sip_number=_outbound_caller_id,
+                    participant_identity=_participant_identity,
+                    participant_name=str(lead_context.get("name") or "Customer"),
+                    krisp_enabled=True,
+                    # Blocks until the customer answers. On 486 / 603 / 408 /
+                    # 480 / 5xx, this raises TwirpError with metadata that
+                    # carries sip_status_code from the upstream carrier —
+                    # logged below so the dashboard / operator knows what
+                    # actually happened.
+                    wait_until_answered=True,
+                )
+            )
+            logger.info("outbound call ANSWERED room=%s identity=%s", ctx.room.name, _participant_identity)
+        except api.TwirpError as e:
+            sip_code = e.metadata.get("sip_status_code") if e.metadata else None
+            sip_status = e.metadata.get("sip_status") if e.metadata else None
+            logger.warning(
+                "outbound did not connect: %s (SIP %s %s)",
+                e.message, sip_code, sip_status,
+            )
+            ctx.shutdown()
+            return
+        except Exception as e:
+            logger.exception("outbound dial unexpected failure: %s", e)
+            ctx.shutdown()
+            return
+
     # Wait for the SIP/PSTN caller to actually land in the room before
     # spinning up the session. For INBOUND calls this is the caller
     # dialing in; for OUTBOUND it's the customer answering Sydney's
-    # outbound dial. Either way: no participant → no call.
+    # outbound dial (either placed above when SYDNEY_PLACE_SIP_IN_AGENT
+    # is on, or placed externally by /api/dispatch-outbound when off).
+    # Either way: no participant → no call.
     try:
-        await ctx.wait_for_participant()
+        if _sip_caller_identity_override:
+            await ctx.wait_for_participant(identity=_sip_caller_identity_override)
+        else:
+            await ctx.wait_for_participant()
     except Exception as e:
         logger.warning("no participant arrived: %s", e)
         ctx.shutdown()
@@ -509,7 +605,7 @@ async def entrypoint(ctx: JobContext) -> None:
     if lead_context is not None:
         # OUTBOUND mode: customer just submitted /quote a few minutes ago,
         # their phone is ringing now. Stage-1 opener is verbatim; the
-        # 5-stage script below drives the rest of the LLM's behavior.
+        # 6-stage script below drives the rest of the LLM's behavior.
         opener = build_outbound_opener(lead_context)
         company = company_name_for_office(lead_context.get("office"))
         _addr = lead_context.get("address") or ""
@@ -527,7 +623,7 @@ async def entrypoint(ctx: JobContext) -> None:
             session.chat_ctx.add_message(
                 role="system",
                 content=(
-                    f"=== OUTBOUND CALL — 5-STAGE SCRIPT ===\n\n"
+                    f"=== OUTBOUND CALL — 6-STAGE SCRIPT ===\n\n"
                     f"You are Sydney, the AI sales assistant for {company}. "
                     f"This customer just ran their roof through the {company} "
                     "online estimator a few minutes ago. WE are calling THEM "
@@ -543,40 +639,84 @@ async def entrypoint(ctx: JobContext) -> None:
                     )
                     + (f"ROOF SIZE: ~{_squares} squares\n" if _squares else "")
                     + "\n"
-                    "Stage 1 — Opening (DONE via verbatim TTS opener; do "
-                    "NOT repeat it).\n\n"
-                    "Stage 2 — Confirm address EARLY. After their first "
-                    "reply, say something like: 'Just to make sure I have "
-                    f"the right property — I'm showing {_addr or '[address]'}. "
-                    "Is that the correct address?' Wait for their confirm.\n\n"
-                    "Stage 3 — Qualification (BANT + Insurance). Use LIGHT, "
-                    "conversational questions. One at a time. Do not "
-                    "interview them.\n"
-                    "  - Timeline: 'How soon were you hoping to get this "
+                    "─── STAGE TABLE — purpose / key action / success metric ───\n"
+                    "1. Opening         — build instant context & rapport — "
+                    "thank them for using the estimator + introduce with "
+                    "company name              — success: lead feels recognized\n"
+                    "2. Confirmation    — verify identity & address       — "
+                    "read back the exact address                                "
+                    "         — success: address confirmed\n"
+                    "3. Light Qual.     — understand situation quickly    — "
+                    "timeline, insurance vs cash, decision maker, rough budget   "
+                    "      — success: clear qualification score\n"
+                    "4. Value Bridge    — connect estimate to next step   — "
+                    "briefly reference what the estimator showed + offer to "
+                    "walk through it    — success: reduces friction\n"
+                    "5. Scheduling      — book the appointment            — "
+                    "offer specific time slots or ask for availability          "
+                    "         — success: appointment booked\n"
+                    "6. Close & Log     — confirm next steps + capture    — "
+                    "recap, get verbal confirmation, end call cleanly           "
+                    "         — success: structured data logged\n\n"
+                    "─── STAGE 1 — OPENING ────────────────────────────────\n"
+                    "DONE via verbatim TTS opener (already played before this "
+                    "turn). Do NOT repeat it. The opener you just delivered was:\n"
+                    f"  'Hey [first name], this is Sydney with {company}. "
+                    "Thanks so much for running your roof through our "
+                    "estimator a few minutes ago. I wanted to personally "
+                    "follow up, answer any questions you have, and see if "
+                    "we can get you on the schedule for one of our project "
+                    "managers to come take a look.'\n"
+                    "Wait for their first reply before doing anything else.\n\n"
+                    "─── STAGE 2 — CONFIRMATION ───────────────────────────\n"
+                    "Right after their first reply, confirm the property "
+                    "address verbatim:\n"
+                    f"  'Just to make sure I have the right property — I'm "
+                    f"showing {_addr or '[address]'}. Is that the correct address?'\n"
+                    "Wait for their confirmation. If they correct any part "
+                    "of the address, repeat it back and lock in the correction.\n\n"
+                    "─── STAGE 3 — LIGHT QUALIFICATION ────────────────────\n"
+                    "ONE question per turn. Light, conversational, not an "
+                    "interview. Cover four areas in order:\n"
+                    "  - Timeline:  'How soon were you hoping to get this "
                     "taken care of?'\n"
                     "  - Insurance: 'Is this something you're looking to go "
                     "through insurance for, or are you thinking cash/retail?'\n"
-                    "  - Authority: 'Are you the homeowner / decision maker "
-                    "on this?'\n"
-                    "  - Need/Budget (light touch): 'Roughly, what kind of "
+                    "  - Decision maker: 'And are you the homeowner / "
+                    "decision maker on this?'\n"
+                    "  - Rough budget (light touch): 'Roughly what kind of "
                     "budget range were you thinking, or are you still in "
                     "the information-gathering stage?'\n\n"
-                    "Stage 4 — Value Bridge. Reference the estimator "
-                    "WITHOUT over-explaining: 'From what I can see on the "
-                    f"estimate you just ran, it looks like we're looking at "
-                    f"{_squares or '[X]'} squares with some complexity. I can "
-                    "have one of our project managers come out and walk "
-                    "through everything in person so you have a clear "
-                    "picture.'\n\n"
-                    "Stage 5 — Scheduling. CALL THE `check_availability` "
-                    "TOOL to get real slots — do NOT guess times. Offer two "
-                    "or three specific windows from the response. Once they "
-                    "pick one, read it back and call `book_inspection` to "
-                    "confirm. Then call `log_lead` after.\n\n"
-                    "RULES:\n"
+                    "─── STAGE 4 — VALUE BRIDGE ───────────────────────────\n"
+                    "Briefly reference the estimator + offer to walk "
+                    "through it in person. ONE short sentence:\n"
+                    "  'From what I'm seeing on the estimate you just ran, "
+                    f"it looks like we're at {_squares or '[X]'} squares with "
+                    "some complexity. I can have one of our project managers "
+                    "come out and walk through everything with you in person "
+                    "so you've got a clear picture.'\n\n"
+                    "─── STAGE 5 — SCHEDULING ─────────────────────────────\n"
+                    "CALL THE `check_availability` TOOL to get real slots — "
+                    "do NOT guess times. Offer two or three specific windows "
+                    "from the response. When they pick one, read it back to "
+                    "confirm.\n\n"
+                    "─── STAGE 6 — CLOSE & LOG ────────────────────────────\n"
+                    "After they verbally confirm the slot:\n"
+                    "  1. Call `book_inspection` silently with all collected fields.\n"
+                    "  2. Recap the appointment in one short sentence: "
+                    "'Perfect — I've got you down for [day], [date], "
+                    "[morning/afternoon window], at [address]. One of our "
+                    "project managers will give you a call the morning of "
+                    "to let you know they're on the way.'\n"
+                    "  3. Get final verbal confirmation: 'Sound good?'\n"
+                    "  4. Close cleanly: 'Awesome — thanks so much, "
+                    "[name]. Have a great day.'\n"
+                    "  5. Call `log_lead` silently with type 'new_inspection' "
+                    "and the structured fields from the call.\n\n"
+                    "─── RULES ────────────────────────────────────────────\n"
                     " - If they say 'now isn't great' or 'can you call back': "
-                    "ask the best time to reach them, log_lead with that, "
-                    "and end the call politely.\n"
+                    "ask the best time to reach them, log_lead with that "
+                    "time in notes, and end the call politely.\n"
                     " - If they're already a customer / wrong number / "
                     "vendor: log_lead with the appropriate lead_type and "
                     "end the call.\n"
