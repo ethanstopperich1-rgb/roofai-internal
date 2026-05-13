@@ -1,6 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { useSearchParams } from "next/navigation";
+
+// 3D viewer is heavy (Cesium + Map Tiles 3D bundle ≈ 1.2 MB gzipped)
+// — lazy-load it so the initial render of the internal page isn't
+// blocked. ssr:false because Cesium relies on the WebGL canvas
+// which doesn't exist server-side.
+//
+// Re-added 2026-05-13 after the vision-based primary-residence
+// detection landed in /api/sam3-roof. The viewer was originally
+// removed because rural FL properties with outbuildings consistently
+// highlighted the wrong structure (the geocoded pin's closest
+// building rather than the addressed residence). With Claude vision
+// now identifying the residence semantically and SAM3 tracing it
+// from there, the 3D mesh draping is anchored on the right building
+// — and the photorealistic view is a real differentiator for reps
+// showing storm damage to homeowners on tablets in the field.
+const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
+  ssr: false,
+});
 import AddressInput from "@/components/AddressInput";
 import AssumptionsEditor from "@/components/AssumptionsEditor";
 import AddOnsPanel from "@/components/AddOnsPanel";
@@ -86,6 +106,12 @@ const VISION_MATERIAL_TO_ASSUMPTION: Partial<
 };
 
 export default function HomePage() {
+  // Tenancy — which business this rep is working under. Until staff
+  // auth is wired through (Supabase JWT), reps bookmark `/?office=nolands`
+  // for their company. Defaults to "voxaris" (platform / demo) when
+  // the tool is opened bare.
+  const searchParams = useSearchParams();
+  const office = (searchParams.get("office") ?? "voxaris").trim().toLowerCase();
   const [addressText, setAddressText] = useState("");
   const [address, setAddress] = useState<AddressInfo | null>(null);
   const [assumptions, setAssumptions] = useState<Assumptions>(DEFAULT_ASSUMPTIONS);
@@ -154,6 +180,20 @@ export default function HomePage() {
   const [sam3Polygon, setSam3Polygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // SAM3 in-flight gate. While `sam3InFlight === true`, the polygon
+  // priority chain returns "none" regardless of what MS Buildings, OSM,
+  // or Solar mask have returned. This eliminates the visual flicker
+  // where a fast-resolving fallback (MS Buildings ~100ms, OSM ~1.5s)
+  // renders a polygon over the satellite tile, only to get replaced
+  // 5-30 seconds later when SAM3 finishes. Reps were seeing the wrong
+  // polygon during the cold-start window and assuming SAM3 had failed.
+  //
+  // The "Generating measurement…" overlay stays visible until SAM3
+  // settles — either succeeds (its polygon wins the priority chain)
+  // or fails (404 / kill switch / network error → fallback chain runs).
+  // Set true at the start of every loadAddress fetch, set false in the
+  // .then() of the sam3Promise regardless of outcome.
+  const [sam3InFlight, setSam3InFlight] = useState<boolean>(false);
   // Reconciler source from /api/sam3-roof. When SAM3's raw output gets
   // substituted with the GIS wall footprint (occluded by tree canopy,
   // catastrophic centroid drift, area-ratio gate fail), the returned
@@ -585,7 +625,23 @@ export default function HomePage() {
     | "ai"
     | "none"
   >(() => {
+    // Rep edits always win — they're the final authority and shouldn't
+    // be replaced by anything else, including a still-in-flight SAM3.
     if (livePolygons && livePolygons.length) return "edited";
+    // SAM3 in-flight gate. Block the priority chain from rendering ANY
+    // fallback polygon (MS Buildings, OSM, Solar mask, Solar facets,
+    // Claude vision) while SAM3 is still working. Without this gate,
+    // MS Buildings resolves in ~100ms and renders immediately, then
+    // SAM3 replaces it 5-30s later — reps were seeing the wrong
+    // polygon and assuming SAM3 had failed.
+    //
+    // Returning "none" here keeps the priority chain in its initial
+    // (no-polygon) state, which the UI renders as the "Generating
+    // measurement…" overlay. The gate clears in the sam3Promise.then
+    // (after SAM3 succeeds OR its Solar-mask fallback completes),
+    // at which point this useMemo recomputes and picks the best
+    // polygon from whatever has resolved.
+    if (sam3InFlight) return "none";
     // SAM3 (custom Roboflow Workflow) — top priority when it produces a
     // polygon. The route already runs GIS reconciliation server-side, so
     // a polygon coming back here has passed wrong-building / occlusion /
@@ -647,6 +703,7 @@ export default function HomePage() {
     return "none";
   }, [
     livePolygons,
+    sam3InFlight,
     validSam3,
     validSolarMask,
     validRoboflow,
@@ -1118,6 +1175,7 @@ export default function HomePage() {
     setSolarMaskPolygon(null);
     setSam3Polygon(null);
     setSam3Source(null);
+    setSam3InFlight(false); // reset gate on address change / clear
     setLivePolygons(null);
     hasUserEditedRef.current = false;
     editOriginIsWallFootprintRef.current = false;
@@ -1195,6 +1253,13 @@ export default function HomePage() {
     // in parallel with everything else and let the priority chain pick it
     // up when it lands. Falls through silently when the kill switch is
     // tripped or the route 404s.
+    //
+    // Set the in-flight gate BEFORE the fetch starts. This is what keeps
+    // the polygon priority chain from rendering MS Buildings or OSM
+    // polygons in the 100ms-5s window while SAM3 is still working. The
+    // .then() at the end of the file (sam3Promise.then) clears the flag
+    // regardless of outcome (success or null), unblocking the chain.
+    setSam3InFlight(true);
     const sam3Promise = fetch(
       `/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}` +
         `&address=${encodeURIComponent(addr.formatted)}`,
@@ -1245,12 +1310,21 @@ export default function HomePage() {
     // This avoids paying for Solar dataLayers on the common path where
     // SAM3 succeeds AND eliminates the visual flicker where Solar mask
     // would render first and then SAM3 would override it.
+    //
+    // The `sam3InFlight` gate clears AS LATE AS POSSIBLE so the
+    // "Generating measurement…" overlay stays up through the entire
+    // chain. Specifically:
+    //   - SAM3 succeeds → clear immediately (we have the winning polygon)
+    //   - SAM3 fails → wait for Solar mask fallback to land before
+    //     clearing, so we don't briefly render "no polygon" between
+    //     SAM3's failure and mask's arrival.
     sam3Promise.then((sam3Result) => {
       if (sam3Result) {
         if (!hasUserEditedRef.current) {
           setSam3Polygon(sam3Result.polygon);
           setSam3Source(sam3Result.source);
         }
+        setSam3InFlight(false);
         return;
       }
       // SAM3 returned nothing — fall back to Solar mask. No need to fire
@@ -1266,6 +1340,11 @@ export default function HomePage() {
         .catch(() => null)
         .then((maskPoly) => {
           if (maskPoly && !hasUserEditedRef.current) setSolarMaskPolygon(maskPoly);
+          // Clear the gate whether mask succeeded or not. If both SAM3
+          // and the mask fallback fail, the priority chain falls through
+          // to MS Buildings / OSM (which by now are already resolved in
+          // state). Clearing here unblocks that final fallback render.
+          setSam3InFlight(false);
         });
     });
 
@@ -1536,8 +1615,19 @@ export default function HomePage() {
 
       {!shown && <EmptyState />}
 
-      {/* ─── Quantum-pulse loader: full-screen overlay while Solar+Vision run ─── */}
-      {visionLoading && (
+      {/* ─── Quantum-pulse loader: full-screen overlay while polygon resolution
+           is still in flight. Stays up until BOTH:
+             1. Solar + Vision metadata fetches complete (visionLoading)
+             2. SAM3 settles — either successfully traces a polygon, or
+                fails and the Solar-mask fallback completes (sam3InFlight)
+           Without the sam3InFlight gate, the overlay would clear at ~3s
+           (when vision finishes) but SAM3 would still be cold-starting
+           Roboflow for another 5-30s. Reps were seeing the satellite
+           render with NO polygon, then a stale fallback polygon appear,
+           then the real SAM3 polygon flicker in late — making them
+           assume SAM3 had failed. Holding the overlay through SAM3's
+           full settle window eliminates that flicker. */}
+      {(visionLoading || sam3InFlight) && (
         <div
           // No backdrop-blur — the filter forces full-page recomposite every
           // frame, which thrashes against Cesium's WebGL canvas underneath
@@ -1547,7 +1637,9 @@ export default function HomePage() {
           style={{ background: "rgba(7,9,13,0.88)" }}
           aria-live="polite"
         >
-          <QuantumPulseLoader text="Generating" />
+          <QuantumPulseLoader
+            text={sam3InFlight && !visionLoading ? "Tracing roof" : "Generating"}
+          />
         </div>
       )}
 
@@ -1647,14 +1739,37 @@ export default function HomePage() {
                 )}
               </div>
             )}
-            {/* Roof3DViewer (Cesium photogrammetric 3D) was removed — it
-                was visually impressive but unreliable on rural FL
-                properties where the geocoded pin lands between
-                outbuildings and the main house, leading to the wrong
-                structure being highlighted. Reps were spending more
-                time correcting the 3D view than it saved them. The
-                top-down satellite + 2D polygon trace in MapView above
-                is the source of truth. */}
+            {/* ─── Photorealistic 3D mesh (Google Map Tiles 3D via Cesium) ─── */}
+            {/* Mounts only after the polygon resolution has settled — that
+                gating ensures Cesium isn't re-drawing the draped outline
+                as polygons race in. `key` forces a hard remount on address
+                change so the previous Cesium camera + tile cache can't
+                linger. interactive=true for rep workflow (they need to pan,
+                zoom, change angle to inspect damage). */}
+            {polygonReady &&
+              polygonSource !== "none" &&
+              address?.lat != null &&
+              address?.lng != null && (
+                <div
+                  className="glass-panel overflow-hidden aspect-video relative"
+                  aria-label={`3D photorealistic view of the roof at ${address.formatted ?? "this property"}`}
+                  role="img"
+                >
+                  <Roof3DViewer
+                    key={`${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
+                    lat={address.lat}
+                    lng={address.lng}
+                    address={address.formatted}
+                    polygons={activePolygons}
+                    polygonSource={polygonSource}
+                    imageryDate={solar?.imageryDate}
+                    expectedFootprintSqft={
+                      solar?.buildingFootprintSqft ?? null
+                    }
+                    interactive
+                  />
+                </div>
+              )}
           </section>
 
           {/* The "Roof geometry" section (parametric 3D + architectural
@@ -1855,7 +1970,7 @@ export default function HomePage() {
                   <div className="font-display font-semibold tracking-tight">Output</div>
                   <span className="label">deliver</span>
                 </div>
-                <OutputButtons estimate={estimate} />
+                <OutputButtons estimate={estimate} office={office} />
               </div>
               <InsightsPanel estimate={estimate} />
             </div>

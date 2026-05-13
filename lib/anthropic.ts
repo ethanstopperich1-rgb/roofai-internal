@@ -419,46 +419,61 @@ export async function findPrimaryResidence(opts: {
     Math.pow(2, effectiveZoom);
   const cosLat = Math.cos((opts.lat * Math.PI) / 180);
 
+  const IMG_CENTER = VIEW_IMG_PX / 2;
   const RESIDENCE_PROMPT = `You are looking at a satellite image (${VIEW_IMG_PX}×${VIEW_IMG_PX} pixels) of a property${opts.address ? ` at ${opts.address}` : ""}.
 
-YOUR TASK: identify the PRIMARY RESIDENCE — the HOUSE where people live — on this property.
+YOUR TASK: identify the PRIMARY RESIDENCE — the HOUSE where people live — at this address.
 
-CRITICAL DISTINCTIONS:
-The residence is a HOUSE, NOT:
-- A barn, pole barn, or agricultural outbuilding (often LARGER than the house on rural lots)
-- A shop, workshop, or garage (often closer to the road than the setback house)
-- A shed, pool house, or covered porch
-- A warehouse, commercial building, or long rectangular metal-roofed structure
-- Anything that looks utilitarian (no landscaping approach, plain rectangular footprint, simple metal/standing-seam roof on a 10:1+ aspect ratio building)
+═══ CRITICAL: WHAT THE IMAGE CENTER MEANS ═══════════════════════════
+The exact image center is pixel (${IMG_CENTER}, ${IMG_CENTER}). That point is the GEOCODED ADDRESS PIN — Google Maps' best estimate of where this address sits. The pin is rooftop-accurate to within ~10-15 pixels (~3-4 meters at this zoom) for most US addresses; it can drift up to ~40 pixels (~10m) on rural / poorly-mapped roads. THE ADDRESSED BUILDING IS THE ONE NEAREST TO PIXEL (${IMG_CENTER}, ${IMG_CENTER}).
+
+This is the most important constraint. In dense subdivisions, MANY similar-looking houses are visible. Pick the one CLOSEST TO IMAGE CENTER. The neighbors are not the addressed building no matter how prominent they look. If two residences are equidistant from center, prefer the one whose CENTROID is closer (not whose roof corner is closer).
+
+═══ HOUSE VS OUTBUILDING ═══════════════════════════════════════════
+On rural / large-lot properties, the pin sometimes lands closer to a road-side outbuilding than to the setback residence. Use these distinctions:
+
+The residence is a HOUSE — NOT:
+- A barn, pole barn, or agricultural outbuilding (often LARGER than the house on rural lots; long rectangular profile, simple metal corrugated roof)
+- A shop, workshop, or detached garage (often closer to the road than the setback house; aspect ratio > 2:1, single-pitch industrial roof, no chimneys)
+- A shed, pool house, or covered porch (under 400 sqft footprint)
+- A warehouse, commercial building, or long metal-roofed agricultural structure (aspect ratio > 3:1, no residential features)
 
 Residences usually have:
-- Shingle, tile, or simple metal roof — NOT corrugated industrial metal
-- Cross / L / T shape OR a simple rectangle with chimney or dormer features
+- Shingle, tile, or RESIDENTIAL standing-seam metal roof (NOT corrugated industrial metal)
+- Cross / L / T shape OR a simple rectangle WITH chimney / dormer / porch features
 - Landscaping, lawn, or driveway approach to the front entrance
-- Footprint typically 800-5000 sqft for FL residential (very rough — use as sanity check, not a hard filter)
+- Aspect ratio ~1:1 to 2:1 (residential proportions)
+- Footprint typically 800-5000 sqft for FL residential
 - Often near a swimming pool / patio / lanai
 
-PROCESS:
-1. Survey the entire image. Note all buildings.
-2. For each building, decide: residence or outbuilding?
-3. If multiple residences exist (rare — duplex, ADU), pick the LARGEST or the one closest to the IMAGE CENTER (which is roughly where the geocoded address pin sits).
-4. Output the residence's CENTER as pixel coordinates (0,0 = top-left of image).
+═══ DECISION PROCESS ═══════════════════════════════════════════════
+1. Locate pixel (${IMG_CENTER}, ${IMG_CENTER}) in the image — the pin.
+2. Identify the building containing or nearest to the pin.
+3. Is that building plausibly a residence? Check shape, roof material, surroundings.
+   a. YES, plausibly residential → that IS the answer. Return its center. confidence ≥ 0.85.
+   b. NO, clearly an outbuilding → look for the nearest residential-looking
+      building within ~60 pixels (~15m) of the pin. If found, return ITS center.
+      confidence depends on how confident you are it's the addressed building:
+        - within 30 pixels of pin AND clearly residential → 0.75-0.85
+        - 30-60 pixels from pin AND clearly residential → 0.55-0.70
+        - beyond 60 pixels OR ambiguous → 0.30-0.50
+   c. NO residence visible anywhere on the visible property →
+      residenceCenter=null with confidence < 0.3. DO NOT guess.
 
-If NO building on the visible property looks like a residence, return residenceCenter=null with low confidence — DO NOT guess. The caller has fallback methods.
-
-STRICT JSON, no preamble, no markdown:
+═══ OUTPUT (STRICT JSON, no preamble, no markdown) ═════════════════
 {
   "residenceCenter": [<x>, <y>] | null,
   "confidence": <0.0-1.0>,
-  "reasoning": "<one short clause>",
+  "reasoning": "<one short clause: WHY this building, mention distance from pin>",
   "alternateBuildings": [{"kind": "barn"|"shop"|"shed"|"garage"|"commercial"|"unknown", "x": <int>, "y": <int>}]
 }
 
-Confidence guidance:
-- 0.85+ : a single clearly-residential building is obvious; outbuildings clearly distinguishable
-- 0.6-0.85 : likely residence identified but with some ambiguity (e.g., metal roof house vs. shop)
-- 0.4-0.6 : best guess but several candidates look similar
-- <0.4 : you're not sure — return your best guess with low confidence (or null if truly unclear)`;
+confidence guidance:
+- 0.85+ : residence is at or near pin, no ambiguity
+- 0.7-0.85 : residence identified with some context (outbuildings visible, picked correctly)
+- 0.55-0.70 : adjacent residences in dense neighborhood; you picked the one closest to pin but the next-door one is also plausible
+- 0.3-0.55 : significant uncertainty (multiple equally-plausible candidates, OR residence is far from pin)
+- <0.3 : truly unclear, return null residenceCenter`;
 
   try {
     const client = new Anthropic({ apiKey });

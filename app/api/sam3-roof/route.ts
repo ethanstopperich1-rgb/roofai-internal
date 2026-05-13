@@ -434,6 +434,20 @@ type ResolvedCenter = {
     reasoning: string;
     alternateBuildings: Array<{ kind: string }>;
   } | null;
+  /** Distance (m) between Claude's vision-picked centre and Solar
+   *  findClosest's building centre. Both signals consulted independently,
+   *  this is a sanity check on whether they agree. Useful for telemetry
+   *  and for grading confidence:
+   *    < 30 m  : signals AGREE (either same building or adjacent
+   *              halves of a duplex); high confidence
+   *    30-80 m : MIGHT be adjacent buildings on close lots, MIGHT be a
+   *              rural setback where vision caught the residence solar
+   *              missed; medium confidence
+   *    > 80 m  : strong disagreement; vision likely caught a rural-
+   *              setback house solar got wrong (vision wins, but flag
+   *              as medium so rep can sanity-check)
+   *  Null when one or both signals were absent. */
+  visionSolarDeltaM: number | null;
   /** Bucketed quality grade for the resolved centre:
    *    "high"   — Claude vision identified the residence with ≥0.7 confidence,
    *               OR OSM addr:housenumber match, OR Solar within drift threshold.
@@ -545,10 +559,31 @@ async function resolveBuildingCenter(
 
   // ─── -1. Claude vision identifies the primary residence ─────────────
   // The only signal in the cascade that can override unanimous agreement
-  // between coordinate-anchored signals on the wrong building. Trust it
-  // when confidence ≥ 0.7; below that, treat as a medium signal and let
-  // the cascade continue to look for confirmation.
-  const vision = await visionPromise;
+  // between coordinate-anchored signals on the wrong building. We pair
+  // it with Solar findClosest to grade confidence:
+  //
+  //   • Vision conf ≥ 0.85, OR vision conf ≥ 0.7 AND vision agrees with
+  //     Solar within 50m → high confidence, use vision.
+  //   • Vision conf ≥ 0.7 BUT vision and Solar disagree by ≥50m → likely
+  //     a rural-setback case (Solar wrong, Vision right) but could also
+  //     be a dense subdivision with bad geocoder pin where Vision picked
+  //     an adjacent house — use vision but mark medium so the rep can
+  //     sanity-check the polygon.
+  //   • Vision conf < 0.7 → fall through to the deterministic cascade
+  //     (OSM addr-match → Solar → mask → OSM-no-match → address).
+  //
+  // Awaiting Solar in parallel (Promise.all) keeps wall-clock latency at
+  // max(vision, solar) ≈ 3s. Solar's drift-from-pin is still useful
+  // downstream when vision falls through, so we capture it regardless.
+  const [vision, solarFindClosest] = await Promise.all([
+    visionPromise,
+    solarCenterPromise,
+  ]);
+  const { solarCenter, solarSource } = solarFindClosest;
+  const solarDriftM = solarCenter
+    ? metersBetween(lat, lng, solarCenter.lat, solarCenter.lng)
+    : null;
+
   const visionEvidence = vision
     ? {
         confidence: vision.confidence,
@@ -556,19 +591,33 @@ async function resolveBuildingCenter(
         alternateBuildings: vision.alternateBuildings,
       }
     : null;
+  const visionSolarDeltaM =
+    vision && solarCenter
+      ? metersBetween(vision.lat, vision.lng, solarCenter.lat, solarCenter.lng)
+      : null;
+
   if (vision && vision.confidence >= 0.7) {
+    // Trust vision. Grade based on agreement with Solar:
+    //   - very high confidence (≥0.85) always grades high
+    //   - 0.7-0.85 + signals agree (within 50m) grades high
+    //   - 0.7-0.85 + disagreement OR no Solar → medium (rep review)
+    const visionAgreesWithSolar =
+      visionSolarDeltaM !== null && visionSolarDeltaM <= 50;
+    const grade: ResolvedCenter["qualityGrade"] =
+      vision.confidence >= 0.85 || visionAgreesWithSolar ? "high" : "medium";
     return {
       lat: vision.lat,
       lng: vision.lng,
       source: "vision-primary-residence",
       zoomHint: 20,
       driftFromAddressM: metersBetween(lat, lng, vision.lat, vision.lng),
-      solarSuggestedDriftM: null,
+      solarSuggestedDriftM: solarDriftM,
       solarMaskDriftM: null,
       osmAddrMatch: "no-osm", // OSM may still resolve in background, but vision overrode
       osmPolygon: null,
       visionEvidence,
-      qualityGrade: "high",
+      visionSolarDeltaM,
+      qualityGrade: grade,
     };
   }
 
@@ -587,6 +636,7 @@ async function resolveBuildingCenter(
       osmAddrMatch: "matched",
       osmPolygon: osmEarly,
       visionEvidence,
+      visionSolarDeltaM,
       qualityGrade: "high",
     };
   }
@@ -597,11 +647,9 @@ async function resolveBuildingCenter(
         ? "no-result"
         : "no-match";
 
-  // ─── 1. Solar findClosest (await whatever the parallel kick produced) ─
-  const { solarCenter, solarSource } = await solarCenterPromise;
-  const solarDriftM = solarCenter
-    ? metersBetween(lat, lng, solarCenter.lat, solarCenter.lng)
-    : null;
+  // ─── 1. Solar findClosest result (already awaited above as part of the
+  //         Promise.all with vision; solarCenter/solarSource/solarDriftM
+  //         are already in scope). ──────────────────────────────────────
 
   // Solar agrees with the geocoder — trust it.
   if (solarCenter && solarDriftM !== null && solarDriftM <= SOLAR_DRIFT_THRESHOLD_M) {
@@ -616,6 +664,7 @@ async function resolveBuildingCenter(
       osmAddrMatch: osmAddrMatchState,
       osmPolygon: null,
       visionEvidence,
+      visionSolarDeltaM,
       qualityGrade: "high",
     };
   }
@@ -635,6 +684,7 @@ async function resolveBuildingCenter(
         osmAddrMatch: osmAddrMatchState,
         osmPolygon: osmEarly,
         visionEvidence,
+        visionSolarDeltaM,
         qualityGrade: "medium",
       };
     }
@@ -649,6 +699,7 @@ async function resolveBuildingCenter(
       osmAddrMatch: osmAddrMatchState,
       osmPolygon: null,
       visionEvidence,
+      visionSolarDeltaM,
       qualityGrade: "low",
     };
   }
@@ -679,6 +730,7 @@ async function resolveBuildingCenter(
         osmAddrMatch: osmAddrMatchState,
         osmPolygon: null,
         visionEvidence,
+        visionSolarDeltaM,
         qualityGrade: "medium",
       };
     }
@@ -706,6 +758,7 @@ async function resolveBuildingCenter(
       osmAddrMatch: osmAddrMatchState,
       osmPolygon: osmLate,
       visionEvidence,
+      visionSolarDeltaM,
       qualityGrade: "medium",
     };
   }
@@ -723,6 +776,7 @@ async function resolveBuildingCenter(
     osmAddrMatch: osmAddrMatchState,
     osmPolygon: null,
     visionEvidence,
+    visionSolarDeltaM,
     qualityGrade: "low",
   };
 }
@@ -1015,6 +1069,7 @@ export async function GET(req: Request) {
         osmAddrMatch: "no-osm",
         osmPolygon: null,
         visionEvidence: null,
+        visionSolarDeltaM: null,
         qualityGrade: "high", // rep manually clicked → trust it
       }
     : await resolveBuildingCenter(lat, lng, houseNumber, addressParam, googleMapsKey);
@@ -1045,6 +1100,11 @@ export async function GET(req: Request) {
       `vision_confidence=${
         tileCenter.visionEvidence
           ? tileCenter.visionEvidence.confidence.toFixed(2)
+          : "n/a"
+      } ` +
+      `vision_solar_delta_m=${
+        tileCenter.visionSolarDeltaM !== null
+          ? tileCenter.visionSolarDeltaM.toFixed(1)
           : "n/a"
       }` +
       (tileCenter.visionEvidence?.reasoning
@@ -1082,6 +1142,7 @@ export async function GET(req: Request) {
       vision_confidence: tileCenter.visionEvidence?.confidence ?? null,
       vision_reasoning: tileCenter.visionEvidence?.reasoning ?? null,
       vision_alternate_count: tileCenter.visionEvidence?.alternateBuildings.length ?? 0,
+      vision_solar_delta_m: tileCenter.visionSolarDeltaM,
     },
   });
   Sentry.setTag("sam3.tile_center_source", tileCenter.source);
