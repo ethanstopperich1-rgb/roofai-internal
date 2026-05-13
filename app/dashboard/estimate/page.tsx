@@ -1669,7 +1669,15 @@ function HomePageInner() {
           // frame, which thrashes against Cesium's WebGL canvas underneath
           // and made the loader animation visibly stutter. A solid fill at
           // 88% darkness reads almost the same and stays smooth.
-          className="fixed inset-0 z-50 flex items-center justify-center float-in"
+          //
+          // `absolute` (not `fixed`) so the overlay anchors to the lg-env
+          // wrapper, not the viewport. When this page is hosted inside the
+          // dashboard chrome, `fixed inset-0` slid the loader UNDER the
+          // sidebar — the "GENE" of "GENERATING" got clipped, only "RATING"
+          // peeked through, and the cyan progress bar bled past the chrome.
+          // Anchoring to the parent keeps the chrome visible and the loader
+          // perfectly centered inside the content column.
+          className="absolute inset-0 z-40 flex items-center justify-center float-in"
           style={{ background: "rgba(7,9,13,0.88)" }}
           aria-live="polite"
         >
