@@ -234,11 +234,32 @@ async def entrypoint(ctx: JobContext) -> None:
                 "outbound dialing phone=%s trunk=%s identity=%s",
                 _phone, _trunk[:8] + "…", _participant_identity,
             )
+            # Caller-ID we present to the customer (the "from" number).
+            # Must be a DID the outbound trunk has authority to use —
+            # either a Twilio-purchased DID or a verified Caller ID.
+            # Without this field, the carrier rejects with
+            #   SIP 403: "Caller ID is unauthorized"
+            # which is exactly what the first live test surfaced.
+            #
+            # Default is +14072890294, the Twilio DID provably owned
+            # by this project's voxaris-vba-twilio-inbound trunk —
+            # verified via `lk sip inbound list`. (+13219851104 was
+            # Sydney's CONFIGURED inbound number in setup_sip.py but
+            # is NOT on the current Twilio trunk, so Twilio rejected
+            # outbound dials trying to use it as From.) Override via
+            # SYDNEY_OUTBOUND_CALLER_ID env on the worker.
+            # Matches Andie's TWILIO_VOICE_NUMBER default in
+            # voxaris-arrivia-agents.
+            _outbound_caller_id = os.environ.get(
+                "SYDNEY_OUTBOUND_CALLER_ID",
+                os.environ.get("TRANSFER_CALLER_ID", "+14072890294"),
+            )
             await ctx.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
                     room_name=ctx.room.name,
                     sip_trunk_id=_trunk,
                     sip_call_to=str(_phone),
+                    sip_number=_outbound_caller_id,
                     participant_identity=_participant_identity,
                     participant_name=str(lead_context.get("name") or "Customer"),
                     krisp_enabled=True,
