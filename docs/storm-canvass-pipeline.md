@@ -175,22 +175,48 @@ python scripts/enrich_permits.py --county seminole --top-n 5
 Dryrun hits the portals but skips the DB write, so you can verify the
 parser without polluting the canvass_targets rows.
 
+### Hot-lead scoring rubric
+
+After enrichment finishes, every canvass_targets row gets re-scored
+using the Noland's canvass rubric. The score column is canonical and
+sortable; higher = canvass first.
+
+**Must-pass filters** (gate, applied BEFORE scoring):
+- Land use = single-family residential
+- Inside hail corridor (ST_DWithin enforces this)
+- Hail size ≥ 0.75-1.0"
+
+**Additive over the hail × proximity base:**
+
+| Component | Rule | Threshold for "hot" |
+|---|---|---|
+| Roof Permit Recency | No permit in 15 yr (or never) = **+50** · 10-15 yr = **+30** · 5-10 yr = 0 · <5 yr = **−40** | No permit in 15y = hottest |
+| Permit Type Keywords | Matches `roof | reroof | re-roof | roof replacement | roof repair | building – roof` | Only these trigger recency |
+| Estimated Roof Age | Year built > 20 yr AND no recent permit = **+25** | >20 yr old |
+| Hail × Proximity | `hail_inches × 10 × 1/(1+dist_miles)` | multiplicative base |
+| Post-storm activity | Roof permit filed AFTER `storm_event.event_date` = **−100** (returns early) | Flag & deprioritize |
+
+Implemented in:
+- `lib/parcel-canvass.ts::scoreHotLead()` — canonical TS reference
+- `scripts/enrich_permits.py::score_hot_lead()` — Python port, kept in sync
+
 ### The killer query
 
-Once permit data lands, the "hot lead" canvass query is:
-
 ```sql
-select * from public.canvass_targets
+select address_line, city, zip, score, last_permit_date, distance_miles
+from public.canvass_targets
 where office_id = $1
   and status = 'new'
-  and has_recent_roof_permit is false
+  and has_recent_roof_permit is false   -- no permit OR portal returned nothing roof-related
 order by score desc
 limit 50;
 ```
 
-This is the priority queue: storm-hit address × in the canvass radius
-× residential × **no permit yet pulled**. That's the door we want
-the rep at first.
+This is the priority queue: storm-hit × residential × in-radius ×
+no recent permit. The highest-score row is typically a 20+ year old
+single-family home, in the corridor of a 1"+ hail strike, with
+nothing roof-related on file at the county portal. That's the
+door we want the rep at first.
 
 ### Adding a new county
 

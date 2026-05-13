@@ -1,17 +1,44 @@
 /**
- * Parcel-backed canvass-list builder.
+ * Parcel-backed canvass-list builder + hot-lead scoring.
  *
- * Called by `/api/cron/storm-pulse` once per detected storm event.
- * Runs a PostGIS spatial query against `public.parcels` for every
- * residential parcel within the canvass radius, ranks each by
- * (hail intensity × proximity), and inserts canvass_targets rows
- * with real owner names + situs addresses pulled from the county
- * tax roll.
+ * Called by `/api/cron/storm-pulse` and `scripts/enrich_permits.py`
+ * after the parcels table is populated by `scripts/ingest_parcels.py`.
  *
- * Falls back gracefully when the parcels table is empty (i.e. the
- * Python ingest hasn't run yet) — returns zero parcels, and the
- * caller's existing OSM placeholder path keeps the cron functional
- * during the migration window.
+ * Two-phase scoring:
+ *
+ *   PHASE 1 — `rankParcels()` (at storm-pulse creation time)
+ *     Base score = hail_inches × 10 × proximity_decay. This is the
+ *     score that lands in canvass_targets the moment a storm event is
+ *     detected. Permit data isn't known yet at this point — enrichment
+ *     runs separately on a delay.
+ *
+ *   PHASE 2 — `scoreHotLead()` (after enrich_permits.py finishes)
+ *     Full hot-lead score = base + permit_recency + age_bonus +
+ *     post_storm_penalty. Applied as a UPDATE on the canvass_targets
+ *     row by the enrichment worker once portal queries finish.
+ *
+ * Rubric (from the Noland's canvass spec):
+ *
+ *   MUST-PASS FILTERS (gate, not scored — drop everything else):
+ *     • Land use = single-family residential
+ *     • Inside hail corridor (ST_DWithin already enforces this)
+ *     • Hail size ≥ 0.75-1.0" in that cell
+ *
+ *   HOT-LEAD SCORING (additive over the hail × proximity base):
+ *     Roof Permit Recency
+ *       • No permit in last 15 yrs (or never)  → +50
+ *       • No permit in last 10 yrs              → +30
+ *       • Permit < 5 yrs ago                    → −40
+ *     Permit Type Keywords
+ *       • Matches: roof | reroof | re-roof |
+ *         roof replacement | roof repair |
+ *         building – roof                       → "counts" as roof permit
+ *       (Anything else doesn't trigger recency)
+ *     Estimated Roof Age
+ *       • Year built > 20 yrs AND no recent permit → +25
+ *     Hail × Proximity                           multiplicative base
+ *     Post-storm activity
+ *       • Roof permit filed AFTER storm_date    → −100 (already claimed)
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -31,20 +58,28 @@ export interface ParcelHit {
 }
 
 export interface CanvassRanked extends ParcelHit {
-  /** Composite score 0-100. Higher = canvass first. */
+  /** Composite score. Higher = canvass first. Capped at +200 / floored
+   *  at -200 to fit the numeric(5,2) column comfortably. */
   score: number;
 }
+
+export interface PermitContext {
+  /** Date of the most recent qualifying ROOF permit on file. Null when
+   *  the portal returned no roof permits or hasn't been queried yet. */
+  lastRoofPermitDate: Date | null;
+  /** Storm event date — used for the post-storm-activity penalty. */
+  stormDate: Date;
+  /** Year the home was built. Drives the age bonus. */
+  yearBuilt: number | null;
+}
+
+/* ─── Phase 1: base scoring (hail × proximity) ────────────────────────── */
 
 /**
  * Spatial query for residential parcels within `radiusMiles` of
  * (lat, lng). Uses ST_DWithin on the geography cast for accurate
  * great-circle distance — the GIST index on parcels.geom keeps this
  * sub-second even on the full 9M-row statewide table.
- *
- * Implemented as a Postgres RPC because Supabase's JS client doesn't
- * expose raw PostGIS functions. The RPC is defined in
- * `migrations/0013_parcels.sql` companion `parcels_within_radius`
- * function — created below.
  */
 export async function parcelsWithinRadius(
   sb: SupabaseClient,
@@ -62,9 +97,6 @@ export async function parcelsWithinRadius(
     p_limit: limit,
   });
   if (error) {
-    // The RPC returning "function does not exist" means the migration
-    // hasn't landed yet — return empty so the caller's fallback path
-    // (OSM count) takes over. Logged for ops visibility.
     if (error.message?.includes("does not exist")) {
       console.warn("[parcel-canvass] RPC missing; parcels migration not yet applied");
       return [];
@@ -75,56 +107,97 @@ export async function parcelsWithinRadius(
 }
 
 /**
- * Rank parcel hits for canvass priority.
- *
- * Score = (peakInches × 10) × proximityFactor × ageFactor × valueFactor
- *
- *   peakInches × 10  → 1.0" hail = 10pts; 2.5" = 25pts. Linear in
- *                       hail magnitude because real damage probability
- *                       is roughly linear in MESH up to ~3".
- *   proximityFactor  → 1 / (1 + distance_miles). Inside the storm
- *                       center gets the full score; 2mi out gets 1/3.
- *   ageFactor        → houses 15-25 yr old score 1.2× (sweet spot for
- *                       roof replacement); >25 yr 1.15× (likely already
- *                       replaced once); <10 yr 0.7× (probably warranty-
- *                       covered).
- *   valueFactor      → log-scaled bump for higher-value properties
- *                       because the ROI of a roof replacement scales
- *                       with the home value. Clipped 0.8-1.4×.
+ * Phase-1 score = hail × proximity. Applied at canvass_targets
+ * creation time, before any permit data is known. Permit-aware
+ * recovery + age bonus happens in `scoreHotLead()` after enrichment.
  */
 export function rankParcels(
   hits: ParcelHit[],
   peakInches: number,
 ): CanvassRanked[] {
   const ranked = hits.map((p) => {
-    const proximityFactor = 1 / (1 + p.distance_miles);
-    const ageFactor = ageMultiplier(p.year_built);
-    const valueFactor = valueMultiplier(p.just_value);
-    const raw = peakInches * 10 * proximityFactor * ageFactor * valueFactor;
-    // Clamp to score column scale (0-100 fits the numeric(5,2) col).
-    const score = Math.max(0, Math.min(100, raw));
-    return { ...p, score: Math.round(score * 100) / 100 };
+    const base = hailProximityScore(peakInches, p.distance_miles);
+    // Age bias at phase 1 — modest tilt so newly-created canvass rows
+    // already favour older homes pre-enrichment. The big age bonus
+    // (+25 for >20yr + no permit) lands at phase 2 once we know the
+    // permit status.
+    const ageNudge = p.year_built && new Date().getUTCFullYear() - p.year_built > 20 ? 5 : 0;
+    return { ...p, score: roundScore(base + ageNudge) };
   });
   ranked.sort((a, b) => b.score - a.score);
   return ranked;
 }
 
-function ageMultiplier(yearBuilt: number | null): number {
-  if (yearBuilt == null) return 1;
-  const age = new Date().getUTCFullYear() - yearBuilt;
-  if (age >= 15 && age <= 25) return 1.2;
-  if (age > 25) return 1.15;
-  if (age < 10) return 0.7;
-  return 1;
+/* ─── Phase 2: full hot-lead score (post-enrichment) ──────────────────── */
+
+/**
+ * Hot-lead score per the canvass rubric. Applied after
+ * scripts/enrich_permits.py finishes pulling permit data for the
+ * canvass_targets row.
+ *
+ * @param baseScore  Phase-1 hail × proximity score already on the row.
+ * @param ctx        Permit context — last roof permit date, storm date,
+ *                   year built.
+ */
+export function scoreHotLead(baseScore: number, ctx: PermitContext): number {
+  let score = baseScore;
+  const now = new Date();
+  const lastPermit = ctx.lastRoofPermitDate;
+
+  // ─── Post-storm activity penalty (−100, applied first) ───────────────
+  // Roof permit filed AFTER the storm = competitor already canvassed or
+  // homeowner already moved. Big red flag.
+  if (lastPermit && lastPermit > ctx.stormDate) {
+    score += -100;
+    // Return early — don't also apply recency bonus for a permit pulled
+    // in response to this storm. The penalty is the dominant signal.
+    return roundScore(score);
+  }
+
+  // ─── Roof Permit Recency (additive) ──────────────────────────────────
+  const yearsSinceLastPermit = lastPermit
+    ? (now.getTime() - lastPermit.getTime()) / (365.25 * 24 * 60 * 60 * 1000)
+    : Number.POSITIVE_INFINITY; // no permit on record = treat as "forever"
+
+  let recencyBonus = 0;
+  if (yearsSinceLastPermit < 5) {
+    recencyBonus = -40; // recent reroof — homeowner already covered
+  } else if (yearsSinceLastPermit >= 15) {
+    recencyBonus = +50; // 15+ years (or never) — hottest
+  } else if (yearsSinceLastPermit >= 10) {
+    recencyBonus = +30; // 10-15 years — warm
+  }
+  // 5-10 years = 0 (neutral)
+  score += recencyBonus;
+
+  // ─── Estimated Roof Age bonus (+25) ──────────────────────────────────
+  // Year built > 20 yrs ago AND no recent permit. We treat "no recent
+  // permit" as ≥10 years since last permit (matches the warm/hot
+  // recency tiers). Older homes in FL = bigger insurance claims.
+  if (ctx.yearBuilt) {
+    const homeAge = now.getUTCFullYear() - ctx.yearBuilt;
+    const noRecentPermit = yearsSinceLastPermit >= 10;
+    if (homeAge > 20 && noRecentPermit) {
+      score += 25;
+    }
+  }
+
+  return roundScore(score);
 }
 
-function valueMultiplier(jv: number | null): number {
-  if (jv == null || jv <= 0) return 1;
-  // Log10($300k) = 5.48 → ref point ~1.0
-  // Log10($150k) = 5.18 → 0.92
-  // Log10($600k) = 5.78 → 1.08
-  // Clip to 0.8-1.4 so outliers don't dominate.
-  const ref = 5.48;
-  const factor = 1 + (Math.log10(jv) - ref) * 0.4;
-  return Math.max(0.8, Math.min(1.4, factor));
+/* ─── Helpers ─────────────────────────────────────────────────────────── */
+
+function hailProximityScore(peakInches: number, distanceMiles: number): number {
+  // peak_inches × 10 × proximity_decay
+  // 1.00" hail at 0 mi = 10pts; 1.50" hail at 0.5 mi = 10pts; etc.
+  const proximityFactor = 1 / (1 + Math.max(0, distanceMiles));
+  return peakInches * 10 * proximityFactor;
+}
+
+function roundScore(s: number): number {
+  // Clamp to [-200, 200] so a post-storm penalty + small base doesn't
+  // blow past the numeric(5,2) column bounds (which is +/-999.99
+  // technically, but tightening makes UI sorting saner).
+  const clamped = Math.max(-200, Math.min(200, s));
+  return Math.round(clamped * 100) / 100;
 }

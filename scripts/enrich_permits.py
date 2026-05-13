@@ -86,16 +86,30 @@ DEFAULT_TOP_N = int(os.environ.get("PERMIT_TOP_N", "500"))
 RATE_LIMIT_MIN_SEC = 3.0
 RATE_LIMIT_MAX_SEC = 5.0
 
-# Permit types we count as "recent roof activity." Each county uses
-# slightly different terminology; the regex matches inclusively.
+# Permit types we count as roof activity. Matches the Noland's canvass
+# rubric's keyword list verbatim, with variant spelling tolerance:
+#   roof | reroof | re-roof | roof replacement | roof repair |
+#   building – roof  (em-dash, en-dash, hyphen, or space all OK)
+# Anything that doesn't match the regex is non-roof permit activity
+# (pool, fence, HVAC, etc.) and is ignored by the scoring logic.
 ROOF_PERMIT_PATTERN = re.compile(
-    r"\b(re-?roof|roof\s*replace(ment)?|roof\s*repair|new\s*roof|roofing)\b",
+    r"\b("
+    r"re-?roof"                              # reroof, re-roof
+    r"|roof\s*(replace(ment)?|repair)"       # roof replacement, roof repair
+    r"|new\s*roof"                            # new roof
+    r"|roofing"                               # roofing
+    r"|building\s*[-–—\s]\s*roof"             # building – roof (any dash/space)
+    r"|roof"                                  # bare "roof" — fallback (least specific)
+    r")\b",
     re.IGNORECASE,
 )
 
-# How recent counts as "recent." 24 months matches the typical insurance
-# claim window and is generous enough to cover slow-permit homeowners.
-RECENT_WINDOW_DAYS = 24 * 30
+# We track ALL roof permits going back as far as the portal returns,
+# not just the last 24 months. The hot-lead scoring rubric needs to
+# distinguish "permit < 5 yrs" (cold) from "permit 10-15 yrs" (warm)
+# from ">15 yrs or never" (hot), so we surface the actual last-permit
+# date and let the scorer apply the tiered bonuses.
+PORTAL_LOOKBACK_DAYS = 25 * 365  # 25 years — plenty for the 15-year recency tier
 
 
 # ─── Models ────────────────────────────────────────────────────────────────
@@ -108,6 +122,9 @@ class CanvassRow:
     city: str | None
     zip: str | None
     score: float
+    # Context needed for the hot-lead re-score after permit data is in
+    storm_date: dt.date
+    year_built: int | None
 
 
 @dataclass
@@ -246,11 +263,23 @@ def _parse_street_name(address: str) -> str:
 def _summarize_permits(permits: list[dict]) -> PermitFinding:
     """Reduce a portal result table to a single PermitFinding.
 
-    A row counts as a "recent roof permit" when:
-      * type/description matches ROOF_PERMIT_PATTERN
-      * date is within RECENT_WINDOW_DAYS of today
+    Tracks the most recent qualifying ROOF permit going back the full
+    PORTAL_LOOKBACK_DAYS window (~25 years). The hot-lead scoring
+    rubric (see lib/parcel-canvass.ts::scoreHotLead) tiers by years
+    since:
+      * <5 yrs  = cold (−40)
+      * 5-10   = neutral
+      * 10-15  = warm (+30)
+      * >15 / never = hot (+50)
+
+    `has_recent_roof_permit` is set to True when ANY roof permit was
+    found in the lookback window — the recency tier comes from
+    last_permit_date downstream. Set to False ONLY when we saw a
+    portal result but no permits matched the roof regex (the "we
+    checked and there's nothing on file" signal — that's the hot
+    one). Returns null in the None-finding case (portal failure).
     """
-    cutoff = dt.date.today() - dt.timedelta(days=RECENT_WINDOW_DAYS)
+    cutoff = dt.date.today() - dt.timedelta(days=PORTAL_LOOKBACK_DAYS)
     most_recent: dict | None = None
     most_recent_date: dt.date | None = None
 
@@ -263,14 +292,14 @@ def _summarize_permits(permits: list[dict]) -> PermitFinding:
         except (ValueError, TypeError):
             continue
         if pdate < cutoff:
-            continue
+            continue  # older than our lookback — effectively "no record"
         if most_recent_date is None or pdate > most_recent_date:
             most_recent = p
             most_recent_date = pdate
 
     if most_recent is None:
-        # Build a raw summary out of whatever permits we DID see so
-        # the operator can sanity-check if needed.
+        # We saw the portal results but no roof permit matched. That's
+        # the "hot lead" signal — old/no permit on file.
         summary_lines = [
             f"{p.get('date','?')} {p.get('type','?')} #{p.get('number','?')}"
             for p in permits[:10]
@@ -310,8 +339,11 @@ def fetch_pending(conn: psycopg.Connection, county_fips: str, limit: int) -> lis
       ct.address_line,
       ct.city,
       ct.zip,
-      ct.score
+      ct.score,
+      se.event_date,
+      p.year_built
     from public.canvass_targets ct
+    join public.storm_events se on se.id = ct.storm_event_id
     left join public.parcels p
       on p.situs_address = ct.address_line
       and p.situs_zip = ct.zip
@@ -331,23 +363,80 @@ def fetch_pending(conn: psycopg.Connection, county_fips: str, limit: int) -> lis
             city=r[2],
             zip=r[3],
             score=float(r[4] or 0),
+            storm_date=r[5],
+            year_built=r[6],
         )
         for r in rows
     ]
 
 
+def score_hot_lead(
+    base_score: float,
+    last_roof_permit_date: dt.date | None,
+    storm_date: dt.date,
+    year_built: int | None,
+) -> float:
+    """Port of lib/parcel-canvass.ts::scoreHotLead — the canonical
+    hot-lead scoring rubric. Kept in sync with the TS implementation;
+    if you change one, change both.
+
+    Rubric:
+      base                                          (hail × proximity)
+      + post-storm penalty (-100, returns early)    if permit AFTER storm
+      + roof permit recency  (-40 | 0 | +30 | +50)
+      + age bonus (+25)                              if >20yr AND no recent permit
+    """
+    score = float(base_score)
+    today = dt.date.today()
+
+    # Post-storm activity penalty — competitor already moved
+    if last_roof_permit_date and last_roof_permit_date > storm_date:
+        return max(-200.0, min(200.0, round((score - 100) * 100) / 100))
+
+    # Recency tier
+    if last_roof_permit_date is None:
+        years_since = float("inf")
+    else:
+        years_since = (today - last_roof_permit_date).days / 365.25
+
+    if years_since < 5:
+        score += -40
+    elif years_since >= 15:
+        score += 50
+    elif years_since >= 10:
+        score += 30
+    # 5-10 yr = neutral
+
+    # Roof age bonus
+    if year_built:
+        home_age = today.year - year_built
+        no_recent_permit = years_since >= 10
+        if home_age > 20 and no_recent_permit:
+            score += 25
+
+    return max(-200.0, min(200.0, round(score * 100) / 100))
+
+
 def write_finding(
     conn: psycopg.Connection,
-    row_id: str,
+    row: CanvassRow,
     finding: PermitFinding | None,
 ) -> None:
-    """Update one canvass_targets row with permit data.
+    """Update one canvass_targets row with permit data + re-scored
+    hot-lead score.
 
     finding=None means "we tried but the portal failed" — we still
     mark permit_checked_at so we don't retry every cron, but leave
-    has_recent_roof_permit null."""
+    has_recent_roof_permit null and the existing score unchanged."""
     if os.environ.get("PERMIT_DRYRUN") == "1":
-        log.info("[DRYRUN] would update %s with %s", row_id, finding)
+        new_score = (
+            score_hot_lead(row.score, finding.last_permit_date, row.storm_date, row.year_built)
+            if finding else row.score
+        )
+        log.info(
+            "[DRYRUN] would update %s with finding=%s new_score=%s",
+            row.id, finding, new_score,
+        )
         return
 
     with conn.cursor() as cur:
@@ -359,9 +448,12 @@ def write_finding(
                     updated_at = now()
                 where id = %s::uuid
                 """,
-                (row_id,),
+                (row.id,),
             )
         else:
+            new_score = score_hot_lead(
+                row.score, finding.last_permit_date, row.storm_date, row.year_built,
+            )
             cur.execute(
                 """
                 update public.canvass_targets
@@ -371,6 +463,7 @@ def write_finding(
                     last_permit_number     = %s,
                     permit_raw_summary     = %s,
                     permit_checked_at      = now(),
+                    score                  = %s,
                     updated_at             = now()
                 where id = %s::uuid
                 """,
@@ -380,7 +473,8 @@ def write_finding(
                     finding.last_permit_date,
                     finding.last_permit_number,
                     finding.raw_summary,
-                    row_id,
+                    new_score,
+                    row.id,
                 ),
             )
     conn.commit()
@@ -425,7 +519,7 @@ def enrich_county(
         for i, row in enumerate(pending):
             try:
                 finding = cfg["query"](page, row)
-                write_finding(conn, row.id, finding)
+                write_finding(conn, row, finding)
                 written += 1
                 tag = (
                     "HOT (no permit)"
@@ -441,7 +535,7 @@ def enrich_county(
             except Exception as e:
                 log.exception("row %s failed: %s", row.id, e)
                 # Mark checked anyway so we don't loop on this row.
-                write_finding(conn, row.id, None)
+                write_finding(conn, row, None)
 
             # Polite-scrape jitter — randomized between 3-5s. Without
             # this every county portal will (a) detect us as automated
