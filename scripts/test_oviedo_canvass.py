@@ -258,20 +258,43 @@ def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> Permit
             pass
 
     # Seminole's BuildingPermitWebInquiry portal is an ASP.NET WebForms
-    # app. The address fields are hidden until you pick "Address" from
-    # the SearchByDropDownList — which fires a postback that reveals
-    # them. So step one: select Address and wait for the form to update.
+    # app with Telerik AjaxControlToolkit. The address fields are
+    # hidden until you pick "Address" from the SearchByDropDownList,
+    # which fires a partial postback (UpdatePanel) that swaps in the
+    # form. Step one: select Address. Step two: wait for any of the
+    # address-input candidates to actually appear — DON'T wait for
+    # networkidle, because Telerik keeps long-polling forever and
+    # networkidle never fires (which is why our first run timed out
+    # at 12s with the page itself fully loaded).
+    candidate_inputs = ", ".join([
+        "input[id*='StreetNumber']",
+        "input[id*='HouseNumber']",
+        "input[id*='AddressNumber']",
+        "input[name*='StreetNumber']",
+        "input[id$='StreetNumberTextBox']",
+    ])
+    dropdown_err = None
     try:
         dd = page.locator("select[id*='SearchByDropDownList']")
         if dd.count() > 0:
             dd.select_option("Address")
-            # postback re-renders the page; wait for the address inputs
-            # to appear. networkidle is the safest signal for ASP.NET.
-            page.wait_for_load_state("networkidle", timeout=12_000)
+            # Wait for the form to materialize. The partial postback is
+            # fast (<1s on a good day), but allow up to 10s.
+            try:
+                page.wait_for_selector(candidate_inputs, state="visible", timeout=10_000)
+            except Exception:
+                # Inputs didn't appear under any candidate selector —
+                # don't fail hard, save the artifacts and fall through
+                # to the fill attempt. That step will report a clearer
+                # error if the form really didn't render.
+                page.wait_for_timeout(1500)
+        else:
+            dropdown_err = "SearchByDropDownList not found"
     except Exception as e:
-        return PermitFinding(None, None, None, None, "",
-                              portal_error=f"dropdown-select: {e}")
+        dropdown_err = f"select-option failed: {e}"
 
+    # ALWAYS save the post-dropdown artifacts — useful for diagnosing
+    # selector misses even when the dropdown step itself succeeded.
     if debug_dir:
         try:
             page.screenshot(path=str(debug_dir / f"{street_num}_{street_name_clean[:20]}_after_dropdown.png"))
@@ -280,6 +303,10 @@ def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> Permit
             )
         except Exception:
             pass
+
+    if dropdown_err:
+        return PermitFinding(None, None, None, None, "",
+                              portal_error=f"dropdown: {dropdown_err}")
 
     # Try a few selector variants — the actual portal markup is what
     # we'll discover via debug screenshots. Each variant fails fast.
