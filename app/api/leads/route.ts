@@ -394,7 +394,16 @@ export async function POST(req: Request) {
           estimateLow: body.estimateLow,
           estimateHigh: body.estimateHigh,
           material: body.material,
-          office: body.office ?? "voxaris",
+          // VOICE BRAND default — controls how Sydney introduces herself
+          // ("Sydney with [office company name]"). Default is "nolands"
+          // so the demo flow greets customers as "Sydney with Noland's
+          // Roofing." This is separate from the Supabase office_id used
+          // for lead storage (still defaults to "voxaris" at line 134
+          // because the dashboard's Basic-auth fallback office is
+          // voxaris, per migration 0006). Two distinct concerns:
+          // backend tenancy stays voxaris (dashboard sees the lead);
+          // voice brand goes through as nolands (caller hears Noland's).
+          office: body.office ?? "nolands",
           estimatedSqft: body.estimatedSqft,
         }),
       })

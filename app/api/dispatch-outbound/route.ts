@@ -130,7 +130,12 @@ export async function POST(req: Request) {
     estimateHigh: body.estimateHigh ?? null,
     estimatedSqft: body.estimatedSqft ?? null,
     material: body.material ?? null,
-    office: body.office ?? "voxaris",
+    // Default office is "nolands" so Sydney introduces herself as
+    // "Sydney with Noland's Roofing" (the brand the homeowner expects
+    // to hear from based on the inbound number routing). The platform
+    // brand "Voxaris" is reachable only when the caller explicitly
+    // submits office=voxaris.
+    office: body.office ?? "nolands",
   };
   const metadata = JSON.stringify(leadContext);
 
