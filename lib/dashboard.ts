@@ -149,17 +149,29 @@ function normalizeRole(raw: string | null | undefined): DashboardRole {
 
 /** Resolve the current authenticated user. Returns null when there's no
  *  Supabase session (HTTP-Basic / unauth surfaces). The dashboard demo
- *  route returns null too — demo doesn't represent a real user. */
+ *  route returns null too — demo doesn't represent a real user.
+ *
+ *  Important: we MUST filter by id = auth.uid() before .single(). The
+ *  users RLS policy (`users_select_same_office`) returns every user in
+ *  the caller's office, so .single() without a WHERE clause throws
+ *  "JSON object requested, multiple (or no) rows returned" the moment
+ *  the office has more than one staff account. That silently breaks
+ *  the entire role-tier system, falling through to the `staff` default.
+ */
 export async function getDashboardUser(): Promise<DashboardUser | null> {
   if (await isDemoRoute()) return null;
   if (!supabaseConfigured()) return null;
   if (!(await hasSession())) return null;
   try {
     const supabase = createServerClient(await buildCookieAdapter());
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = auth?.user?.id;
+    if (!uid) return null;
     const { data: userRow } = await supabase
       .from("users")
       .select("id, email, full_name, office_id, role")
-      .single();
+      .eq("id", uid)
+      .maybeSingle();
     if (!userRow) return null;
     return {
       id: userRow.id,
@@ -210,11 +222,18 @@ export async function getDashboardOfficeId(): Promise<string | null> {
   if (await hasSession()) {
     try {
       const supabase = createServerClient(await buildCookieAdapter());
-      const { data: userRow } = await supabase
-        .from("users")
-        .select("office_id")
-        .single();
-      if (userRow?.office_id) return userRow.office_id;
+      // Same trap as getDashboardUser: filter by auth.uid() before
+      // .single(), because users RLS returns every same-office row.
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (uid) {
+        const { data: userRow } = await supabase
+          .from("users")
+          .select("office_id")
+          .eq("id", uid)
+          .maybeSingle();
+        if (userRow?.office_id) return userRow.office_id;
+      }
     } catch (err) {
       console.warn("[dashboard] auth-aware office_id lookup failed:", err);
     }
