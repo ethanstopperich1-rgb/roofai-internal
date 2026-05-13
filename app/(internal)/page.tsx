@@ -1513,7 +1513,15 @@ function HomePageInner() {
 
   const mapBadges = (() => {
     const badges: string[] = [];
-    if (solar?.imageryDate) badges.push(`Imagery ${solar.imageryDate}`);
+    // Labelled "Solar imagery" specifically because this date comes from
+    // Google Solar API's dataset capture, NOT the Static Maps / Maps JS
+    // tile actually rendered on screen. Reps saw the bare "Imagery 2015"
+    // chip next to a 2026-attributed satellite tile and assumed the
+    // image they were looking at was old. The Solar dataset can be
+    // 5-12 years old; the displayed Maps tile is usually current. Both
+    // datapoints matter (Solar age informs analysis confidence), but
+    // the chip needs to say which it's about.
+    if (solar?.imageryDate) badges.push(`Solar imagery ${solar.imageryDate}`);
     if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
     if (polygonSource === "edited") badges.push("Edited");
     else if (polygonSource === "tiles3d") badges.push("3D mesh");
@@ -1665,8 +1673,11 @@ function HomePageInner() {
             caption={address?.formatted}
             trailing={
               solar?.imageryDate && (
-                <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-slate-500">
-                  Imagery {solar.imageryDate}
+                <span
+                  className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-slate-500"
+                  title="Date of Google Solar API's roof dataset for this location — NOT the date of the satellite tile shown below (that's served by Google Static Maps / Maps JS and is usually current)."
+                >
+                  Solar imagery {solar.imageryDate}
                 </span>
               )
             }
