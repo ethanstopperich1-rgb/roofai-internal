@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Eye, ListChecks, Send, ArrowRight, CloudHail } from "lucide-react";
 import LiveStormCard from "@/components/storms/LiveStormCard";
+import CountyDataSourcesCard from "@/components/storms/CountyDataSourcesCard";
 import PublicHeader from "@/components/ui/public-header";
 import PublicFooter from "@/components/ui/public-footer";
 
@@ -30,6 +31,7 @@ export default function StormsPage() {
         nav={[
           { label: "Homeowner quote", href: "/quote" },
           { label: "How it works", href: "#example" },
+          { label: "Data sources", href: "#sources" },
         ]}
         rightSlot={
           <a
@@ -151,6 +153,28 @@ export default function StormsPage() {
           </p>
 
           <LiveStormCard googleMapsKey={GOOGLE_MAPS_KEY} />
+        </section>
+
+        {/* Data spine — county parcel + property-appraiser feeds. Shows the
+            prospect that the canvass lists are anchored to real, named
+            government data sources, not vibes. Self-documenting from
+            lib/county-data-sources.ts so adding a county to the data
+            pipeline updates the marketing page automatically. */}
+        <section id="sources" className="scroll-mt-24">
+          <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-cy-300 mb-3">
+            What we cross-reference
+          </div>
+          <h2 className="font-display text-[28px] sm:text-[40px] font-semibold tracking-[-0.025em] text-slate-50 leading-tight mb-3">
+            Five Central Florida counties, wired.
+          </h2>
+          <p className="text-[14.5px] text-slate-400 max-w-prose leading-relaxed mb-10">
+            Every storm hit gets cross-referenced against the county tax
+            roll and parcel polygons — owner name, situs address,
+            assessed value, year built. Direct from each county's
+            official open-data portal.
+          </p>
+
+          <CountyDataSourcesCard />
         </section>
 
         {/* CTA */}
