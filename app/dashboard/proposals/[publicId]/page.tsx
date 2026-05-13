@@ -14,6 +14,7 @@ import {
 import { getDemoProposals, getDemoLeads } from "@/lib/dashboard-demo-rows";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
 import { summarizeProposalSnapshot, fmtMaterial } from "@/lib/proposal-snapshot";
+import RecentStormCard from "@/components/RecentStormCard";
 import type {
   Estimate,
   LineItem,
@@ -222,6 +223,17 @@ function RepWorkbench({
   const waste = estimate.waste;
   const photos = estimate.photos ?? [];
   const enabledAddOns = estimate.addOns.filter((ao) => ao.enabled);
+  const addrLat = estimate.address?.lat;
+  const addrLng = estimate.address?.lng;
+  // Friendly city/region label for the storm card header. Pulls the
+  // first meaningful comma-segment from the formatted address ("8450
+  // Oak Park Rd, Oviedo, FL 32765" → "Oviedo"). Falls back to the
+  // raw formatted string when we can't parse a clean city.
+  const cityLabel = (() => {
+    const f = estimate.address?.formatted ?? "";
+    const parts = f.split(",").map((s) => s.trim()).filter(Boolean);
+    return parts.length >= 2 ? parts[parts.length - 2] : f || undefined;
+  })();
 
   return (
     <div className="flex flex-col gap-4">
@@ -267,6 +279,18 @@ function RepWorkbench({
           />
         </div>
       </section>
+
+      {/* Recent storm activity — IEM Local Storm Reports, near-real-time.
+          Lives high in the workbench so the rep sees "did this property
+          get hit in the last week?" before they get into pricing. Time-
+          window pills default to 7 days, 10-mi radius. */}
+      <RecentStormCard
+        lat={addrLat}
+        lng={addrLng}
+        cityLabel={cityLabel}
+        defaultWindow={7}
+        defaultRadius={10}
+      />
 
       {/* Line items (Xactimate-style breakdown) */}
       {detailed && detailed.lineItems.length > 0 && (
