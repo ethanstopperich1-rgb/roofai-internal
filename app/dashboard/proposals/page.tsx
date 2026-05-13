@@ -85,7 +85,12 @@ async function load(): Promise<{
     for (const l of leads ?? []) leadsById[l.id] = l;
   }
 
-  if (rows.length === 0) return buildDemoRows(officeSlug);
+  // No empty-fallback to demo here. The /demo surface gets demo data
+  // via the earlier `!supabase` branch (getDashboardSupabase() returns
+  // null when the demo route header is set). On the real dashboard
+  // with zero rows we render the dedicated "No proposals yet" empty
+  // state — showing fake "Demo" rows with unclickable links was
+  // misleading to actual staff.
 
   return {
     rows: rows.map((p) => ({ ...p, lead: p.lead_id ? leadsById[p.lead_id] ?? null : null })),

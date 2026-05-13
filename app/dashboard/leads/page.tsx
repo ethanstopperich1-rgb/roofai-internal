@@ -85,8 +85,10 @@ async function loadLeads(): Promise<{
       (proposalsByLead[p.lead_id] ??= []).push(p);
     }
   }
-  // Empty office → demo bundle, same pattern as the calls page.
-  if (leadRows.length === 0) return buildDemoBundle(officeSlug);
+  // No empty-fallback to demo here. The /demo surface gets demo
+  // data via the earlier `!supabase` branch. On the real dashboard
+  // with zero leads we render the "No leads yet" empty state instead
+  // of fake rows that look like real customers.
 
   return { leads: leadRows, callsByLead, proposalsByLead };
 }

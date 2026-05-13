@@ -88,16 +88,10 @@ async function loadCalls(): Promise<{
     }
   }
 
-  // If this office has zero live rows, return demo data so the pitch
-  // shows a populated inbox. Real rows take over the moment a Sydney
-  // call lands for this office.
-  if (callRows.length === 0) {
-    return {
-      calls: getDemoCalls(officeSlug),
-      eventsByCall: getDemoEventsByCall(officeSlug),
-      configured: true,
-    };
-  }
+  // No empty-fallback to demo here. The /demo route surfaces demo
+  // calls via the earlier `!supabase` branch. On the real dashboard
+  // with no live calls yet we render the "Awaiting first call" empty
+  // state instead of synthesizing rows that pretend to be real.
 
   return { calls: callRows, eventsByCall, configured: true };
 }

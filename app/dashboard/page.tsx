@@ -177,20 +177,11 @@ async function loadOverview(): Promise<{
   const callsCount = callsRes.count ?? 0;
   const proposalsCount = proposalsRes.count ?? 0;
 
-  // If the office has zero rows across the board, fall back to demo
-  // data so the dashboard reads as a populated operator console. The
-  // moment real activity lands (any lead, call, or proposal), the
-  // condition flips and the dashboard switches to truth automatically.
-  const isEmpty =
-    leadsCount === 0 && callsCount === 0 && proposalsCount === 0 && activity.length === 0;
-
-  if (isEmpty) {
-    return {
-      metrics: getDemoMetrics(officeSlug),
-      activity: getDemoActivity(officeSlug).slice(0, 8),
-      configured: true,
-    };
-  }
+  // No empty-fallback to demo on the real dashboard — the /demo
+  // surface handles that path via the earlier `!supabase` branch
+  // (getDashboardSupabase returns null when isDemoRoute is set).
+  // An empty live office now reads as legitimately quiet (all zeros)
+  // instead of fake activity that vanishes the moment a real row lands.
 
   // Supplement Recovery is not yet a live-tracked metric — we surface
   // the per-office demo values alongside live lead/call counts so the
