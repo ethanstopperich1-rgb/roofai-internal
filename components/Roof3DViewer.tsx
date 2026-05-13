@@ -314,6 +314,16 @@ export default function Roof3DViewer({
   // the actual ground; the camera framing constants below (110m / -42°)
   // are tuned for this default.
   const pivotAltitudeRef = useRef(200);
+  // Pivot lat/lng for the camera orbit. Defaults to the geocoded
+  // address but is updated downstream whenever the polygon centroid
+  // moves — e.g., after a "Wrong roof? Click to pick" override re-
+  // traces a different building, the camera follows the new polygon
+  // onto the correct house instead of orbiting the original (wrong)
+  // pin. Refs (not state) because `recenter` + `enterTopDown` are
+  // created once in the init effect and need to read the LATEST
+  // pivot without re-running the init.
+  const pivotLatRef = useRef(lat);
+  const pivotLngRef = useRef(lng);
   const onVerifiedRef = useRef(onMultiViewVerified);
   onVerifiedRef.current = onMultiViewVerified;
   // Don't re-verify the same polygon on every render. Key by (source +
@@ -574,8 +584,8 @@ export default function Roof3DViewer({
       // on the actual roof level.
       const recenter = () => {
         const center = Cesium.Cartesian3.fromDegrees(
-          lng,
-          lat,
+          pivotLngRef.current,
+          pivotLatRef.current,
           pivotAltitudeRef.current,
         );
         const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
@@ -596,8 +606,8 @@ export default function Roof3DViewer({
       let savedPerspectiveFrustum: any = null;
       const enterTopDown = () => {
         const center = Cesium.Cartesian3.fromDegrees(
-          lng,
-          lat,
+          pivotLngRef.current,
+          pivotLatRef.current,
           pivotAltitudeRef.current,
         );
         const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
@@ -696,6 +706,11 @@ export default function Roof3DViewer({
   useEffect(() => {
     if (status !== "ready") return;
     pivotAltitudeRef.current = 200;
+    // Reset pivot lat/lng to the new geocoded address. The polygon-
+    // follow effect below will subsequently override these once a
+    // SAM3 polygon resolves for the new property.
+    pivotLatRef.current = lat;
+    pivotLngRef.current = lng;
     setTopDown(false);
     recenterRef.current?.();
   }, [lat, lng, status]);
@@ -856,6 +871,23 @@ export default function Roof3DViewer({
     // removing + re-adding, and keeps any animations/binding that
     // Cesium has attached to the entity.
     ent.position = Cesium.Cartesian3.fromDegrees(markerLng, markerLat, 0);
+    // Move the camera pivot to follow. Update the refs first so
+    // recenter/enterTopDown (which read from the refs) pick up the
+    // new position, then call the appropriate one based on whether
+    // we're currently in oblique or top-down mode.
+    //
+    // If the rep is mid-interaction (panning, drawing, capturing
+    // multi-view screenshots), we'd be yanking them. Check the
+    // capture flag and skip during capture so the multi-view IIFE
+    // can drive the camera unmolested.
+    if (isCapturingRef.current) return;
+    pivotLatRef.current = markerLat;
+    pivotLngRef.current = markerLng;
+    if (topDownRef.current) {
+      topDownActionsRef.current?.enter();
+    } else {
+      recenterRef.current?.();
+    }
   }, [markerLat, markerLng, status]);
   const verifyEligible =
     !!primaryPolygon &&
