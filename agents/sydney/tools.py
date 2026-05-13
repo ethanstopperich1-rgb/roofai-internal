@@ -31,12 +31,44 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from typing import Annotated
+from typing import Annotated, Any
 
 from livekit import agents, api, rtc
 from livekit.agents import function_tool
 
 logger = logging.getLogger("sydney.tools")
+
+# Must match WorkerOptions.agent_name in agent.py for /api/agent/events routing.
+_AGENT_EVENTS_NAME = os.environ.get("SYDNEY_AGENT_NAME_EVENTS", "sydney")
+
+_TWILIO_PATH_HINT = (
+    "PSTN leg is Twilio (Elastic SIP trunk); SIP response codes on failures "
+    "usually indicate trunk IP ACL, origination/termination, or caller-ID."
+)
+
+
+async def _emit_tool_fired(tool: str, summary: dict[str, Any]) -> None:
+    """Best-effort dashboard row in `events` — never blocks tool return."""
+    ctx = agents.get_job_context()
+    if ctx is None:
+        return
+    try:
+        import events as _events
+        from datetime import datetime
+
+        summary = {**summary, "twilio_path_hint": _TWILIO_PATH_HINT}
+        await _events.post(
+            {
+                "type": "tool_fired",
+                "agent_name": _AGENT_EVENTS_NAME,
+                "room_name": ctx.room.name,
+                "tool": tool,
+                "summary": summary,
+                "at": datetime.utcnow().isoformat() + "Z",
+            }
+        )
+    except Exception:
+        pass
 
 
 def _hash_fragment(value: str | None) -> str | None:
@@ -160,6 +192,16 @@ async def transfer_to_human(
             "ESCALATION_%s_PHONE and SIP_OUTBOUND_TRUNK_ID for real bridging",
             target, SIP_OUTBOUND_TRUNK_ID, reason.upper(),
         )
+        await _emit_tool_fired(
+            "transfer_to_human",
+            {
+                "status": "transferred_mock",
+                "queue": reason,
+                "priority": priority,
+                "trunk_configured": bool(SIP_OUTBOUND_TRUNK_ID),
+                "target_configured": bool(target),
+            },
+        )
         return {"status": "transferred_mock", "queue": reason, "priority": priority}
 
     # Real bridge: dial the on-call human into the same room as the caller.
@@ -169,6 +211,15 @@ async def transfer_to_human(
         ctx = agents.get_job_context()
         if ctx is None:
             logger.warning("transfer_to_human: no job context, falling back to mock")
+            await _emit_tool_fired(
+                "transfer_to_human",
+                {
+                    "status": "transferred_mock",
+                    "queue": reason,
+                    "priority": priority,
+                    "note": "no_job_context",
+                },
+            )
             return {"status": "transferred_mock", "queue": reason, "priority": priority}
 
         await ctx.api.sip.create_sip_participant(
@@ -190,6 +241,16 @@ async def transfer_to_human(
             "transfer_to_human BRIDGED reason=%s target=%s room=%s",
             reason, target, ctx.room.name,
         )
+        await _emit_tool_fired(
+            "transfer_to_human",
+            {
+                "status": "transferred",
+                "queue": reason,
+                "priority": priority,
+                "method": "dial_and_bridge",
+                "target_hash": _hash_fragment(target),
+            },
+        )
         return {
             "status": "transferred",
             "queue": reason,
@@ -202,6 +263,16 @@ async def transfer_to_human(
             "transfer_to_human dial FAILED reason=%s sip=%s msg=%s",
             reason, sip_code, e.message,
         )
+        await _emit_tool_fired(
+            "transfer_to_human",
+            {
+                "status": "transfer_failed",
+                "queue": reason,
+                "error": "specialist_unavailable",
+                "sip_status_code": sip_code,
+                "twirp_message": (e.message or "")[:240],
+            },
+        )
         return {
             "status": "transfer_failed",
             "queue": reason,
@@ -210,6 +281,15 @@ async def transfer_to_human(
         }
     except Exception as e:
         logger.warning("transfer_to_human unexpected: %s", e)
+        await _emit_tool_fired(
+            "transfer_to_human",
+            {
+                "status": "transfer_failed",
+                "queue": reason,
+                "error": "unexpected",
+                "detail": str(e)[:240],
+            },
+        )
         return {"status": "transfer_failed", "queue": reason, "error": str(e)}
 
 

@@ -9,6 +9,11 @@ import {
   type Call,
   type Event,
 } from "@/lib/dashboard-format";
+import {
+  VOICE_PATH_BLURB,
+  summarizeToolEvent,
+  transferDiagnostics,
+} from "@/lib/telephony-dashboard";
 
 type FilterKey =
   | "all"
@@ -160,6 +165,9 @@ function CallDrawer({
   onClose: () => void;
 }) {
   const style = outcomeStyle(call.outcome);
+  const isTelemetrySummary = Boolean(call.summary?.includes("[telemetry]"));
+  const xferRows = transferDiagnostics(events);
+
   return (
     <div className="fixed inset-0 z-50 flex">
       <div
@@ -200,12 +208,65 @@ function CallDrawer({
           <Stat label="Turns" value={call.turn_count?.toString() ?? "—"} />
         </section>
 
+        <section className="glass-panel p-4 border border-cy-300/20">
+          <div className="text-[10.5px] uppercase tracking-wider text-cy-300/90 mb-2">
+            Voice path &amp; Twilio (from this call&apos;s rows)
+          </div>
+          <p className="text-[12.5px] leading-relaxed text-white/70 mb-3">{VOICE_PATH_BLURB}</p>
+          <div className="text-[11px] text-white/50 leading-relaxed space-y-1.5 font-mono">
+            <div>
+              <span className="text-white/40">LiveKit room</span> {call.room_name}
+            </div>
+            <div>
+              <span className="text-white/40">Agent</span> {call.agent_name}
+            </div>
+            <div>
+              <span className="text-white/40">Customer PSTN leg (CLI)</span>{" "}
+              {call.caller_number ?? "—"}
+            </div>
+          </div>
+          <ul className="mt-3 text-[11px] text-white/55 list-disc pl-4 space-y-1">
+            <li>403 / 404 on SIP bridge → Twilio trunk ACL, origination URI, or number not attached to trunk.</li>
+            <li>488 / 603 → often rejected/busy; confirm in Twilio Debugger SIP ladder.</li>
+            <li><code className="text-cy-300/80">TRANSFER_CALLER_ID</code> / from-number must be Twilio-owned on that trunk.</li>
+          </ul>
+        </section>
+
         {call.summary && (
           <section className="glass-panel p-4">
-            <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-2">Summary</div>
-            <p className="text-sm text-white/85 leading-relaxed whitespace-pre-wrap">
+            <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-2">
+              {isTelemetrySummary ? "Session telemetry" : "Summary"}
+            </div>
+            <p
+              className={
+                isTelemetrySummary
+                  ? "text-[12px] text-white/75 font-mono leading-relaxed whitespace-pre-wrap"
+                  : "text-sm text-white/85 leading-relaxed whitespace-pre-wrap"
+              }
+            >
               {call.summary}
             </p>
+          </section>
+        )}
+
+        {xferRows.length > 0 && (
+          <section className="glass-panel p-4">
+            <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-2">
+              Transfer tool payload (SIP status → Twilio)
+            </div>
+            <ul className="flex flex-col gap-3">
+              {xferRows.map((row, i) => (
+                <li
+                  key={`${row.at}-${i}`}
+                  className="text-[11px] font-mono border border-white/[0.06] rounded-lg p-3 bg-white/[0.02]"
+                >
+                  <div className="text-white/45 mb-1">{fmtDateTime(row.at)}</div>
+                  <pre className="text-[10.5px] text-cy-300/90 whitespace-pre-wrap break-all overflow-x-auto">
+                    {JSON.stringify(row.payload, null, 2)}
+                  </pre>
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 
@@ -216,14 +277,19 @@ function CallDrawer({
           {events.length === 0 ? (
             <div className="text-xs text-white/50">No events recorded for this call.</div>
           ) : (
-            <ol className="flex flex-col gap-1.5">
+            <ol className="flex flex-col gap-2">
               {events.map((e) => (
                 <li
                   key={e.id}
-                  className="flex items-start gap-3 text-xs font-mono tabular border-l border-white/10 pl-3"
+                  className="flex flex-col gap-0.5 border-l border-white/10 pl-3 text-xs font-mono tabular"
                 >
-                  <span className="text-white/40 whitespace-nowrap">{fmtDateTime(e.at)}</span>
-                  <span className="text-cy-300 truncate">{e.type}</span>
+                  <div className="flex items-start gap-3">
+                    <span className="text-white/40 whitespace-nowrap">{fmtDateTime(e.at)}</span>
+                    <span className="text-cy-300 truncate">{e.type}</span>
+                  </div>
+                  {e.type.startsWith("tool_fired:") && (
+                    <div className="text-[11px] text-white/55 pl-0">{summarizeToolEvent(e)}</div>
+                  )}
                 </li>
               ))}
             </ol>

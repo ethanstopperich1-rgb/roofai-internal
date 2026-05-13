@@ -424,6 +424,15 @@ async def entrypoint(ctx: JobContext) -> None:
         }
         outcome = outcome_map.get(reason, "unknown")
 
+        # One-line operator telemetry for the dashboard (Twilio is downstream
+        # of LiveKit on the SIP trunk; SIP codes on tool rows matter for triage).
+        op_summary = (
+            f"[telemetry] shutdown_reason={reason}; "
+            f"room={ctx.room.name}; "
+            f"path=LiveKit SIP ↔ Twilio Elastic SIP trunk ↔ PSTN. "
+            f"See call drawer → Voice & SIP for transfer tool SIP codes."
+        )
+
         # LK Cloud Inference rough cost model — keep this in agent.py
         # rather than in the API route so it travels with the prompt /
         # provider config that drives the actual pricing.
@@ -466,7 +475,7 @@ async def entrypoint(ctx: JobContext) -> None:
             "turn_count": _user_turns,
             "outcome": outcome,
             "transcript": transcript,
-            "summary": None,
+            "summary": op_summary,
             "llm_prompt_tokens": _usage_totals["llm_prompt_tokens"],
             "llm_completion_tokens": _usage_totals["llm_completion_tokens"],
             "tts_chars": _usage_totals["tts_chars"],

@@ -17,6 +17,7 @@ import {
   Check,
 } from "lucide-react";
 import type { DemoOffice } from "@/lib/dashboard-demo";
+import { VOICE_PATH_BLURB } from "@/lib/telephony-dashboard";
 
 /**
  * Operator console chassis.
@@ -366,6 +367,7 @@ function SidebarContent({
   onNavigate?: () => void;
 }) {
   const navItems = isDemo ? NAV.filter((n) => !n.internalOnly) : NAV;
+  const onCallsPage = pathname.includes("/calls");
   return (
     <>
       <Link
@@ -435,7 +437,17 @@ function SidebarContent({
             </span>
           </div>
           <div className="text-[11px] text-white/50 leading-relaxed">
-            Inbound voice agent. Listening across every office, 24/7.
+            {onCallsPage ? (
+              <>
+                <p className="mb-2">{VOICE_PATH_BLURB}</p>
+                <p className="text-white/40">
+                  SIP failures downstream of LiveKit usually surface in Twilio Debugger (Elastic SIP
+                  trunk). Open a call row — the drawer lists transfer payloads and codes.
+                </p>
+              </>
+            ) : (
+              <>Inbound voice agent. Listening across every office, 24/7.</>
+            )}
           </div>
         </div>
         <div className="text-[10px] font-mono tabular text-white/30 uppercase tracking-[0.18em] text-center">
