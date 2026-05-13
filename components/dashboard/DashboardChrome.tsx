@@ -11,6 +11,7 @@ import {
   BarChart3,
   Settings as SettingsIcon,
   ShieldCheck,
+  Sparkles,
   Menu,
   X,
   Radio,
@@ -35,7 +36,7 @@ import type { DemoOffice } from "@/lib/dashboard-demo";
 type RoleVisibility = "rep" | "manager" | "admin";
 
 type NavItem = {
-  segment: "" | "/calls" | "/leads" | "/proposals" | "/analytics" | "/settings" | "/admin";
+  segment: "" | "/estimate" | "/calls" | "/leads" | "/proposals" | "/analytics" | "/settings" | "/admin";
   label: string;
   icon: typeof LayoutDashboard;
   match: "exact" | "prefix";
@@ -45,9 +46,20 @@ type NavItem = {
   minRole?: RoleVisibility;
   // Override label per role (e.g. "Leads" → "My leads" for reps)
   labelByRole?: Partial<Record<RoleVisibility, string>>;
+  // Optional: render as a primary CTA pill (cyan-accented) instead of
+  // the default ghost-nav style. Used for the action-led "New Estimate"
+  // entry point so reps see it as a *do* button, not a *see* tab.
+  cta?: boolean;
 };
 
 const NAV: NavItem[] = [
+  // CTA — reps should land in the dashboard and IMMEDIATELY see the
+  // path to creating a new estimate. Pinned at the top of the nav so
+  // it reads as "the thing you came here to do" before the read-only
+  // pipeline view items below. /dashboard/estimate hosts a copy of
+  // the rep estimator inside the dashboard chrome so the rep doesn't
+  // bounce out to the legacy /  route mid-flow.
+  { segment: "/estimate", label: "New Estimate", icon: Sparkles, match: "prefix", minRole: "rep", cta: true },
   { segment: "", label: "Overview", icon: LayoutDashboard, match: "exact", minRole: "rep" },
   { segment: "/calls", label: "Sydney Calls", icon: PhoneCall, match: "prefix", minRole: "rep",
     labelByRole: { rep: "My calls" } },
@@ -571,6 +583,43 @@ function SidebarContent({
           const href = basePath + item.segment;
           const active = isActive(pathname, item, basePath);
           const Icon = item.icon;
+          // CTA items render with a cyan-accented pill instead of the
+          // default ghost-nav. Reps see "New Estimate" as a do-button,
+          // distinct from the read-only pipeline tabs below it. When
+          // active (currently on /dashboard/estimate), keeps the cyan
+          // glow so the active state still reads.
+          if (item.cta) {
+            return (
+              <Link
+                key={href}
+                href={href}
+                onClick={onNavigate}
+                className={[
+                  "group flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13.5px] font-medium transition-all",
+                  active
+                    ? "bg-cy-300/15 text-white border border-cy-300/45 shadow-[0_0_18px_-4px_rgba(125,211,252,0.55),inset_0_1px_0_rgba(255,255,255,0.10)]"
+                    : "bg-cy-300/[0.08] text-cy-200 border border-cy-300/30 hover:bg-cy-300/[0.14] hover:border-cy-300/50 hover:text-white",
+                ].join(" ")}
+              >
+                <span
+                  className={[
+                    "relative flex items-center justify-center w-7 h-7 rounded-xl transition-colors border",
+                    active
+                      ? "bg-cy-300/25 text-cy-300 border-cy-300/45 shadow-[0_0_14px_-2px_rgba(125,211,252,0.65)]"
+                      : "bg-cy-300/15 text-cy-300 border-cy-300/35 group-hover:bg-cy-300/25",
+                  ].join(" ")}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                </span>
+                <span className="truncate">
+                  {isRepView && item.labelByRole?.rep ? item.labelByRole.rep : item.label}
+                </span>
+                {active && (
+                  <span className="ml-auto w-1 h-1 rounded-full bg-cy-300 shadow-[0_0_6px_rgba(125,211,252,0.7)]" />
+                )}
+              </Link>
+            );
+          }
           return (
             <Link
               key={href}

@@ -9,6 +9,7 @@ import {
   Check,
   Loader2,
   MapPin,
+  Phone,
 } from "lucide-react";
 import Link from "next/link";
 import { BoltStyleHero, type QuoteHeroFormValues } from "@/components/ui/bolt-style-chat";
@@ -1483,6 +1484,20 @@ function ThankYou({
           A {BRAND_CONFIG.companyName} partner roofer will reach out shortly. Reference:
         </p>
         <div className="font-mono text-[13px] mt-2 select-all iridescent-text">{leadId}</div>
+        {/* Inbound number — Noland's brand DID. Customers who'd rather
+            call IN than wait for the outbound see this immediately on
+            the confirmation screen. Click-to-call works on mobile; on
+            desktop it copies cleanly. Wrap in a glass-pill so it reads
+            as an offered affordance, not buried metadata. */}
+        <a
+          href="tel:+13219851104"
+          className="inline-flex items-center gap-2.5 mt-6 px-4 py-2.5 rounded-full text-[13px] font-medium text-cy-200 bg-cy-300/[0.08] border border-cy-300/30 hover:bg-cy-300/[0.14] hover:border-cy-300/50 hover:text-white transition-colors"
+          aria-label="Call Voxaris Pitch at 1-321-985-1104"
+        >
+          <Phone size={13} className="text-cy-300" />
+          <span className="font-mono tabular tracking-wide">+1 (321) 985-1104</span>
+          <span className="text-white/45 text-[12px]">or we&apos;ll call you</span>
+        </a>
       </div>
 
       <div className="glass-panel p-6 max-w-md mx-auto text-center">
