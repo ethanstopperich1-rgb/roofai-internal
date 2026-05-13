@@ -195,12 +195,86 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception as e:
         logger.warning("failed to parse job metadata: %s", e)
 
+    # ─── OUTBOUND mode: place the SIP call from inside entrypoint ────────
+    # Canonical LiveKit pattern (matches Andie + the official outbound docs
+    # at /telephony/making-calls/outbound-calls/). Previously the SIP leg
+    # was created by /api/dispatch-outbound BEFORE the agent worker had a
+    # chance to spin up — racey, because a cold worker meant the customer
+    # answered into an empty room. With `wait_until_answered=True` here,
+    # the API call blocks until the customer actually picks up, so when
+    # we proceed to wait_for_participant + session.start the agent is
+    # already in the room and ready to speak.
+    #
+    # Toggle via SYDNEY_PLACE_SIP_IN_AGENT=true on the Sydney worker once
+    # /api/dispatch-outbound stops creating the SIP participant. Default
+    # is "false" so an unsynced deploy (worker updated, API not yet) does
+    # NOT result in a duplicate SIP leg.
+    _sip_caller_identity_override: str | None = None
+    _place_sip_in_agent = (
+        os.environ.get("SYDNEY_PLACE_SIP_IN_AGENT", "").lower() == "true"
+    )
+    if _place_sip_in_agent and lead_context is not None:
+        _phone = lead_context.get("phone")
+        _trunk = os.environ.get("SIP_OUTBOUND_TRUNK_ID", "")
+        _lead_id = str(lead_context.get("leadId") or "unknown")
+        _safe_lead_id = "".join(c for c in _lead_id if c.isalnum() or c in "_-")[:48]
+        _participant_identity = f"customer-{_safe_lead_id}" if _safe_lead_id else "customer"
+        _sip_caller_identity_override = _participant_identity
+
+        if not _phone or not _trunk:
+            logger.error(
+                "outbound dial REFUSED — phone=%r SIP_OUTBOUND_TRUNK_ID=%r",
+                _phone, bool(_trunk),
+            )
+            ctx.shutdown()
+            return
+        try:
+            logger.info(
+                "outbound dialing phone=%s trunk=%s identity=%s",
+                _phone, _trunk[:8] + "…", _participant_identity,
+            )
+            await ctx.api.sip.create_sip_participant(
+                api.CreateSIPParticipantRequest(
+                    room_name=ctx.room.name,
+                    sip_trunk_id=_trunk,
+                    sip_call_to=str(_phone),
+                    participant_identity=_participant_identity,
+                    participant_name=str(lead_context.get("name") or "Customer"),
+                    krisp_enabled=True,
+                    # Blocks until the customer answers. On 486 / 603 / 408 /
+                    # 480 / 5xx, this raises TwirpError with metadata that
+                    # carries sip_status_code from the upstream carrier —
+                    # logged below so the dashboard / operator knows what
+                    # actually happened.
+                    wait_until_answered=True,
+                )
+            )
+            logger.info("outbound call ANSWERED room=%s identity=%s", ctx.room.name, _participant_identity)
+        except api.TwirpError as e:
+            sip_code = e.metadata.get("sip_status_code") if e.metadata else None
+            sip_status = e.metadata.get("sip_status") if e.metadata else None
+            logger.warning(
+                "outbound did not connect: %s (SIP %s %s)",
+                e.message, sip_code, sip_status,
+            )
+            ctx.shutdown()
+            return
+        except Exception as e:
+            logger.exception("outbound dial unexpected failure: %s", e)
+            ctx.shutdown()
+            return
+
     # Wait for the SIP/PSTN caller to actually land in the room before
     # spinning up the session. For INBOUND calls this is the caller
     # dialing in; for OUTBOUND it's the customer answering Sydney's
-    # outbound dial. Either way: no participant → no call.
+    # outbound dial (either placed above when SYDNEY_PLACE_SIP_IN_AGENT
+    # is on, or placed externally by /api/dispatch-outbound when off).
+    # Either way: no participant → no call.
     try:
-        await ctx.wait_for_participant()
+        if _sip_caller_identity_override:
+            await ctx.wait_for_participant(identity=_sip_caller_identity_override)
+        else:
+            await ctx.wait_for_participant()
     except Exception as e:
         logger.warning("no participant arrived: %s", e)
         ctx.shutdown()
