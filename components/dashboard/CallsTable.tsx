@@ -10,7 +10,6 @@ import {
   type Event,
 } from "@/lib/dashboard-format";
 import {
-  VOICE_PATH_BLURB,
   summarizeToolEvent,
   transferDiagnostics,
 } from "@/lib/telephony-dashboard";
@@ -222,30 +221,6 @@ function CallDrawer({
         <section className="grid grid-cols-2 gap-3">
           <Stat label="Duration" value={fmtDuration(call.duration_sec)} />
           <Stat label="Turns" value={call.turn_count?.toString() ?? "—"} />
-        </section>
-
-        <section className="glass-panel p-4 border border-cy-300/20">
-          <div className="text-[10.5px] uppercase tracking-wider text-cy-300/90 mb-2">
-            Voice path &amp; Twilio (from this call&apos;s rows)
-          </div>
-          <p className="text-[12.5px] leading-relaxed text-white/70 mb-3">{VOICE_PATH_BLURB}</p>
-          <div className="text-[11px] text-white/50 leading-relaxed space-y-1.5 font-mono">
-            <div>
-              <span className="text-white/40">LiveKit room</span> {call.room_name}
-            </div>
-            <div>
-              <span className="text-white/40">Agent</span> {call.agent_name}
-            </div>
-            <div>
-              <span className="text-white/40">Customer PSTN leg (CLI)</span>{" "}
-              {call.caller_number ?? "—"}
-            </div>
-          </div>
-          <ul className="mt-3 text-[11px] text-white/55 list-disc pl-4 space-y-1">
-            <li>403 / 404 on SIP bridge → Twilio trunk ACL, origination URI, or number not attached to trunk.</li>
-            <li>488 / 603 → often rejected/busy; confirm in Twilio Debugger SIP ladder.</li>
-            <li><code className="text-cy-300/80">TRANSFER_CALLER_ID</code> / from-number must be Twilio-owned on that trunk.</li>
-          </ul>
         </section>
 
         {call.summary && (

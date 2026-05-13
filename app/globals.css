@@ -1562,6 +1562,306 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   border-bottom: 1px solid rgba(103,220,255,0.10);
 }
 
+/* ─── Theme: Nothing ────────────────────────────────────────────────
+ *
+ * Alternative dashboard skin inspired by the Nothing design language —
+ * Doto dot-matrix display, Space Grotesk body, Space Mono labels,
+ * OLED black, single red signal-light accent. All caps, hairline borders,
+ * square corners, segmented progress bars, no shadows, no glass.
+ *
+ * Tokens are scoped to .theme-nothing so a single wrapper class can swap
+ * the entire visual language without touching markup.
+ */
+.theme-nothing {
+  /* Nothing palette */
+  --ndg-black: #000000;
+  --ndg-surface: #0a0a0a;
+  --ndg-surface-raised: #141414;
+  --ndg-border: #1f1f1f;
+  --ndg-border-visible: #2e2e2e;
+  --ndg-text-disabled: #555555;
+  --ndg-text-secondary: #999999;
+  --ndg-text-primary: #e8e8e8;
+  --ndg-text-display: #ffffff;
+  --ndg-accent: #d71921; /* signal-light red */
+  --ndg-success: #4a9e5c;
+  --ndg-warning: #d4a843;
+
+  position: relative;
+  isolation: isolate;
+  background: var(--ndg-black);
+  color: var(--ndg-text-primary);
+  font-family: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+}
+/* No backdrop noise — Nothing is OLED black, period */
+.theme-nothing::before,
+.theme-nothing::after { display: none !important; }
+
+/* ── Panels: flat surfaces, hairline borders, no glass ── */
+.theme-nothing .glass-panel,
+.theme-nothing .glass-panel-hero {
+  background: var(--ndg-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid var(--ndg-border);
+  border-radius: 4px;
+  box-shadow: none;
+}
+.theme-nothing .glass-panel::before,
+.theme-nothing .glass-panel::after,
+.theme-nothing .glass-panel-hero::before,
+.theme-nothing .glass-panel-hero::after { display: none; }
+.theme-nothing .glass-panel.is-interactive:hover {
+  transform: none;
+  background: var(--ndg-surface-raised);
+  border-color: var(--ndg-border-visible);
+  box-shadow: none;
+}
+.theme-nothing .glass-panel-selected {
+  background: var(--ndg-surface-raised);
+  border-color: var(--ndg-text-display);
+  box-shadow: none;
+}
+
+/* ── Eyebrow → bracketed Space Mono label ── */
+.theme-nothing .glass-eyebrow {
+  background: transparent;
+  border: 1px solid var(--ndg-border-visible);
+  border-radius: 0;
+  padding: 0.25rem 0.65rem;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: var(--ndg-text-secondary);
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  font-weight: 400;
+  box-shadow: none;
+}
+.theme-nothing .glass-eyebrow::before { content: none; }
+
+/* ── Iridescent text → solid display white ── */
+.theme-nothing .iridescent-text {
+  background: none;
+  -webkit-text-fill-color: var(--ndg-text-display);
+  color: var(--ndg-text-display);
+  font-family: var(--font-space-grotesk), sans-serif;
+  letter-spacing: -0.02em;
+}
+
+/* ── Marquee KPI uses Doto dot-matrix at hero scale ── */
+.theme-nothing .marquee-kpi-value {
+  background: none;
+  -webkit-text-fill-color: var(--ndg-text-display);
+  color: var(--ndg-text-display);
+  font-family: var(--font-doto), var(--font-space-mono), monospace;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.theme-nothing .marquee-kpi-value::after { display: none; }
+
+/* ── Scoreboard: hard-edged tiles, Doto numerics, no accent bars ── */
+.theme-nothing .scoreboard {
+  background: var(--ndg-surface);
+  border: 1px solid var(--ndg-border);
+  border-radius: 4px;
+}
+.theme-nothing .scoreboard-tile {
+  border-right: 1px solid var(--ndg-border);
+  border-bottom: 1px solid var(--ndg-border);
+  padding: 1.6rem 1.6rem 1.8rem;
+}
+.theme-nothing .scoreboard-tile::before { display: none; }
+.theme-nothing .scoreboard-tile .label {
+  font-family: var(--font-space-mono), monospace;
+  color: var(--ndg-text-secondary);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  font-weight: 400;
+}
+.theme-nothing .scoreboard-tile .value {
+  font-family: var(--font-doto), var(--font-space-mono), monospace;
+  color: var(--ndg-text-display);
+  font-size: clamp(2.6rem, 4.6vw, 3.6rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+.theme-nothing .scoreboard-tile .sublabel {
+  font-family: var(--font-space-mono), monospace;
+  color: var(--ndg-text-secondary);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+/* The "signal-light" red — used ONCE, on the alert tile only.
+ * In our layout, .accent-amber maps to Pipeline (the headline KPI). */
+.theme-nothing .scoreboard-tile.accent-amber .value { color: var(--ndg-text-display); }
+.theme-nothing .scoreboard-tile.accent-mint .value { color: var(--ndg-success); }
+.theme-nothing .scoreboard-tile .delta.up   { color: var(--ndg-success); }
+.theme-nothing .scoreboard-tile .delta.down { color: var(--ndg-accent); }
+
+/* ── Console section rule → bracketed ALL-CAPS row with thin line ── */
+.theme-nothing .console-section-rule { gap: 1rem; }
+.theme-nothing .console-section-rule > span:not(.pulse) {
+  font-family: var(--font-space-mono), monospace;
+  color: var(--ndg-text-secondary);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  font-weight: 400;
+}
+.theme-nothing .console-section-rule > span:not(.pulse)::before { content: ""; }
+.theme-nothing .console-section-rule > span:not(.pulse)::after { content: ""; }
+.theme-nothing .console-section-rule::before {
+  background: var(--ndg-text-display);
+  height: 1px;
+  width: 18px;
+}
+.theme-nothing .console-section-rule::after {
+  background: var(--ndg-border-visible);
+  height: 1px;
+}
+.theme-nothing .console-section-rule .pulse {
+  background: var(--ndg-success);
+  box-shadow: none;
+}
+
+/* ── Log rows: pipe-separated columns, no colored pill tags ── */
+.theme-nothing .log-row {
+  font-family: var(--font-space-mono), monospace;
+  border-bottom: 1px solid var(--ndg-border);
+  color: var(--ndg-text-primary);
+  padding: 0.7rem 1.1rem;
+}
+.theme-nothing .log-row:hover { background: var(--ndg-surface-raised); }
+.theme-nothing .log-row .ts {
+  color: var(--ndg-text-secondary);
+  letter-spacing: 0.04em;
+}
+.theme-nothing .log-row .kind {
+  color: var(--ndg-text-display);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.theme-nothing .log-row .kind::before { content: ""; }
+.theme-nothing .log-row .kind.lead     { color: var(--ndg-text-display); }
+.theme-nothing .log-row .kind.call     { color: var(--ndg-success); }
+.theme-nothing .log-row .kind.proposal { color: var(--ndg-warning); }
+.theme-nothing .log-row .kind.event    { color: var(--ndg-text-disabled); }
+.theme-nothing .log-row .body  { color: var(--ndg-text-primary); }
+.theme-nothing .log-row .meta  { color: var(--ndg-text-secondary); }
+
+/* ── Jump rows: no left accent bar, just hairline divider + arrow ── */
+.theme-nothing .jump-row {
+  border-left: none;
+  border-bottom: 1px solid var(--ndg-border);
+  padding: 0.95rem 1rem;
+}
+.theme-nothing .jump-row:hover {
+  background: var(--ndg-surface-raised);
+  border-left-color: transparent;
+}
+.theme-nothing .jump-row .glyph { color: var(--ndg-text-secondary); font-size: 12px; }
+
+/* ── Buttons: pill outline, Space Mono ALL CAPS ── */
+.theme-nothing .glass-button-primary {
+  background: var(--ndg-text-display);
+  color: var(--ndg-black);
+  border: none;
+  border-radius: 999px;
+  font-family: var(--font-space-mono), monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  box-shadow: none;
+  text-shadow: none;
+  padding: 0.7rem 1.4rem;
+}
+.theme-nothing .glass-button-primary::before { display: none; }
+.theme-nothing .glass-button-primary:hover:not(:disabled) {
+  filter: none;
+  transform: none;
+  background: rgba(255,255,255,0.85);
+}
+.theme-nothing .glass-button-secondary {
+  background: transparent;
+  border: 1px solid var(--ndg-border-visible);
+  border-radius: 999px;
+  font-family: var(--font-space-mono), monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 400;
+  color: var(--ndg-text-primary);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.theme-nothing .glass-button-secondary:hover {
+  background: var(--ndg-surface-raised);
+  border-color: var(--ndg-text-primary);
+}
+
+/* ── Status chips: square, hairline, ALL CAPS, no fill ── */
+.theme-nothing .chip,
+.theme-nothing .chip-accent,
+.theme-nothing .chip-mint,
+.theme-nothing .chip-amber,
+.theme-nothing .chip-rose {
+  background: transparent;
+  border-radius: 2px;
+  font-family: var(--font-space-mono), monospace;
+  letter-spacing: 0.1em;
+  font-weight: 400;
+}
+.theme-nothing .chip          { border-color: var(--ndg-border-visible); color: var(--ndg-text-secondary); }
+.theme-nothing .chip-accent   { border-color: var(--ndg-text-display); color: var(--ndg-text-display); }
+.theme-nothing .chip-mint     { border-color: var(--ndg-success); color: var(--ndg-success); }
+.theme-nothing .chip-amber    { border-color: var(--ndg-warning); color: var(--ndg-warning); }
+.theme-nothing .chip-rose     { border-color: var(--ndg-accent); color: var(--ndg-accent); }
+
+/* ── Inputs ── */
+.theme-nothing .glass-input {
+  background: var(--ndg-surface);
+  border: 1px solid var(--ndg-border-visible);
+  border-radius: 0;
+  box-shadow: none;
+  font-family: var(--font-space-mono), monospace;
+}
+.theme-nothing .glass-input:focus {
+  border-color: var(--ndg-text-display);
+  box-shadow: none;
+}
+
+/* ── Divider, hairline ── */
+.theme-nothing .glass-divider {
+  background: var(--ndg-border-visible);
+}
+
+/* ── Sidebar / chrome ── */
+.theme-nothing aside.lg\:flex {
+  background: var(--ndg-black) !important;
+  border-right: 1px solid var(--ndg-border);
+}
+.theme-nothing main {
+  background: transparent !important;
+}
+.theme-nothing main > div:first-child { /* topbar */
+  border-bottom: 1px solid var(--ndg-border);
+}
+
+/* Sydney pulse — recolor the floating mint dots in the chrome to the
+ * Nothing palette so the brand cyan/mint glow doesn't bleed through */
+.theme-nothing .bg-mint        { background-color: var(--ndg-success) !important; }
+.theme-nothing .text-mint      { color: var(--ndg-success) !important; }
+.theme-nothing .text-mint\/80,
+.theme-nothing .text-mint\/85  { color: var(--ndg-success) !important; }
+.theme-nothing .bg-cy-300\/10,
+.theme-nothing .bg-cy-300\/15  { background-color: rgba(255,255,255,0.05) !important; }
+.theme-nothing .text-cy-300,
+.theme-nothing .text-cy-300\/80,
+.theme-nothing .text-cy-300\/85 { color: var(--ndg-text-display) !important; }
+
 /* ─── Animated dots used by Roof3DViewer "Generating…" pill ─────────── */
 .generating-dots::after {
   content: "";
