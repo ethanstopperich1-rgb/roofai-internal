@@ -5,7 +5,6 @@ import {
   Bricolage_Grotesque,
   Space_Grotesk,
   Space_Mono,
-  Doto,
 } from "next/font/google";
 import "./globals.css";
 import { GradientBackground } from "@/components/ui/gradient-background-4";
@@ -27,9 +26,8 @@ const bricolage = Bricolage_Grotesque({
   display: "swap",
   axes: ["opsz", "wdth"],
 });
-// Nothing-aesthetic typography. Doto = variable dot-matrix display font
-// (closest to Nothing's NDot 57). Space Grotesk / Mono come from Colophon
-// Foundry — same DNA as Nothing's actual typefaces.
+// Nothing-aesthetic typography. Space Grotesk / Mono come from Colophon
+// Foundry — same design DNA as Nothing's actual typefaces.
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
   variable: "--font-space-grotesk",
@@ -41,12 +39,6 @@ const spaceMono = Space_Mono({
   variable: "--font-space-mono",
   display: "swap",
   weight: ["400", "700"],
-});
-const doto = Doto({
-  subsets: ["latin"],
-  variable: "--font-doto",
-  display: "swap",
-  weight: ["400", "500", "600", "700", "800", "900"],
 });
 
 // metadataBase resolves relative URLs in OG / Twitter card images against a
@@ -72,7 +64,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="en"
-      className={`dark ${geist.variable} ${geistMono.variable} ${bricolage.variable} ${spaceGrotesk.variable} ${spaceMono.variable} ${doto.variable}`}
+      className={`dark ${geist.variable} ${geistMono.variable} ${bricolage.variable} ${spaceGrotesk.variable} ${spaceMono.variable}`}
     >
       <body className="min-h-screen antialiased relative">
         <GradientBackground />

@@ -1649,14 +1649,14 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   letter-spacing: -0.02em;
 }
 
-/* ── Marquee KPI uses Doto dot-matrix at hero scale ── */
+/* ── Marquee KPI: Space Mono tabular, no dot-matrix ── */
 .theme-nothing .marquee-kpi-value {
   background: none;
   -webkit-text-fill-color: var(--ndg-text-display);
   color: var(--ndg-text-display);
-  font-family: var(--font-doto), var(--font-space-mono), monospace;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-weight: 700;
+  letter-spacing: -0.04em;
 }
 .theme-nothing .marquee-kpi-value::after { display: none; }
 
@@ -1680,11 +1680,11 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   font-weight: 400;
 }
 .theme-nothing .scoreboard-tile .value {
-  font-family: var(--font-doto), var(--font-space-mono), monospace;
+  font-family: var(--font-space-mono), ui-monospace, monospace;
   color: var(--ndg-text-display);
-  font-size: clamp(2.6rem, 4.6vw, 3.6rem);
+  font-size: clamp(2.2rem, 4.2vw, 3rem);
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.035em;
   line-height: 1;
 }
 .theme-nothing .scoreboard-tile .sublabel {
