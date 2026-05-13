@@ -1,10 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-// Aliased to `nextDynamic` because Next.js's `dynamic` import collides
-// with the route-level `export const dynamic = "force-dynamic"` below
-// (they share the name `dynamic` in the module scope).
-import nextDynamic from "next/dynamic";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 
 // 3D viewer is heavy (Cesium + Map Tiles 3D bundle ≈ 1.2 MB gzipped)
@@ -21,22 +18,9 @@ import { useSearchParams } from "next/navigation";
 // from there, the 3D mesh draping is anchored on the right building
 // — and the photorealistic view is a real differentiator for reps
 // showing storm damage to homeowners on tablets in the field.
-const Roof3DViewer = nextDynamic(() => import("@/components/Roof3DViewer"), {
+const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
   ssr: false,
 });
-
-// Force this page out of static prerendering. We synchronously call
-// `useSearchParams()` at the top of HomePage to read `?office=<slug>`,
-// which (per Next.js 16) requires either a `<Suspense>` boundary above
-// the call or this route-level escape hatch. The rep tool needs the
-// query param + auth context to render anything meaningful, so static
-// prerendering was never going to work for it anyway — this just makes
-// that explicit so the build doesn't try and fail.
-//
-// `force-dynamic` runs the page server-side on every request. The
-// "use client" directive at the top of this file still applies to the
-// component output; this only opts out of build-time prerendering.
-export const dynamic = "force-dynamic";
 import AddressInput from "@/components/AddressInput";
 import AssumptionsEditor from "@/components/AssumptionsEditor";
 import AddOnsPanel from "@/components/AddOnsPanel";
@@ -121,7 +105,20 @@ const VISION_MATERIAL_TO_ASSUMPTION: Partial<
   "tile-concrete": "tile-concrete",
 };
 
-export default function HomePage() {
+/**
+ * The actual rep tool. Wrapped in <Suspense> by the default export
+ * below because it synchronously calls `useSearchParams()` to read the
+ * `?office=<slug>` tenancy param at the top of the component. Per
+ * Next.js 16, any Client Component that synchronously reads search
+ * params during render forces a CSR bailout — the prerender pass throws
+ * unless a <Suspense> boundary exists above the useSearchParams call.
+ *
+ * Setting `export const dynamic = "force-dynamic"` does NOT fix this
+ * (that directive is only respected on Server Component pages — on a
+ * "use client" page it's silently ignored). The wrapper pattern is the
+ * canonical fix.
+ */
+function HomePageInner() {
   // Tenancy — which business this rep is working under. Until staff
   // auth is wired through (Supabase JWT), reps bookmark `/?office=nolands`
   // for their company. Defaults to "nolands" — the only live customer
@@ -2026,6 +2023,31 @@ export default function HomePage() {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Default export — wraps HomePageInner in a <Suspense> boundary so the
+ * Next.js build's prerender pass doesn't throw on HomePageInner's
+ * synchronous `useSearchParams()` call. The wrapper itself is trivial
+ * (renders nothing on its own) so there's no observable UX difference
+ * for the rep — the inner page renders normally as soon as the search
+ * params resolve (which is synchronous for static routes in practice).
+ *
+ * Fallback is null because:
+ *   1. useSearchParams resolves synchronously on client navigation.
+ *   2. The route is gated behind auth middleware anyway; an empty
+ *      moment before HomePageInner mounts is invisible behind the
+ *      transition from the login page.
+ *   3. The full-screen QuantumPulseLoader inside HomePageInner kicks
+ *      in for the actual heavy work (vision + Solar + SAM3), so there's
+ *      no need for a fallback loader here.
+ */
+export default function HomePage() {
+  return (
+    <Suspense fallback={null}>
+      <HomePageInner />
+    </Suspense>
   );
 }
 
