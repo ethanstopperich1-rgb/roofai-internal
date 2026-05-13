@@ -376,14 +376,20 @@ export default function EditableRoofMap({
             )}
             {/* Wrong roof — only when we have an auto-detected polygon
                 (otherwise there's nothing to fix yet) AND the parent
-                wired onClickPick. */}
+                wired onClickPick. Styled to match Reset/Draw (solid
+                dark backdrop for readability against any satellite
+                tile) with a brighter cyan accent so it still reads as
+                "fix this" vs the neutral surrounding buttons. The
+                pre-fix styling (cyan-on-cyan at 8-16% opacity) was
+                near-invisible on light-toned imagery — Florida sand /
+                concrete / pavement washed it out. */}
             {hasInitial && onClickPick && (
               <button
                 type="button"
                 onClick={() =>
                   setMode((m) => (m === "picking" ? "idle" : "picking"))
                 }
-                className="rounded-full border border-cy-300/30 bg-cy-300/[0.08] hover:bg-cy-300/[0.16] text-cy-200 px-3 py-1.5 text-[11px] font-mono uppercase tracking-[0.10em] backdrop-blur-md flex items-center gap-1.5 disabled:opacity-40"
+                className="rounded-full border border-cy-300/70 bg-black/75 hover:bg-black/90 text-cy-100 px-3 py-1.5 text-[11px] font-mono font-medium uppercase tracking-[0.10em] backdrop-blur-md flex items-center gap-1.5 disabled:opacity-40 shadow-[0_0_0_1px_rgba(103,220,255,0.15),0_2px_8px_-2px_rgba(0,0,0,0.5)]"
                 title="Tap a different building to re-trace"
                 disabled={disabled}
               >
