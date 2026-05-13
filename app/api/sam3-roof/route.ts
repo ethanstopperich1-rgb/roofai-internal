@@ -9,6 +9,7 @@ import {
 import { getCached, setCached, CACHE_TTL } from "@/lib/cache";
 import { polygonAreaSqft } from "@/lib/polygon";
 import { fetchBuildingPolygon, type BuildingPolygon } from "@/lib/buildings";
+import { findPrimaryResidence } from "@/lib/anthropic";
 import type { SolarSummary } from "@/types/estimate";
 import type { SolarMaskPolygon } from "@/lib/solar-mask";
 // fetchBuildingPolygon is used here ONLY as a tile-centering aid when
@@ -61,6 +62,28 @@ import {
 interface Sam3CachedResult extends ReconciledRoof {
   /** When this run actually called Roboflow (vs served from cache). */
   computedAt: string;
+  /** Quality grade for the tile-centering decision that produced this
+   *  polygon. Frontend SHOULD gate auto-publish on this:
+   *    "high"   — safe to show the customer directly
+   *    "medium" — show with a "specialist confirming" note OR auto-publish
+   *               with a slightly-conservative range
+   *    "low"    — DO NOT auto-publish. Route to rep review queue. */
+  qualityGrade: "high" | "medium" | "low";
+  /** True when qualityGrade !== "high" — convenience flag for the
+   *  frontend's auto-publish gate. */
+  requiresReview: boolean;
+  /** Provenance of the tile centre that fed SAM3. Useful for rep view
+   *  ("we picked this via Claude vision because Solar said the wrong
+   *  building") and for spot-checks after the fact. */
+  tileCenterSource: string;
+  /** When Claude vision contributed (used or rejected), this captures
+   *  what it said. Null when vision wasn't consulted (e.g. click
+   *  override, missing API key). */
+  visionEvidence: {
+    confidence: number;
+    reasoning: string;
+    alternateBuildings: Array<{ kind: string }>;
+  } | null;
 }
 
 /** Pixels per FOOT for a given latitude at the supplied zoom and scale.
@@ -365,6 +388,7 @@ type ResolvedCenter = {
   lng: number;
   /** Provenance string for logs / response diagnostics. Stable values:
    *    "click-override"
+   *    "vision-primary-residence"           ← NEW top-tier signal
    *    "osm-addr-matched"
    *    "solar-buildingCenter" | "solar-buildingCenter-direct"
    *    "solar-mask-centroid"
@@ -400,6 +424,24 @@ type ResolvedCenter = {
    *  the reconciler does its own GIS lookup so the cross-check uses an
    *  independent data source (e.g. MS Buildings in TN). */
   osmPolygon: BuildingPolygon | null;
+  /** When the resolved centre came from Claude vision identifying the
+   *  primary residence, this carries that signal — confidence + the
+   *  one-line reasoning Claude returned + the kinds of alternate
+   *  buildings it rejected. Null when vision wasn't consulted or
+   *  didn't return a usable answer. Surfaced in logs / Sentry. */
+  visionEvidence: {
+    confidence: number;
+    reasoning: string;
+    alternateBuildings: Array<{ kind: string }>;
+  } | null;
+  /** Bucketed quality grade for the resolved centre:
+   *    "high"   — Claude vision identified the residence with ≥0.7 confidence,
+   *               OR OSM addr:housenumber match, OR Solar within drift threshold.
+   *    "medium" — A fallback (OSM-no-match, Solar-mask within drift) fired;
+   *               we have a plausible centre but no independent confirmation.
+   *    "low"    — Address-only fallback. No positive signal beyond the geocoded
+   *               pin itself. Frontend SHOULD gate auto-publish on this. */
+  qualityGrade: "high" | "medium" | "low";
 };
 
 /** Solar findClosest returns the closest building to the query point.
@@ -469,22 +511,68 @@ async function resolveBuildingCenter(
   lat: number,
   lng: number,
   houseNumber: string | undefined,
+  address: string | undefined,
+  googleApiKey: string,
 ): Promise<ResolvedCenter> {
-  // Run OSM and Solar findClosest concurrently when we have a
-  // houseNumber. OSM's addr-match is the strongest single signal we
-  // have, so we always want to know its answer before committing to a
-  // Solar-based centre. Parallel kick keeps the normal-path latency
-  // bounded to max(solar~500ms, osm~1.5s) instead of sum.
+  // Three signals kicked off in parallel — wall-clock latency is
+  // bounded to max(vision~3s, osm~1.5s, solar~500ms) ≈ 3s instead of
+  // their sum (~5s). Each is awaited at the point where its answer
+  // matters, so a slow Solar response doesn't block the vision-based
+  // short-circuit at Step -1.
   //
-  // When no houseNumber is supplied (rare — happens for POI/ranch
-  // addresses), there's no addr-match possible, so we skip OSM upfront
-  // and only fall through to it as a no-Solar fallback below.
+  //  • Claude vision (NEW) — semantically distinguishes house vs
+  //    barn / shop / commercial. Independent of the geocoded pin —
+  //    Claude looks at the SCENE, not coordinates. This is the only
+  //    signal that catches "geocoder pin + Solar + OSM nearest-shape
+  //    all agree on the wrong building" — the failure mode where every
+  //    coordinate-anchored signal converges on an outbuilding.
+  //  • OSM with addr:housenumber — strongest deterministic signal
+  //    when it exists. Patchy in rural FL where the customer pipeline
+  //    is most fragile.
+  //  • Solar findClosest — fast, broad coverage, but returns the
+  //    closest building to the queried point (which can be the wrong
+  //    one on setback parcels).
+  const visionPromise = findPrimaryResidence({
+    lat,
+    lng,
+    address,
+    googleApiKey,
+  }).catch(() => null);
   const osmPromise = houseNumber
     ? fetchBuildingPolygon({ lat, lng, houseNumber }).catch(() => null)
     : null;
   const solarCenterPromise = fetchSolarFindClosest(lat, lng);
 
-  // ─── 0. OSM addr:housenumber match — strongest signal ───────────────
+  // ─── -1. Claude vision identifies the primary residence ─────────────
+  // The only signal in the cascade that can override unanimous agreement
+  // between coordinate-anchored signals on the wrong building. Trust it
+  // when confidence ≥ 0.7; below that, treat as a medium signal and let
+  // the cascade continue to look for confirmation.
+  const vision = await visionPromise;
+  const visionEvidence = vision
+    ? {
+        confidence: vision.confidence,
+        reasoning: vision.reasoning,
+        alternateBuildings: vision.alternateBuildings,
+      }
+    : null;
+  if (vision && vision.confidence >= 0.7) {
+    return {
+      lat: vision.lat,
+      lng: vision.lng,
+      source: "vision-primary-residence",
+      zoomHint: 20,
+      driftFromAddressM: metersBetween(lat, lng, vision.lat, vision.lng),
+      solarSuggestedDriftM: null,
+      solarMaskDriftM: null,
+      osmAddrMatch: "no-osm", // OSM may still resolve in background, but vision overrode
+      osmPolygon: null,
+      visionEvidence,
+      qualityGrade: "high",
+    };
+  }
+
+  // ─── 0. OSM addr:housenumber match — strongest deterministic signal ─
   const osmEarly = osmPromise ? await osmPromise : null;
   if (osmEarly?.addrMatched && osmEarly.latLng.length >= 3) {
     const c = centroidLatLng(osmEarly.latLng);
@@ -498,6 +586,8 @@ async function resolveBuildingCenter(
       solarMaskDriftM: null,
       osmAddrMatch: "matched",
       osmPolygon: osmEarly,
+      visionEvidence,
+      qualityGrade: "high",
     };
   }
   const osmAddrMatchState: ResolvedCenter["osmAddrMatch"] =
@@ -525,6 +615,8 @@ async function resolveBuildingCenter(
       solarMaskDriftM: null,
       osmAddrMatch: osmAddrMatchState,
       osmPolygon: null,
+      visionEvidence,
+      qualityGrade: "high",
     };
   }
 
@@ -542,6 +634,8 @@ async function resolveBuildingCenter(
         solarMaskDriftM: null,
         osmAddrMatch: osmAddrMatchState,
         osmPolygon: osmEarly,
+        visionEvidence,
+        qualityGrade: "medium",
       };
     }
     return {
@@ -554,6 +648,8 @@ async function resolveBuildingCenter(
       solarMaskDriftM: null,
       osmAddrMatch: osmAddrMatchState,
       osmPolygon: null,
+      visionEvidence,
+      qualityGrade: "low",
     };
   }
 
@@ -582,6 +678,8 @@ async function resolveBuildingCenter(
         solarMaskDriftM,
         osmAddrMatch: osmAddrMatchState,
         osmPolygon: null,
+        visionEvidence,
+        qualityGrade: "medium",
       };
     }
     // Mask drifted — fall through to OSM / widened tile, same shape as
@@ -607,6 +705,8 @@ async function resolveBuildingCenter(
       solarMaskDriftM,
       osmAddrMatch: osmAddrMatchState,
       osmPolygon: osmLate,
+      visionEvidence,
+      qualityGrade: "medium",
     };
   }
 
@@ -622,6 +722,8 @@ async function resolveBuildingCenter(
     solarMaskDriftM,
     osmAddrMatch: osmAddrMatchState,
     osmPolygon: null,
+    visionEvidence,
+    qualityGrade: "low",
   };
 }
 
@@ -870,8 +972,22 @@ export async function GET(req: Request) {
 
   const skipCache = diagnosticMode || noCache || hasClickOverride;
 
+  // Cache scope versioning: the SAM3 cascade has changed materially
+  // (vision-based residence detection, drift gates, OSM addr-match
+  // priority, zoom-aware fallbacks). Cached responses from the
+  // pre-vision era are stale by construction — they'd return the
+  // wrong building for cases the new cascade now handles correctly.
+  // Bumping the scope string forces all old entries to become
+  // unreachable; they'll naturally expire under their 6h TTL.
+  //
+  // Bump this on any change that materially affects how the polygon
+  // is selected. NOT on prompt tweaks / threshold tunes that produce
+  // similar polygons — those are fine to serve from cache during the
+  // 6h overlap window.
+  const CACHE_SCOPE = "sam3-roof-v3";
+
   if (!skipCache) {
-    const cached = await getCached<Sam3CachedResult | null>("sam3-roof", lat, lng);
+    const cached = await getCached<Sam3CachedResult | null>(CACHE_SCOPE, lat, lng);
     if (cached !== null) {
       if (cached === undefined) {
         return NextResponse.json(
@@ -898,8 +1014,10 @@ export async function GET(req: Request) {
         solarMaskDriftM: null,
         osmAddrMatch: "no-osm",
         osmPolygon: null,
+        visionEvidence: null,
+        qualityGrade: "high", // rep manually clicked → trust it
       }
-    : await resolveBuildingCenter(lat, lng, houseNumber);
+    : await resolveBuildingCenter(lat, lng, houseNumber, addressParam, googleMapsKey);
   // Structured single-line log so it's greppable in Vercel logs:
   //   key=value pairs let us run `vercel logs | grep tile_center_source=`
   //   and compute fallback-rate / drift distribution over time.
@@ -922,7 +1040,16 @@ export async function GET(req: Request) {
           : "n/a"
       } ` +
       `osm_addr_match=${tileCenter.osmAddrMatch} ` +
-      `house_number=${houseNumber ?? "n/a"}`,
+      `house_number=${houseNumber ?? "n/a"} ` +
+      `quality_grade=${tileCenter.qualityGrade} ` +
+      `vision_confidence=${
+        tileCenter.visionEvidence
+          ? tileCenter.visionEvidence.confidence.toFixed(2)
+          : "n/a"
+      }` +
+      (tileCenter.visionEvidence?.reasoning
+        ? ` vision_reasoning="${tileCenter.visionEvidence.reasoning.replace(/"/g, "'")}"`
+        : ""),
   );
 
   // ─── Sentry telemetry ────────────────────────────────────────────────
@@ -951,11 +1078,20 @@ export async function GET(req: Request) {
       house_number: houseNumber ?? null,
       addr_lat: Number(lat.toFixed(6)),
       addr_lng: Number(lng.toFixed(6)),
+      quality_grade: tileCenter.qualityGrade,
+      vision_confidence: tileCenter.visionEvidence?.confidence ?? null,
+      vision_reasoning: tileCenter.visionEvidence?.reasoning ?? null,
+      vision_alternate_count: tileCenter.visionEvidence?.alternateBuildings.length ?? 0,
     },
   });
   Sentry.setTag("sam3.tile_center_source", tileCenter.source);
   Sentry.setTag("sam3.zoom_hint", String(tileCenter.zoomHint));
   Sentry.setTag("sam3.osm_addr_match", tileCenter.osmAddrMatch);
+  Sentry.setTag("sam3.quality_grade", tileCenter.qualityGrade);
+  Sentry.setTag(
+    "sam3.vision_used",
+    tileCenter.source === "vision-primary-residence" ? "yes" : "no",
+  );
   Sentry.setTag("sam3.had_solar_drift",
     tileCenter.solarSuggestedDriftM != null &&
       tileCenter.solarSuggestedDriftM > SOLAR_DRIFT_THRESHOLD_M ? "yes" : "no");
@@ -1287,7 +1423,7 @@ export async function GET(req: Request) {
     // Cache the miss as `null` so we don't re-call Roboflow on retry storms.
     // Sentinel pattern matches /api/microsoft-building, /api/solar-mask.
     if (!skipCache) {
-      await setCached<Sam3CachedResult | null>("sam3-roof", lat, lng, null);
+      await setCached<Sam3CachedResult | null>(CACHE_SCOPE, lat, lng, null);
     }
     // Capture a sampled message to Sentry so we can track 404 rate
     // without sending one event per failure (would burn the quota on
@@ -1322,9 +1458,13 @@ export async function GET(req: Request) {
   const result: Sam3CachedResult = {
     ...reconciled,
     computedAt: new Date().toISOString(),
+    qualityGrade: tileCenter.qualityGrade,
+    requiresReview: tileCenter.qualityGrade !== "high",
+    tileCenterSource: tileCenter.source,
+    visionEvidence: tileCenter.visionEvidence,
   };
   if (!skipCache) {
-    await setCached("sam3-roof", lat, lng, result);
+    await setCached(CACHE_SCOPE, lat, lng, result);
   }
 
   console.log(

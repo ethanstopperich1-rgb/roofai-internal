@@ -332,3 +332,227 @@ export async function fetchSatelliteImage(opts: {
   if (!img) return null;
   return { base64: img.base64, mimeType: img.mimeType };
 }
+
+/**
+ * Identify the primary residence on a property by sending a wide-frame
+ * satellite tile to Claude vision and asking it to distinguish house from
+ * outbuildings. This is the architectural fix for the "every signal anchors
+ * on geocoded lat/lng" failure mode: Solar, MS Buildings, OSM nearest-shape,
+ * and the geocoded pin can all converge on the wrong building when an
+ * outbuilding (pole barn, shop, garage) sits closer to the road than the
+ * setback residence. Claude can read the SCENE — scale, shape, driveway
+ * approach, residential vs. agricultural context — and tell us which
+ * structure is the house.
+ *
+ * Zoom 18 / scale 2 gives a ~340m-wide ground frame in a 1280×1280 image —
+ * wide enough to capture a 5-acre rural parcel's house + outbuildings in a
+ * single tile, with enough pixel density per building (~30-100 px wide for
+ * a typical 1500-sqft residence) for Claude to identify structure types.
+ *
+ * Returns null when:
+ *   - ANTHROPIC_API_KEY is unset (caller falls through to existing cascade)
+ *   - Claude couldn't identify any residence on the visible property
+ *   - The vision call errored / timed out
+ *
+ * Cost: one Claude vision message (~$0.01-0.02 per call). Latency: 2-5s.
+ * Run in parallel with Solar findClosest in the caller so the wall-clock
+ * cost is `max(vision, solar)` rather than sum.
+ */
+export async function findPrimaryResidence(opts: {
+  /** Geocoded address lat/lng — used as the wide-tile centre, and as a
+   *  proximity tiebreaker when multiple residences are visible. */
+  lat: number;
+  lng: number;
+  /** Human-readable address. Forwarded to Claude in the prompt as
+   *  context — sometimes useful (e.g., "Ranch Rd" hints rural, "Suite"
+   *  hints commercial, an HOA subdivision name hints residential). */
+  address?: string;
+  /** Google Static Maps key for fetching the wide-frame tile. */
+  googleApiKey: string;
+}): Promise<{
+  /** Resolved lat/lng of the primary residence's centre. Computed from
+   *  Claude's pixel-coordinate output via Web Mercator. */
+  lat: number;
+  lng: number;
+  /** 0-1. Below 0.5 means Claude was uncertain — caller should still try
+   *  fallback signals. Above 0.7 means Claude is confident enough to
+   *  override Solar / OSM. */
+  confidence: number;
+  /** One-line reasoning from Claude. Surfaced in logs and Sentry tags
+   *  so we can audit what the model based its pick on. */
+  reasoning: string;
+  /** Other buildings Claude saw but rejected — for telemetry / debug. */
+  alternateBuildings: Array<{
+    kind: "barn" | "shop" | "shed" | "garage" | "commercial" | "unknown";
+  }>;
+} | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  // Zoom 18 / scale 2 gives ~340m wide ground frame. Wide enough to
+  // capture rural parcels (5-10 acres) plus their outbuildings, narrow
+  // enough that residential buildings cover meaningful pixel area
+  // (30-100 px across at FL latitude).
+  const VIEW_ZOOM = 18;
+  const VIEW_SIZE = 640;     // sizePx parameter to Google Static Maps
+  const VIEW_SCALE = 2;      // doubles output dimensions → 1280×1280
+  const VIEW_IMG_PX = VIEW_SIZE * VIEW_SCALE;
+
+  const img = await fetchTile({
+    lat: opts.lat,
+    lng: opts.lng,
+    googleApiKey: opts.googleApiKey,
+    sizePx: VIEW_SIZE,
+    zoom: VIEW_ZOOM,
+  });
+  if (!img) return null;
+
+  // Compute m/px for this tile so we can convert Claude's pixel output
+  // back to lat/lng. Web Mercator effective zoom = zoom + log2(scale).
+  // The Google Static Maps endpoint already bakes scale into the
+  // returned image dimensions, so the projection math uses the
+  // EFFECTIVE zoom that lib/satellite-tile applies internally — which
+  // for fetchTile with sizePx=640 and scale=2 is zoom+1.
+  const effectiveZoom = VIEW_ZOOM + Math.log2(VIEW_SCALE);
+  const mPerPx =
+    (156_543.03392 * Math.cos((opts.lat * Math.PI) / 180)) /
+    Math.pow(2, effectiveZoom);
+  const cosLat = Math.cos((opts.lat * Math.PI) / 180);
+
+  const RESIDENCE_PROMPT = `You are looking at a satellite image (${VIEW_IMG_PX}×${VIEW_IMG_PX} pixels) of a property${opts.address ? ` at ${opts.address}` : ""}.
+
+YOUR TASK: identify the PRIMARY RESIDENCE — the HOUSE where people live — on this property.
+
+CRITICAL DISTINCTIONS:
+The residence is a HOUSE, NOT:
+- A barn, pole barn, or agricultural outbuilding (often LARGER than the house on rural lots)
+- A shop, workshop, or garage (often closer to the road than the setback house)
+- A shed, pool house, or covered porch
+- A warehouse, commercial building, or long rectangular metal-roofed structure
+- Anything that looks utilitarian (no landscaping approach, plain rectangular footprint, simple metal/standing-seam roof on a 10:1+ aspect ratio building)
+
+Residences usually have:
+- Shingle, tile, or simple metal roof — NOT corrugated industrial metal
+- Cross / L / T shape OR a simple rectangle with chimney or dormer features
+- Landscaping, lawn, or driveway approach to the front entrance
+- Footprint typically 800-5000 sqft for FL residential (very rough — use as sanity check, not a hard filter)
+- Often near a swimming pool / patio / lanai
+
+PROCESS:
+1. Survey the entire image. Note all buildings.
+2. For each building, decide: residence or outbuilding?
+3. If multiple residences exist (rare — duplex, ADU), pick the LARGEST or the one closest to the IMAGE CENTER (which is roughly where the geocoded address pin sits).
+4. Output the residence's CENTER as pixel coordinates (0,0 = top-left of image).
+
+If NO building on the visible property looks like a residence, return residenceCenter=null with low confidence — DO NOT guess. The caller has fallback methods.
+
+STRICT JSON, no preamble, no markdown:
+{
+  "residenceCenter": [<x>, <y>] | null,
+  "confidence": <0.0-1.0>,
+  "reasoning": "<one short clause>",
+  "alternateBuildings": [{"kind": "barn"|"shop"|"shed"|"garage"|"commercial"|"unknown", "x": <int>, "y": <int>}]
+}
+
+Confidence guidance:
+- 0.85+ : a single clearly-residential building is obvious; outbuildings clearly distinguishable
+- 0.6-0.85 : likely residence identified but with some ambiguity (e.g., metal roof house vs. shop)
+- 0.4-0.6 : best guess but several candidates look similar
+- <0.4 : you're not sure — return your best guess with low confidence (or null if truly unclear)`;
+
+  try {
+    const client = new Anthropic({ apiKey });
+    const message = await client.messages.create({
+      model: MODEL,
+      max_tokens: 400,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: img.mimeType,
+                data: img.base64,
+              },
+            },
+            { type: "text", text: RESIDENCE_PROMPT },
+          ],
+        },
+      ],
+    });
+
+    const block = message.content.find((b) => b.type === "text");
+    if (!block || block.type !== "text") return null;
+    const parsed = extractJson(block.text);
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const v = parsed as {
+      residenceCenter?: unknown;
+      confidence?: unknown;
+      reasoning?: unknown;
+      alternateBuildings?: unknown;
+    };
+    const center = Array.isArray(v.residenceCenter) ? v.residenceCenter : null;
+    if (
+      !center ||
+      center.length !== 2 ||
+      typeof center[0] !== "number" ||
+      typeof center[1] !== "number"
+    ) {
+      // Claude explicitly couldn't find a residence — surface as null,
+      // not a guess.
+      return null;
+    }
+    const px = center[0];
+    const py = center[1];
+    if (px < 0 || px > VIEW_IMG_PX || py < 0 || py > VIEW_IMG_PX) {
+      console.warn(
+        `[anthropic] findPrimaryResidence: out-of-bounds pixel (${px}, ${py})`,
+      );
+      return null;
+    }
+
+    // Convert pixel coords → lat/lng. dyM is inverted because image y
+    // grows downward but lat grows northward.
+    const dxM = (px - VIEW_IMG_PX / 2) * mPerPx;
+    const dyM = (VIEW_IMG_PX / 2 - py) * mPerPx;
+    const residenceLat = opts.lat + dyM / 111_320;
+    const residenceLng = opts.lng + dxM / (111_320 * cosLat);
+
+    const confidence =
+      typeof v.confidence === "number"
+        ? Math.max(0, Math.min(1, v.confidence))
+        : 0.5;
+    const reasoning =
+      typeof v.reasoning === "string" ? v.reasoning.slice(0, 240) : "";
+
+    // Best-effort parse of alternate buildings. Useful for telemetry but
+    // not load-bearing. Clip to a small array.
+    const altRaw = Array.isArray(v.alternateBuildings) ? v.alternateBuildings : [];
+    const allowedKinds = new Set(["barn", "shop", "shed", "garage", "commercial", "unknown"]);
+    const alternateBuildings: Array<{
+      kind: "barn" | "shop" | "shed" | "garage" | "commercial" | "unknown";
+    }> = [];
+    for (const a of altRaw) {
+      const item = a as Record<string, unknown>;
+      const k = typeof item.kind === "string" && allowedKinds.has(item.kind) ? item.kind : "unknown";
+      alternateBuildings.push({
+        kind: k as "barn" | "shop" | "shed" | "garage" | "commercial" | "unknown",
+      });
+      if (alternateBuildings.length >= 8) break;
+    }
+
+    return {
+      lat: residenceLat,
+      lng: residenceLng,
+      confidence,
+      reasoning,
+      alternateBuildings,
+    };
+  } catch (err) {
+    console.warn("[anthropic] findPrimaryResidence error:", err);
+    return null;
+  }
+}
