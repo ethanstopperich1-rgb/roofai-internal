@@ -136,6 +136,11 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
   // (raw SAM3, Solar mask) trace roof material directly and don't.
   const [polygonKind, setPolygonKind] = useState<"eave" | "wall" | null>(null);
   const [loadingRoof, setLoadingRoof] = useState(false);
+  // Set true while the "Wrong roof? Tap your house" flow is waiting on
+  // a /api/sam3-roof re-trace. The EditableRoofMap renders a spinner +
+  // disables both action buttons while this is true so the customer
+  // can't fire multiple expensive Roboflow inferences accidentally.
+  const [pickingLoading, setPickingLoading] = useState(false);
   // Commercial-scale flag — flipped on when the measured roof exceeds
   // the residential instant-quote band (>15k sqft). The wizard pivots
   // to a "Talk to a Voxaris rep" branch instead of running the customer
@@ -683,6 +688,71 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
             satelliteUrl={satelliteUrl}
             roofPolygon={roofPolygon}
             loading={loadingRoof}
+            pickingLoading={pickingLoading}
+            // Click-pick re-trace. Fired when the customer taps a
+            // different building in the satellite tile (via the "Wrong
+            // roof?" button). Forwards the tapped lat/lng to
+            // /api/sam3-roof which re-runs SAM3 centred on the click
+            // and returns a fresh polygon. We update `roofPolygon` +
+            // `sqft` exactly as we do on the initial auto-detect, so
+            // downstream pricing reflects the new building immediately.
+            onClickPick={async (clickLat, clickLng) => {
+              if (address?.lat == null || address?.lng == null) return;
+              setPickingLoading(true);
+              try {
+                const url =
+                  `/api/sam3-roof?lat=${address.lat}&lng=${address.lng}` +
+                  `&clickLat=${clickLat}&clickLng=${clickLng}` +
+                  `&address=${encodeURIComponent(address.formatted ?? "")}`;
+                const res = await fetch(url);
+                if (!res.ok) return;
+                const data = (await res.json()) as {
+                  polygon?: Array<{ lat: number; lng: number }>;
+                  footprintSqft?: number;
+                  source?: string;
+                };
+                if (!data.polygon || data.polygon.length < 3) return;
+                // Same slope/overhang math the initial auto-detect path
+                // uses (lines ~343-355 above) — kept verbatim so the
+                // sqft a customer sees after click-pick matches what
+                // they'd have seen if SAM3 had landed there the first
+                // time. polygonKind tracks whether the new polygon
+                // traces eaves or walls so subsequent vertex edits
+                // re-apply the right overhang multiplier.
+                const PITCH_MAP: Record<string, number> = {
+                  "4/12": 18.43,
+                  "5/12": 22.62,
+                  "6/12": 26.57,
+                  "7/12": 30.26,
+                  "8/12+": 35.0,
+                };
+                const pitchDeg = pitch
+                  ? (PITCH_MAP[pitch] ?? 26.57)
+                  : 26.57;
+                const slope = 1 / Math.cos((pitchDeg * Math.PI) / 180);
+                const footprintSqft =
+                  typeof data.footprintSqft === "number" && data.footprintSqft > 0
+                    ? data.footprintSqft
+                    : polygonAreaSqftLocal(data.polygon);
+                const newSqft = Math.round(footprintSqft * slope);
+                if (newSqft >= 200 && newSqft <= 30_000) {
+                  setRoofPolygon(data.polygon);
+                  setSqft(newSqft);
+                  setPolygonKind(
+                    data.source === "footprint-only" ||
+                      data.source === "footprint-occluded"
+                      ? "wall"
+                      : "eave",
+                  );
+                }
+              } catch {
+                // Network or parse error — leave the existing polygon
+                // in place. The customer's still got "Draw outline
+                // myself" as a fallback.
+              } finally {
+                setPickingLoading(false);
+              }
+            }}
             onChangeSqft={setSqft}
             onPolygonEdited={(poly) => {
               setRoofPolygon(poly);
@@ -905,8 +975,10 @@ function RoofStep({
   satelliteUrl,
   roofPolygon,
   loading,
+  pickingLoading,
   onChangeSqft,
   onPolygonEdited,
+  onClickPick,
   onBack,
   onNext,
 }: {
@@ -916,8 +988,10 @@ function RoofStep({
   satelliteUrl: string | null;
   roofPolygon: Array<{ lat: number; lng: number }> | null;
   loading: boolean;
+  pickingLoading: boolean;
   onChangeSqft: (n: number) => void;
   onPolygonEdited: (poly: Array<{ lat: number; lng: number }>) => void;
+  onClickPick: (clickLat: number, clickLng: number) => void;
   onBack: () => void;
   onNext: () => void;
 }) {
@@ -949,6 +1023,8 @@ function RoofStep({
             lng={address.lng}
             initialPolygon={roofPolygon}
             onPolygonChanged={onPolygonEdited}
+            onClickPick={onClickPick}
+            pickingLoading={pickingLoading}
           />
         ) : satelliteUrl ? (
           <img
