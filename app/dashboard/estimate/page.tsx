@@ -141,6 +141,14 @@ function HomePageInner() {
   const [notes, setNotes] = useState("");
   const [estimateId, setEstimateId] = useState<string>(newId());
   const [shown, setShown] = useState(false);
+  // Breakdown section tabs — the rep workbench used to render 11 panels
+  // stacked vertically, which made the page feel endless. Tabbing groups
+  // them into 3 logical workflows so only ~3-4 panels are visible at any
+  // time. Default is "numbers" because that's where reps land after the
+  // headline price card.
+  const [breakdownTab, setBreakdownTab] = useState<
+    "numbers" | "measurements" | "delivery"
+  >("numbers");
 
   const [solar, setSolar] = useState<SolarSummary | null>(null);
   const [vision, setVision] = useState<RoofVision | null>(null);
@@ -1984,71 +1992,151 @@ function HomePageInner() {
             />
           </ErrorBoundary>
 
-          {/* ═══ 05 BREAKDOWN — line items, measurements, customer detail ═ */}
+          {/* ═══ 05 BREAKDOWN — tabbed rep workbench ═══════════════════
+              Was 11 panels stacked across a 2-col grid, which sprawled
+              the page well past the fold. Tabbed into 3 logical groups
+              (Numbers / Measurements & damage / Delivery) so only the
+              panels relevant to the current workflow are mounted. */}
           <SectionHeader
             index={4}
             title="Breakdown & detail"
             caption="Internal worksheet · not shown to customer"
+            trailing={
+              <div
+                role="tablist"
+                aria-label="Breakdown sections"
+                className="inline-flex items-center gap-1 p-1 rounded-full bg-white/[0.04] border border-white/[0.06]"
+              >
+                {(
+                  [
+                    { key: "numbers", label: "Numbers" },
+                    { key: "measurements", label: "Measurements & damage" },
+                    { key: "delivery", label: "Delivery" },
+                  ] as const
+                ).map((t) => {
+                  const active = breakdownTab === t.key;
+                  return (
+                    <button
+                      key={t.key}
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setBreakdownTab(t.key)}
+                      className={[
+                        "px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors",
+                        active
+                          ? "bg-cy-300/15 text-cy-300 border border-cy-300/30"
+                          : "text-white/65 hover:text-white border border-transparent",
+                      ].join(" ")}
+                    >
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            }
           />
 
-          {/* ─── Two-col grid for everything else ─────────────────────── */}
-          <div className="grid lg:grid-cols-3 gap-6 float-in">
-            <div className="lg:col-span-2 space-y-6">
-              <VisionPanel
-                vision={vision}
-                loading={visionLoading}
-                error={visionError}
-                ageYears={assumptions.ageYears}
-                zip={address?.zip}
-              />
-              <TiersPanel assumptions={assumptions} addOns={addOns} onApplyTier={applyTier} />
-              <MeasurementsPanel
-                lengths={lengths}
-                waste={waste}
-                defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
-              />
-              <LineItemsPanel
-                detailed={detailed}
-                defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
-                alwaysShowXactimate={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
-              />
-              <div className="grid md:grid-cols-2 gap-6">
-                <AssumptionsEditor value={assumptions} onChange={setAssumptions} />
-                <AddOnsPanel addOns={addOns} onChange={setAddOns} />
-              </div>
-            </div>
-            <div className="space-y-6">
-              <PropertyContextPanel address={address} />
-              <StormHistoryCard lat={address?.lat} lng={address?.lng} />
-              <PhotoUploadPanel photos={photos} onChange={setPhotos} />
-              <div className="glass-panel p-5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="font-display font-semibold tracking-tight">Customer & Notes</div>
-                  <span className="label">internal only</span>
+          <div className="float-in">
+            {breakdownTab === "numbers" && (
+              <div className="grid lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2 space-y-6">
+                  <TiersPanel
+                    assumptions={assumptions}
+                    addOns={addOns}
+                    onApplyTier={applyTier}
+                  />
+                  <LineItemsPanel
+                    detailed={detailed}
+                    defaultOpen={
+                      isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
+                    }
+                    alwaysShowXactimate={
+                      isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
+                    }
+                  />
                 </div>
-                <input
-                  className="glass-input"
-                  placeholder="Customer name"
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                />
-                <textarea
-                  className="glass-input"
-                  placeholder="Notes…"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  style={{ minHeight: 90, resize: "vertical", lineHeight: 1.5 }}
-                />
-              </div>
-              <div className="glass-panel p-5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="font-display font-semibold tracking-tight">Output</div>
-                  <span className="label">deliver</span>
+                <div className="space-y-6">
+                  <AssumptionsEditor
+                    value={assumptions}
+                    onChange={setAssumptions}
+                  />
+                  <AddOnsPanel addOns={addOns} onChange={setAddOns} />
                 </div>
-                <OutputButtons estimate={estimate} office={office} />
               </div>
-              <InsightsPanel estimate={estimate} />
-            </div>
+            )}
+
+            {breakdownTab === "measurements" && (
+              <div className="grid lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2 space-y-6">
+                  <MeasurementsPanel
+                    lengths={lengths}
+                    waste={waste}
+                    defaultOpen={
+                      isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
+                    }
+                  />
+                  <VisionPanel
+                    vision={vision}
+                    loading={visionLoading}
+                    error={visionError}
+                    ageYears={assumptions.ageYears}
+                    zip={address?.zip}
+                  />
+                </div>
+                <div className="space-y-6">
+                  <PropertyContextPanel address={address} />
+                  <StormHistoryCard
+                    lat={address?.lat}
+                    lng={address?.lng}
+                  />
+                </div>
+              </div>
+            )}
+
+            {breakdownTab === "delivery" && (
+              <div className="grid lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2 space-y-6">
+                  <PhotoUploadPanel photos={photos} onChange={setPhotos} />
+                  <div className="glass-panel p-5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="font-display font-semibold tracking-tight">
+                        Customer &amp; Notes
+                      </div>
+                      <span className="label">internal only</span>
+                    </div>
+                    <input
+                      className="glass-input"
+                      placeholder="Customer name"
+                      value={customerName}
+                      onChange={(e) => setCustomerName(e.target.value)}
+                    />
+                    <textarea
+                      className="glass-input"
+                      placeholder="Notes…"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      style={{
+                        minHeight: 90,
+                        resize: "vertical",
+                        lineHeight: 1.5,
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-6">
+                  <div className="glass-panel p-5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="font-display font-semibold tracking-tight">
+                        Output
+                      </div>
+                      <span className="label">deliver</span>
+                    </div>
+                    <OutputButtons estimate={estimate} office={office} />
+                  </div>
+                  <InsightsPanel estimate={estimate} />
+                </div>
+              </div>
+            )}
           </div>
           {/* Floating estimate summary — fades in once the rep scrolls past
               the headline price card so the live total + sqft + source
