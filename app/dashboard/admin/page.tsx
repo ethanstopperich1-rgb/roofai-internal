@@ -25,14 +25,25 @@ export const dynamic = "force-dynamic";
 export default async function AdminPage() {
   const supabase = await getDashboardSupabase();
 
-  // Auth gate — only admins past this point.
+  // Auth gate — only admins past this point. Filter by auth.uid()
+  // before .maybeSingle() — users_select_same_office RLS returns
+  // every row in the office, so without the id filter the query
+  // throws on offices with 2+ staff and we'd lock everyone out.
   let isAdmin = false;
   let myEmail: string | null = null;
   if (supabase) {
-    const { data: userRow } = await supabase.from("users").select("role, email").maybeSingle();
-    if (userRow) {
-      isAdmin = userRow.role === "admin";
-      myEmail = userRow.email;
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = auth?.user?.id;
+    if (uid) {
+      const { data: userRow } = await supabase
+        .from("users")
+        .select("role, email")
+        .eq("id", uid)
+        .maybeSingle();
+      if (userRow) {
+        isAdmin = userRow.role === "admin" || userRow.role === "owner";
+        myEmail = userRow.email;
+      }
     }
   }
 

@@ -39,6 +39,13 @@ import { BoltStyleHero, type QuoteHeroFormValues } from "@/components/ui/bolt-st
 function EmbedWidget() {
   const params = useSearchParams();
   const brand = (params.get("brand") ?? "default").slice(0, 32);
+  // Tenancy: which business owns leads from this widget. Defaults to the
+  // `brand` slug — partners almost always set them to the same value —
+  // but accepts an explicit override for the rare case where the brand
+  // label and the office slug differ (e.g. shared widget on a partner
+  // co-marketing page that should still attribute to one office). Falls
+  // back to the platform brand ("voxaris") when neither is set.
+  const office = (params.get("office") ?? (brand !== "default" ? brand : "voxaris")).slice(0, 40);
   const accentHex = (params.get("accent") ?? "").replace(/[^0-9a-fA-F]/g, "").slice(0, 6);
   const accent = accentHex ? `#${accentHex}` : "#67dcff";
   const accentParam = accentHex ? accent : undefined;
@@ -89,6 +96,8 @@ function EmbedWidget() {
           zip: values.zip,
           lat: values.lat,
           lng: values.lng,
+          // Tenancy — every embed lead lands in the correct office_id.
+          office,
           source: `embed-${brand}`,
           // TCPA consent — required server-side. Hero form gates submit.
           tcpaConsent: values.tcpaConsent,

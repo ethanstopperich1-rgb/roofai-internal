@@ -131,7 +131,35 @@ export async function POST(req: Request) {
 
   const submittedAt = new Date().toISOString();
   const emailNorm = body.email.trim().toLowerCase();
-  const officeSlug = body.office ?? "voxaris";
+  // Tenancy — every lead MUST land in a specific business. Allow the
+  // caller to omit `office` for back-compat (defaults to "voxaris", the
+  // platform brand) but VALIDATE the slug shape + active-status against
+  // the offices table before we accept it. Unknown / inactive slugs get
+  // rejected so a misconfigured embed snippet doesn't silently drop
+  // leads into the wrong office.
+  const rawOfficeSlug =
+    typeof body.office === "string" && body.office.trim()
+      ? body.office.trim().toLowerCase()
+      : "voxaris";
+  if (!/^[a-z0-9][a-z0-9-]{1,40}$/i.test(rawOfficeSlug)) {
+    return NextResponse.json(
+      { error: "invalid_office", message: "office must be a slug like 'nolands'." },
+      { status: 400 },
+    );
+  }
+  if (supabaseServiceRoleConfigured()) {
+    const validatedId = await resolveOfficeIdBySlug(rawOfficeSlug);
+    if (!validatedId) {
+      return NextResponse.json(
+        {
+          error: "unknown_office",
+          message: `No active business is registered for the slug '${rawOfficeSlug}'.`,
+        },
+        { status: 400 },
+      );
+    }
+  }
+  const officeSlug = rawOfficeSlug;
 
   let leadId = `lead_${crypto.randomUUID().replace(/-/g, "")}`;
   let isLeadUpdate = false;
@@ -394,16 +422,12 @@ export async function POST(req: Request) {
           estimateLow: body.estimateLow,
           estimateHigh: body.estimateHigh,
           material: body.material,
-          // VOICE BRAND default — controls how Sydney introduces herself
-          // ("Sydney with [office company name]"). Default is "nolands"
-          // so the demo flow greets customers as "Sydney with Noland's
-          // Roofing." This is separate from the Supabase office_id used
-          // for lead storage (still defaults to "voxaris" at line 134
-          // because the dashboard's Basic-auth fallback office is
-          // voxaris, per migration 0006). Two distinct concerns:
-          // backend tenancy stays voxaris (dashboard sees the lead);
-          // voice brand goes through as nolands (caller hears Noland's).
-          office: body.office ?? "nolands",
+          // Tenancy — pass the SAME office that we just persisted the
+          // lead row under. Sydney's outbound script reads this from
+          // ctx.job.metadata so the caller hears "Sydney with <that
+          // office's company name>." Backend tenancy and voice brand
+          // are now unified — one office routes the entire flow.
+          office: officeSlug,
           estimatedSqft: body.estimatedSqft,
         }),
       })

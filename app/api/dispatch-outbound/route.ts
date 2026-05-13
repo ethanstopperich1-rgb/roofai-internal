@@ -117,6 +117,23 @@ export async function POST(req: Request) {
   const safeLeadId = body.leadId.replace(/[^a-z0-9_-]/gi, "").slice(0, 48);
   const roomName = `outbound-${safeLeadId}-${Date.now()}`;
 
+  // Tenancy — the calling endpoint (/api/leads) already validated and
+  // normalized the office slug, so we require it here and refuse to
+  // guess. No more silent "nolands" fallback that masked tenancy bugs.
+  if (
+    typeof body.office !== "string" ||
+    !/^[a-z0-9][a-z0-9-]{1,40}$/i.test(body.office.trim())
+  ) {
+    return NextResponse.json(
+      {
+        error: "missing_office",
+        message: "office (business slug) is required on the dispatch payload.",
+      },
+      { status: 400 },
+    );
+  }
+  const office = body.office.trim().toLowerCase();
+
   // Lead context — Sydney's agent reads this from ctx.job.metadata and
   // switches into outbound mode (personalized opener, knows the
   // estimate, references the address by name).
@@ -130,12 +147,9 @@ export async function POST(req: Request) {
     estimateHigh: body.estimateHigh ?? null,
     estimatedSqft: body.estimatedSqft ?? null,
     material: body.material ?? null,
-    // Default office is "nolands" so Sydney introduces herself as
-    // "Sydney with Noland's Roofing" (the brand the homeowner expects
-    // to hear from based on the inbound number routing). The platform
-    // brand "Voxaris" is reachable only when the caller explicitly
-    // submits office=voxaris.
-    office: body.office ?? "nolands",
+    // Tenancy — same office that captured the lead. Sydney's company
+    // name + caller-ID + LiveKit dispatch all key off this.
+    office,
   };
   const metadata = JSON.stringify(leadContext);
 

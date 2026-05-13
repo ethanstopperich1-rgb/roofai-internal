@@ -101,7 +101,16 @@ const MATERIAL_COPY: Record<
   },
 };
 
-export default function QuotePage() {
+interface QuotePageProps {
+  /** Business slug this estimator is branded for. Drives the `office`
+   *  field on every /api/leads submission so the resulting lead lands
+   *  in the right office_id and Sydney's outbound call brands as the
+   *  correct company. Defaults to "voxaris" when /quote is hit without
+   *  a path segment — the generic platform brand. */
+  office?: string;
+}
+
+export default function QuotePage({ office = "voxaris" }: QuotePageProps = {}) {
   const [step, setStep] = useState<StepKey>("Lead");
   const [lead, setLead] = useState<QuoteHeroFormValues | null>(null);
   const [address, setAddress] = useState<AddressInfo | null>(null);
@@ -265,6 +274,9 @@ export default function QuotePage() {
         zip: addr.zip,
         lat: addr.lat,
         lng: addr.lng,
+        // Tenancy — which business owns this lead. Drives /api/leads
+        // routing, Sydney's outbound brand, dashboard visibility.
+        office,
         source: "quote-wizard-step-1",
         // TCPA consent — captured at hero form. Server REQUIRES this
         // to be true before firing automated SMS / webhook / CRM
@@ -530,6 +542,8 @@ export default function QuotePage() {
           selectedAddOns: addOns.filter((a) => a.enabled).map((a) => a.id),
           estimateLow: range.low,
           estimateHigh: range.high,
+          // Tenancy — carries through to lead row, Sydney outbound dispatch.
+          office,
           source: "quote-wizard-confirmed",
           existingLeadPublicId: existingLeadPublicIdRef.current ?? undefined,
           // TCPA consent carried forward from step-1 form. The

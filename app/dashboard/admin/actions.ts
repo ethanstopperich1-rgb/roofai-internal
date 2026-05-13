@@ -46,11 +46,18 @@ async function requireAdmin(): Promise<string | null> {
   }
   try {
     const supabase = createServerClient(await buildCookieAdapter());
+    // Filter by the JWT user before .single() — RLS users_select_same_office
+    // returns every row in the caller's office, so .single() throws on
+    // offices with 2+ staff. See lib/dashboard.ts for the same trap.
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = auth?.user?.id;
+    if (!uid) return "Sign in to make these changes.";
     const { data: userRow } = await supabase
       .from("users")
       .select("role")
-      .single();
-    if (!userRow || userRow.role !== "admin") {
+      .eq("id", uid)
+      .maybeSingle();
+    if (!userRow || (userRow.role !== "admin" && userRow.role !== "owner")) {
       return "Admin role required to make these changes.";
     }
     return null;

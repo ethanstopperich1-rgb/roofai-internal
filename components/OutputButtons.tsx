@@ -19,6 +19,10 @@ interface Props {
    *  doesn't match (Maps autocomplete sometimes rewrites the string
    *  between /quote and the rep tool). */
   customerEmail?: string;
+  /** Business slug the proposal belongs to — drives `office_id` on the
+   *  proposals row in Supabase + which dashboard sees it. Defaults to
+   *  "voxaris" (platform) when unset, so legacy callers keep working. */
+  office?: string;
 }
 
 export default function OutputButtons({
@@ -26,6 +30,7 @@ export default function OutputButtons({
   onSaved,
   leadPublicId,
   customerEmail,
+  office,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -55,6 +60,8 @@ export default function OutputButtons({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         estimate,
+        // Tenancy — drops the proposal into the right office_id.
+        ...(office ? { office } : {}),
         // Optional resolution hints — /api/proposals uses these to
         // attach the proposal to the right lead row. Both safely fall
         // back to address-based matching when undefined.

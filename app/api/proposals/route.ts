@@ -67,13 +67,28 @@ export async function POST(req: Request) {
     );
   }
 
-  // TODO: swap to office from JWT once Supabase Auth lands. For now the
-  // rep tool only operates against the seed Voxaris office.
-  const officeSlug = body.office ?? "voxaris";
+  // Tenancy — the rep tool now passes `office` explicitly from its
+  // `?office=` query param (and eventually from the rep's Supabase
+  // JWT). Validate the slug shape + active-status against the offices
+  // table — unknown slugs get rejected so a typo in the URL doesn't
+  // silently file the proposal under the wrong business.
+  const officeSlug =
+    typeof body.office === "string" && body.office.trim()
+      ? body.office.trim().toLowerCase()
+      : "voxaris";
+  if (!/^[a-z0-9][a-z0-9-]{1,40}$/i.test(officeSlug)) {
+    return NextResponse.json(
+      { error: "invalid_office", message: "office must be a slug like 'nolands'." },
+      { status: 400 },
+    );
+  }
   const officeId = await resolveOfficeIdBySlug(officeSlug);
   if (!officeId) {
     return NextResponse.json(
-      { error: "unknown_office", message: `No active office for '${officeSlug}'.` },
+      {
+        error: "unknown_office",
+        message: `No active business is registered for the slug '${officeSlug}'.`,
+      },
       { status: 400 },
     );
   }
