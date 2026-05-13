@@ -9,9 +9,24 @@ import { saveEstimate } from "@/lib/storage";
 interface Props {
   estimate: Estimate;
   onSaved?: () => void;
+  /** Optional — when the rep opened this estimator from an existing lead
+   *  drawer (or from a /quote ingest where we know the lead public_id),
+   *  passing it here lets /api/proposals do an exact match by id rather
+   *  than guessing via address. Strongest signal. */
+  leadPublicId?: string;
+  /** Optional — customer email. Used as a fallback by /api/proposals
+   *  when the explicit leadPublicId isn't set AND the formatted address
+   *  doesn't match (Maps autocomplete sometimes rewrites the string
+   *  between /quote and the rep tool). */
+  customerEmail?: string;
 }
 
-export default function OutputButtons({ estimate, onSaved }: Props) {
+export default function OutputButtons({
+  estimate,
+  onSaved,
+  leadPublicId,
+  customerEmail,
+}: Props) {
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
   const [linked, setLinked] = useState(false);
@@ -38,7 +53,14 @@ export default function OutputButtons({ estimate, onSaved }: Props) {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ estimate }),
+      body: JSON.stringify({
+        estimate,
+        // Optional resolution hints — /api/proposals uses these to
+        // attach the proposal to the right lead row. Both safely fall
+        // back to address-based matching when undefined.
+        ...(leadPublicId ? { leadPublicId } : {}),
+        ...(customerEmail ? { email: customerEmail } : {}),
+      }),
     }).catch((err) => console.warn("[output] supabase save failed:", err));
   };
 
