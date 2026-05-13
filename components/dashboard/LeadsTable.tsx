@@ -388,7 +388,7 @@ function LeadDrawer({
                         {fmtDateTime(c.started_at)}
                       </div>
                       <div className="text-[11px] text-white/55 font-mono tabular">
-                        {fmtDuration(c.duration_sec)} · {fmtUSD(c.estimated_cost_usd)}
+                        {fmtDuration(c.duration_sec)}
                       </div>
                     </div>
                     <span className={`text-[11px] px-2 py-0.5 rounded-full border ${s.className}`}>

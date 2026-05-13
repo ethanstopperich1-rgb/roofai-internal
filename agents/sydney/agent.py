@@ -446,6 +446,35 @@ async def entrypoint(ctx: JobContext) -> None:
     # so the dashboard pill says something useful instead of "unknown".
     _outcome_signals: list[str] = []
 
+    # Turn-by-turn transcript, captured DURING the call. The previous
+    # implementation walked session.chat_ctx in the shutdown callback,
+    # which was empty by then in 1.5 — the chat context gets torn down
+    # before shutdown_callbacks run. Listening to conversation_item_added
+    # gives us each finalized turn (user OR agent) as it happens, so we
+    # have a complete record sitting in memory when call_ended fires.
+    _transcript_lines: list[str] = []
+
+    @session.on("conversation_item_added")
+    def _on_conversation_item(ev) -> None:  # type: ignore[no-untyped-def]
+        try:
+            item = getattr(ev, "item", None)
+            if item is None:
+                return
+            role = getattr(item, "role", None)
+            # ChatItem text lives on `text_content` in 1.5+; some events
+            # also expose `content` directly. Try both safely.
+            text = getattr(item, "text_content", None)
+            if text is None:
+                content = getattr(item, "content", None)
+                if isinstance(content, list):
+                    text = " ".join(str(c) for c in content if c)
+                elif isinstance(content, str):
+                    text = content
+            if role and text and isinstance(text, str) and text.strip():
+                _transcript_lines.append(f"{role}: {text.strip()}")
+        except Exception as e:
+            logger.warning("transcript capture failed for one turn: %s", e)
+
     # Per-call usage telemetry + turn count enforcement.
     @session.on("session_usage_updated")
     def _on_usage(ev) -> None:  # type: ignore[no-untyped-def]
@@ -553,22 +582,26 @@ async def entrypoint(ctx: JobContext) -> None:
             + _usage_totals["tts_chars"] * 0.000065
         )
 
-        # Pull transcript from the chat context. This is the LLM's view
-        # of the conversation, not a recorded audio transcript — good
-        # enough for dashboard summarization, accurate to what was said.
-        transcript_chunks: list[str] = []
-        try:
-            history = getattr(session, "chat_ctx", None)
-            items = getattr(history, "items", []) if history else []
-            for item in items:
-                role = getattr(item, "role", "") or ""
-                content = getattr(item, "content", "") or ""
-                if isinstance(content, list):
-                    content = " ".join(str(c) for c in content)
-                if role and content:
-                    transcript_chunks.append(f"{role}: {content}")
-        except Exception as e:
-            logger.warning("transcript collection failed: %s", e)
+        # Transcript — preferred source is the turn-by-turn list we
+        # accumulated DURING the call via the conversation_item_added
+        # listener above. The fallback walk of session.chat_ctx is a
+        # safety net for runtime versions where the new event doesn't
+        # fire; on 1.5+ chat_ctx is usually empty by shutdown time
+        # anyway, which is exactly why the listener path exists.
+        transcript_chunks: list[str] = list(_transcript_lines)
+        if not transcript_chunks:
+            try:
+                history = getattr(session, "chat_ctx", None)
+                items = getattr(history, "items", []) if history else []
+                for item in items:
+                    role = getattr(item, "role", "") or ""
+                    content = getattr(item, "content", "") or ""
+                    if isinstance(content, list):
+                        content = " ".join(str(c) for c in content)
+                    if role and content:
+                        transcript_chunks.append(f"{role}: {content}")
+            except Exception as e:
+                logger.warning("transcript fallback walk failed: %s", e)
         transcript = "\n".join(transcript_chunks) if transcript_chunks else None
 
         # Fire-and-forget. Don't await — shutdown shouldn't block on a
