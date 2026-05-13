@@ -1052,3 +1052,84 @@ input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
   75%  { content: "..."; }
   100% { content: ""; }
 }
+
+/* ─── Print stylesheet ────────────────────────────────────────────────
+ *
+ * Customers PRINT the /p/[id] proposal page — they bring it to the
+ * in-person inspection or hand it to a spouse. Without these rules,
+ * print output renders the body's dark background, the lg-env aurora
+ * blobs (as muddy gray washes), the noise grain overlay (as gray fog),
+ * and the navigation chrome on every page — none of which is useful
+ * on paper and all of which wastes toner.
+ *
+ * Rules:
+ *   1. Hide anything marked `.no-print` (action buttons, headers, footers).
+ *   2. Strip the lg-env background entirely (no aurora, no noise overlay).
+ *   3. Force white background + dark text so the proposal reads cleanly.
+ *   4. Disable the glass-panel translucency — backdrop-blur is meaningless
+ *      on paper and the alpha base just renders as a soft gray rectangle.
+ *
+ * Applied via @media print so screen rendering is unaffected. Targets
+ * the proposal page primarily but also benefits any other route a
+ * customer might print (eg an emailed estimate). */
+@media print {
+  /* Hide explicit no-print elements (nav chrome, action buttons). */
+  .no-print {
+    display: none !important;
+  }
+
+  /* Force a light, paper-friendly background.
+   * !important is unfortunately required to override Tailwind's
+   * arbitrary-value bg-* utilities that win on specificity. */
+  html, body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  /* Strip the lg-env atmosphere: aurora drift + radial blobs + noise. */
+  .lg-env,
+  .lg-env::before,
+  .lg-env::after {
+    background: #ffffff !important;
+    animation: none !important;
+    filter: none !important;
+  }
+  .lg-env::before,
+  .lg-env::after {
+    content: none !important;
+    display: none !important;
+  }
+
+  /* Glass panels: keep their shape (border + radius) but drop the
+   * translucent fill, backdrop blur, and shadow bloom. The proposal
+   * cards still read as distinct sections, they just print legibly. */
+  .glass,
+  .glass-strong {
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    box-shadow: none !important;
+    border-color: #d4d4d8 !important;
+  }
+  .glass::before,
+  .glass::after,
+  .glass-strong::before,
+  .glass-strong::after {
+    content: none !important;
+    display: none !important;
+  }
+
+  /* Tighten page break behavior so a single proposal card doesn't get
+   * sliced across two pages mid-section. */
+  .glass,
+  .glass-strong {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* The big total-price headline at 64px–88px is gorgeous on screen
+   * but eats a quarter of the print page. Knock it down. */
+  .proposal-print-root .font-display.tabular {
+    font-size: 36px !important;
+  }
+}

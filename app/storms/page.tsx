@@ -59,13 +59,18 @@ export default function StormsPage() {
             <CloudHail size={12} />
             Storm-triggered lead generation
           </div>
+          {/* Wrapping each phrase in a span with `display:block` lets
+              the break happen via layout (and inherits responsive
+              behavior) instead of a hard <br /> that forces the
+              two-line treatment even on huge screens where it'd fit
+              on one. On a phone the spans wrap naturally; on a wide
+              monitor the punch is preserved by the block display. */}
           <h1
             className="font-display font-semibold tracking-[-0.035em] text-slate-50 leading-[0.95]"
             style={{ fontSize: "clamp(40px, 7.5vw, 76px)" }}
           >
-            Hail hits.
-            <br />
-            Your phones ring.
+            <span className="block">Hail hits.</span>
+            <span className="block">Your phones ring.</span>
           </h1>
           <p className="text-[16px] sm:text-[19px] text-slate-300 leading-relaxed mt-6 sm:mt-8 max-w-[58ch]">
             Voxaris detects every significant hail event in your

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import PublicHeader from "@/components/ui/public-header";
 import PublicFooter from "@/components/ui/public-footer";
+import LegalTOC from "@/components/ui/legal-toc";
 
 /**
  * Shared chrome for /privacy /terms /methodology. Now uses the shared
@@ -21,6 +22,11 @@ export default function LegalLayout({ children }: { children: ReactNode }) {
       <PublicHeader chip="Legal" />
       <main className="relative z-[1] flex-1 px-4 sm:px-6 py-12 sm:py-20">
         <div className="max-w-3xl mx-auto">
+          {/* Auto-generated TOC from <article> h2 elements. Hides
+              itself for short docs (<3 sections). Helps readers
+              jump around 200+ line privacy / terms / methodology
+              pages without scrolling end-to-end. */}
+          <LegalTOC />
           <article className="prose prose-invert max-w-none">{children}</article>
         </div>
       </main>

@@ -4,7 +4,7 @@ import { useEffect, useState, use } from "react";
 import { getEstimate } from "@/lib/storage";
 import type { Estimate } from "@/types/estimate";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
-import { Check, MapPin, Mail, Phone, ShieldCheck } from "lucide-react";
+import { Check, MapPin, Mail, Phone, ShieldCheck, Link2, Printer } from "lucide-react";
 import { BRAND_CONFIG } from "@/lib/branding";
 import PublicHeader from "@/components/ui/public-header";
 import PublicFooter from "@/components/ui/public-footer";
@@ -87,6 +87,13 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
   return (
     <ProposalShell>
     <div className="space-y-6 max-w-3xl mx-auto">
+      {/* Share + Print actions. .no-print hides them when the customer
+          prints the page — they're navigational chrome, not part of
+          the proposal itself. Customers reliably want to (a) send the
+          link to their spouse and (b) bring a printed copy to the
+          in-person inspection, so both affordances live up here at
+          the top of the page where they're discoverable. */}
+      <ProposalActions />
       <div className="glass-strong rounded-3xl p-7 md:p-9 relative overflow-hidden">
         <div
           className="absolute -top-20 -right-20 w-[420px] h-[420px] rounded-full blur-3xl pointer-events-none opacity-50"
@@ -102,9 +109,22 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
             </div>
           </div>
 
+          {/* Customer name uses display-weight 600 + slate-50 (not cyan)
+              because cyan looked like a clickable link in the H1 —
+              customers WERE clicking on it expecting something to
+              happen. Keep the visual differentiation via weight +
+              tighter kerning instead of color. */}
           <h1 className="font-display text-[28px] md:text-[34px] leading-[1.1] tracking-tight font-medium mb-1">
             Roofing Proposal
-            {estimate.customerName ? <> for <span className="text-cy-300">{estimate.customerName}</span></> : null}
+            {estimate.customerName ? (
+              <>
+                {" "}
+                for{" "}
+                <span className="font-semibold text-slate-50 tracking-[-0.01em]">
+                  {estimate.customerName}
+                </span>
+              </>
+            ) : null}
           </h1>
           <div className="text-[13px] text-slate-400 flex items-center gap-1.5 mt-2">
             <MapPin size={12} /> {estimate.address.formatted}
@@ -200,9 +220,81 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
 function ProposalShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col">
-      <PublicHeader chip={undefined} rightSlot={null} logoHref="/quote" />
-      <main className="flex-1 px-4 sm:px-6 py-8 sm:py-12">{children}</main>
-      <PublicFooter />
+      {/* `.no-print` on header + footer so when the customer prints
+          the proposal they get the proposal CONTENT only — not nav
+          chrome that would look like fax-machine garbage on paper.
+          The page-level @media print rules in globals.css also flip
+          the background to white and disable aurora animations. */}
+      <div className="no-print contents">
+        <PublicHeader chip={undefined} rightSlot={null} logoHref="/quote" />
+      </div>
+      <main className="flex-1 px-4 sm:px-6 py-8 sm:py-12 proposal-print-root">{children}</main>
+      <div className="no-print contents">
+        <PublicFooter />
+      </div>
+    </div>
+  );
+}
+
+/** Share-link copy + Print buttons. Renders above the proposal card so
+ *  it's discoverable. Both actions hidden in print output via .no-print. */
+function ProposalActions() {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      // Fall back to a textarea + execCommand on browsers that block
+      // navigator.clipboard on insecure contexts (we're https in prod
+      // so the modern path should work in 99% of cases; the fallback
+      // is for older iOS Safari + dev preview HTTPS contexts).
+      const href = window.location.href;
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(href);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = href;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Last-ditch: open a prompt with the URL so the customer can
+      // still copy it manually. Better than failing silently.
+      window.prompt("Copy this link to share", window.location.href);
+    }
+  };
+  const onPrint = () => window.print();
+
+  return (
+    <div className="no-print flex items-center justify-end gap-2">
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label={copied ? "Link copied to clipboard" : "Copy a sharable link to this proposal"}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-slate-200 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.07] hover:border-white/[0.14] transition-colors"
+      >
+        {copied ? (
+          <>
+            <Check size={12} className="text-mint" /> Link copied
+          </>
+        ) : (
+          <>
+            <Link2 size={12} /> Share link
+          </>
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={onPrint}
+        aria-label="Print this proposal"
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-slate-200 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.07] hover:border-white/[0.14] transition-colors"
+      >
+        <Printer size={12} /> Print
+      </button>
     </div>
   );
 }
