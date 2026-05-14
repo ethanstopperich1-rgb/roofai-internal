@@ -488,6 +488,7 @@ export function makeDegradedRoofData(opts: {
     facets: [],
     edges: [],
     objects: [],
+    outlinePolygon: null,
     flashing: {
       chimneyLf: 0, skylightLf: 0, dormerStepLf: 0, wallStepLf: 0,
       headwallLf: 0, apronLf: 0, valleyLf: 0, dripEdgeLf: 0,

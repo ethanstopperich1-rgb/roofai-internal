@@ -336,6 +336,14 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
       const data = (await res.json()) as RoofData;
       if (fetchGenRef.current !== myGen) return; // stale
       setRoofData(data);
+      // Prefer the Tier C Solar-mask / Tier A LiDAR alpha-shape outline
+      // over the legacy resolved polygon when available. The outline is
+      // pixel-accurate where the legacy resolver returns axis-aligned
+      // bboxes or SAM3 approximations. Customer 3D viewer / static map
+      // preview pick this up via roofPolygon — no other plumbing needed.
+      if (data.outlinePolygon && data.outlinePolygon.length >= 3) {
+        setRoofPolygon(data.outlinePolygon);
+      }
     } catch (err) {
       if (fetchGenRef.current !== myGen) return;
       setPipelineError(err instanceof Error ? err.message : String(err));

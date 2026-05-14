@@ -123,6 +123,17 @@ export interface RoofData {
   flashing: FlashingBreakdown;
   totals: RoofTotals;
   diagnostics: RoofDiagnostics;
+  /** Pixel-accurate building outline from Solar dataLayers mask (Tier C)
+   *  or LiDAR alpha-shape boundary (Tier A). When present, this is the
+   *  visible outline rendered on map + 3D view — strictly tighter than
+   *  the union of `facets[].polygon` (which for Tier C is axis-aligned
+   *  bboxes rotated to dominant azimuth, inherently loose on L-shapes).
+   *  Facet polygons remain authoritative for per-facet pricing / pitch.
+   *  When null / absent (vision-only, degraded, mask fetch failed),
+   *  consumers fall back to the facet-union outline. Optional on the
+   *  type so older fixtures + the v1 estimate-loader shim don't have to
+   *  set it — the field is strictly additive. */
+  outlinePolygon?: Array<{ lat: number; lng: number }> | null;
 }
 
 export interface PricingInputs {

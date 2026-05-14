@@ -49,6 +49,10 @@ export async function tierCVisionSource(opts: {
     ageYearsEstimate: vision.estimatedAgeYears,
     ageBucket: vision.estimatedAge !== "unknown" ? vision.estimatedAge : null,
     facets, edges, objects, flashing, totals,
+    // Vision-only has no pixel-accurate outline — Claude returns a single
+    // generic facet, so the facet polygon IS the outline. Consumers fall
+    // back to the facet union when outlinePolygon is null.
+    outlinePolygon: null,
     diagnostics: {
       attempts: [],
       warnings: ["Vision-only fallback — no Solar coverage. Pitch and area are approximate."],

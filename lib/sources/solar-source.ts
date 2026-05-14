@@ -8,8 +8,14 @@ import {
 } from "@/lib/roof-engine";
 import { getMemoizedVision, type VisionFetcher } from "@/lib/cache/vision-request";
 import { mapVisionMaterial, visionPenetrationsToObjects } from "./vision-mappers";
+import { fetchSolarRoofMask } from "@/lib/solar-mask";
 
 type SolarFetcher = (lat: number, lng: number) => Promise<SolarSummary | null>;
+type MaskFetcher = (opts: {
+  lat: number;
+  lng: number;
+  apiKey: string;
+}) => Promise<{ latLng: Array<{ lat: number; lng: number }> } | null>;
 
 /**
  * Tier C Solar source. Fans /api/solar and /api/vision in parallel.
@@ -25,11 +31,22 @@ export async function tierCSolarSource(opts: {
   solarFetcher?: SolarFetcher;
   /** Injected fetcher for vision. Defaults to the real /api/vision. */
   visionFetcher?: VisionFetcher;
+  /** Injected fetcher for the pixel-accurate Solar mask outline.
+   *  Defaults to the real fetchSolarRoofMask. */
+  maskFetcher?: MaskFetcher;
 }): Promise<RoofData | null> {
   const solarFetcher = opts.solarFetcher ?? defaultSolarFetcher;
   const visionFetcher = opts.visionFetcher ?? defaultVisionFetcher;
+  const maskFetcher = opts.maskFetcher ?? defaultMaskFetcher;
+  // SOLAR_MASK_OUTLINE=0 disables the dataLayers mask fetch. Default ON
+  // because the mask is strictly tighter than findClosest bboxes on every
+  // L-shape / non-rectangular roof — see /api/solar-mask + lib/solar-mask
+  // for the pipeline (binary mask GeoTIFF → Moore-neighbor trace →
+  // Douglas-Peucker → orthogonalize → lat/lng project). Costs one extra
+  // Solar API call (~$0.005) per estimate; latency budget ~1-2s in parallel.
+  const maskEnabled = process.env.SOLAR_MASK_OUTLINE !== "0";
 
-  const [solar, vision] = await Promise.all([
+  const [solar, vision, maskPromise] = await Promise.all([
     solarFetcher(opts.address.lat, opts.address.lng).catch((err) => {
       console.warn("[solar-source] solar fetch failed:", err);
       return null;
@@ -40,6 +57,19 @@ export async function tierCSolarSource(opts: {
       requestId: opts.requestId,
       fetcher: visionFetcher,
     }),
+    maskEnabled
+      ? maskFetcher({
+          lat: opts.address.lat,
+          lng: opts.address.lng,
+          apiKey:
+            process.env.GOOGLE_SERVER_KEY ??
+            process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ??
+            "",
+        }).catch((err) => {
+          console.warn("[solar-source] mask fetch failed:", err);
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
   if (!solar || solar.segmentCount === 0) return null;
@@ -64,6 +94,20 @@ export async function tierCSolarSource(opts: {
     solar.imageryQuality === "MEDIUM" ? 0.70 :
     solar.imageryQuality === "LOW" ? 0.55 : 0.50;
 
+  // Mask outline: pixel-accurate boundary from dataLayers (overrides the
+  // facet-union outline used by MapView + Roof3DViewer when present).
+  // null when mask fetch failed, returned no roof component, or was
+  // disabled via SOLAR_MASK_OUTLINE=0 — consumers fall back to the facet
+  // union, matching prior behavior.
+  const outlinePolygon = maskPromise?.latLng ?? null;
+  if (outlinePolygon) {
+    console.log("[telemetry] solar_mask_outline_used", {
+      address: opts.address.formatted,
+      vertices: outlinePolygon.length,
+      imageryQuality: solar.imageryQuality,
+    });
+  }
+
   return {
     address: opts.address,
     source: "tier-c-solar",
@@ -73,8 +117,19 @@ export async function tierCSolarSource(opts: {
     ageYearsEstimate: vision?.estimatedAgeYears ?? null,
     ageBucket: vision && vision.estimatedAge !== "unknown" ? vision.estimatedAge : null,
     facets, edges, objects, flashing, totals,
+    outlinePolygon,
     diagnostics: { attempts: [], warnings: [], needsReview: [] },
   };
+}
+
+async function defaultMaskFetcher(opts: {
+  lat: number;
+  lng: number;
+  apiKey: string;
+}): Promise<{ latLng: Array<{ lat: number; lng: number }> } | null> {
+  if (!opts.apiKey) return null;
+  const result = await fetchSolarRoofMask(opts);
+  return result ? { latLng: result.latLng } : null;
 }
 
 function solarToFacets(solar: SolarSummary, vision: RoofVision | null): Facet[] {

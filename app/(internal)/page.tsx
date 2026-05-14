@@ -284,12 +284,20 @@ function HomePageInner() {
   }, [livePolygons, roofData]);
 
   // sourcePolygons / activePolygons feed MapView + Roof3DViewer + the
-  // legacy Estimate.polygons field. RoofData.facets[].polygon is the
-  // canonical source-of-truth shape; livePolygons override after edit.
+  // legacy Estimate.polygons field. Prefer `roofData.outlinePolygon`
+  // (pixel-accurate Solar mask / LiDAR alpha-shape boundary) when
+  // present — it's strictly tighter than `facets[].polygon` (which for
+  // Tier C is axis-aligned bboxes rotated to dominant azimuth, loose on
+  // L-shapes and non-rectangular roofs). Falls back to the facet union
+  // when the outline is null (vision-only, mask fetch failed,
+  // SOLAR_MASK_OUTLINE=0). livePolygons override after rep edit.
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
     if (!roofData || roofData.source === "none") return undefined;
+    if (roofData.outlinePolygon && roofData.outlinePolygon.length >= 3) {
+      return [roofData.outlinePolygon];
+    }
     return roofData.facets.map((f) => f.polygon);
   }, [roofData]);
   const activePolygons = livePolygons ?? sourcePolygons;

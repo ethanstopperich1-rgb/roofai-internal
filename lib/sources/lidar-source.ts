@@ -135,5 +135,13 @@ export async function tierALidarSource(opts: {
   ];
   rd.diagnostics = { ...rd.diagnostics, attempts };
 
+  // Default outlinePolygon to null when the Python service didn't emit
+  // one (older modal_app.py versions). When the service IS modern, it
+  // already supplies the alpha-shape boundary from the LiDAR plane
+  // segmentation step.
+  if (rd.outlinePolygon === undefined) {
+    rd.outlinePolygon = null;
+  }
+
   return rd;
 }
