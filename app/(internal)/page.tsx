@@ -34,6 +34,7 @@ import ResultsPanel from "@/components/ResultsPanel";
 import EstimateSticky from "@/components/EstimateSticky";
 import OutputButtons from "@/components/OutputButtons";
 import MapView from "@/components/MapView";
+import { polygonAreaSqft } from "@/lib/polygon";
 import ConfirmHomePin from "@/components/ConfirmHomePin";
 import InsightsPanel from "@/components/InsightsPanel";
 import PropertyContextPanel from "@/components/PropertyContextPanel";
@@ -281,39 +282,80 @@ function HomePageInner() {
     | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
-    // When SAM3 returned a polygon, it's the one rendered on the map.
-    // Label the chip "sam3" regardless of the underlying RoofData source
-    // so the badge matches what's actually visible to the rep.
-    if (sam3Polygon && sam3Polygon.length >= 3) return "sam3";
+    // Mirror the same gate logic as `sourcePolygons` so the chip below
+    // the map labels the polygon that's ACTUALLY visible, not the
+    // theoretical winner. If SAM3 is present and clean, "sam3". If
+    // SAM3 was rejected by the quality gate but the mask took over,
+    // "solar" (the mask is Solar dataLayers). If neither, fall through
+    // to the RoofData source mapping.
+    const hasSam3 = sam3Polygon && sam3Polygon.length >= 3;
+    const hasMask =
+      roofData?.outlinePolygon && roofData.outlinePolygon.length >= 3;
+    if (hasSam3) {
+      const sam3Area = polygonAreaSqft(sam3Polygon);
+      const solarFootprint = roofData?.totals?.totalFootprintSqft ?? 0;
+      const solarFacets = roofData?.totals?.facetsCount ?? 0;
+      const sam3Suspect =
+        (solarFootprint > 0 &&
+          Math.abs(sam3Area - solarFootprint) / solarFootprint > 0.3) ||
+        (sam3Polygon.length <= 5 && solarFacets >= 3);
+      if (!sam3Suspect) return "sam3";
+      if (hasMask) return "solar"; // mask wins
+      return "sam3"; // no mask alt, keep SAM3
+    }
     if (!roofData || roofData.source === "none" || roofData.facets.length === 0) return "none";
-    // Map RoofData.source → legacy union for Roof3DViewer / Estimate types:
-    //   tier-c-solar  → "solar"   (Solar API photogrammetric facets)
-    //   tier-c-vision → "ai"      (Claude vision fallback)
-    //   tier-a/b      → "sam3"    (placeholder; lab-quality multiview/LiDAR)
-    if (roofData.source === "tier-c-solar") return "solar";
+    if (hasMask || roofData.source === "tier-c-solar") return "solar";
     if (roofData.source === "tier-c-vision") return "ai";
     return "sam3";
   }, [livePolygons, sam3Polygon, roofData]);
 
   // sourcePolygons / activePolygons feed MapView + Roof3DViewer + the
-  // legacy Estimate.polygons field. Priority (highest → lowest):
-  //   1. sam3Polygon — same SAM3 trace /quote's tier ladder uses.
-  //      Shows the rep the SAME polygon the customer sees.
-  //   2. roofData.outlinePolygon — Solar dataLayers mask / LiDAR
-  //      alpha-shape boundary (pixel-accurate fallback).
-  //   3. roofData.facets[].polygon — bbox-rotated rectangles (loose,
-  //      last resort).
+  // legacy Estimate.polygons field. Mirrors /quote's tier ladder so the
+  // rep sees exactly what the customer sees:
+  //
+  //   1. Prefer sam3Polygon when SAM3 looks tight.
+  //   2. Run a quality gate: if SAM3's area disagrees with Solar
+  //      findClosest by >30%, OR has ≤5 vertices for a ≥3-facet Solar
+  //      building → SAM3 is suspect, fall through to the Solar mask
+  //      (roofData.outlinePolygon).
+  //   3. Solar mask outline is the next-best fallback.
+  //   4. Bbox-rotated facets are the last resort (loose).
+  //
   // livePolygons override everything once the rep edits a vertex.
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    if (sam3Polygon && sam3Polygon.length >= 3) {
+    const hasSam3 = sam3Polygon && sam3Polygon.length >= 3;
+    const hasMask =
+      roofData?.outlinePolygon && roofData.outlinePolygon.length >= 3;
+
+    if (hasSam3) {
+      // Quality gate: compare SAM3 area + vertex count against the Tier C
+      // signals already in roofData. Same logic /quote's tier ladder runs
+      // server-side; ports here so both pages show the same polygon.
+      let sam3Suspect = false;
+      const sam3Area = polygonAreaSqft(sam3Polygon);
+      const solarFootprint = roofData?.totals?.totalFootprintSqft ?? 0;
+      const solarFacets = roofData?.totals?.facetsCount ?? 0;
+      if (
+        solarFootprint > 0 &&
+        Math.abs(sam3Area - solarFootprint) / solarFootprint > 0.3
+      ) {
+        sam3Suspect = true;
+      }
+      if (!sam3Suspect && sam3Polygon.length <= 5 && solarFacets >= 3) {
+        sam3Suspect = true;
+      }
+      if (!sam3Suspect) {
+        return [sam3Polygon];
+      }
+      // SAM3 is suspect — fall through to the mask if available.
+      if (hasMask) return [roofData.outlinePolygon!];
+      // No mask either — SAM3 is still better than nothing.
       return [sam3Polygon];
     }
     if (!roofData || roofData.source === "none") return undefined;
-    if (roofData.outlinePolygon && roofData.outlinePolygon.length >= 3) {
-      return [roofData.outlinePolygon];
-    }
+    if (hasMask) return [roofData.outlinePolygon!];
     return roofData.facets.map((f) => f.polygon);
   }, [sam3Polygon, roofData]);
   const activePolygons = livePolygons ?? sourcePolygons;
