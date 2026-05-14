@@ -167,6 +167,10 @@ export const DEFAULT_ADDONS: AddOn[] = [
   { id: "drip-edge", label: "Drip Edge Upgrade", price: 370, enabled: false },
 ];
 
+/**
+ * @deprecated Same as buildDetailedEstimate below — kept for lib/tiers.ts
+ * and app/dashboard/estimate/page.tsx. Phase 4 migration target.
+ */
 export function computeBase(a: Assumptions): { low: number; high: number; mid: number } {
   // Installed cost per sqft already includes labor (~60% of total per
   // RoofingCalculator's breakdown). Multipliers shift the band:
@@ -313,6 +317,16 @@ function estimateRoofMetrics(opts: {
   return { perimeterLf, ridgeLf, valleyLf, iwsSqft };
 }
 
+/**
+ * @deprecated Tier C ships with priceRoofData (lib/roof-engine.ts) as the
+ * canonical pricing engine for /internal and /quote. This function remains
+ * for three legacy consumers that haven't migrated yet:
+ *   - app/dashboard/estimate/page.tsx
+ *   - lib/pdf.ts (fallback when Estimate.detailed is missing)
+ *   - lib/tiers.ts (buildTiers Good/Better/Best)
+ * Phase 4 will migrate those consumers and delete this function. Do not
+ * add new callers.
+ */
 export function buildDetailedEstimate(
   a: Assumptions,
   addOns: AddOn[],

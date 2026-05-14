@@ -270,6 +270,11 @@ function ridgeValleyHipSplit(sharedFt: number, complexity: Complexity): {
   };
 }
 
+/**
+ * @deprecated Replaced by computeFlashing (lib/roof-engine.ts) in Tier C.
+ * Only called by deriveRoofLengthsFromPolygons and deriveRoofLengthsHeuristic,
+ * both of which are also deprecated.
+ */
 function flashingFromComplexity(complexity: Complexity): {
   flashingLf: number;
   stepFlashingLf: number;
@@ -294,6 +299,11 @@ const PITCH_TO_DEG: Record<Pitch, number> = {
   "8/12+": 35.0,
 };
 
+/**
+ * @deprecated Tier C uses classifyEdges + flashing/totals from lib/roof-engine.ts.
+ * Kept for app/dashboard/estimate/page.tsx and lib/pricing.ts:buildDetailedEstimate
+ * (both Phase 4 migration targets). Do not add new callers.
+ */
 export function deriveRoofLengthsFromPolygons(opts: {
   polygons: Array<Array<{ lat: number; lng: number }>>;
   pitchDegrees: number;
@@ -324,6 +334,10 @@ export function deriveRoofLengthsFromPolygons(opts: {
 /**
  * When we don't have polygons (Solar API NOT_FOUND, no SAM yet), use a
  * footprint-aware heuristic. Less accurate; we label it "estimated" in UI.
+ *
+ * @deprecated Tier C uses classifyEdges + flashing/totals from lib/roof-engine.ts.
+ * Kept for app/dashboard/estimate/page.tsx and lib/pricing.ts:buildDetailedEstimate
+ * (both Phase 4 migration targets). Do not add new callers.
  */
 export function deriveRoofLengthsHeuristic(opts: {
   totalRoofSqft: number;
