@@ -76,6 +76,17 @@ export default function ConfirmHomePin({
 
   const hasApiKey = !!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
 
+  // Lock body scroll while the overlay is open. On mobile, accidental
+  // page scroll during a pin drag is jarring — we'd lose drag focus
+  // and the user has to re-grab the pin.
+  useEffect(() => {
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, []);
+
   // Build the map + draggable marker on mount. Skips when no API key.
   useEffect(() => {
     if (!hasApiKey) return;
@@ -93,6 +104,7 @@ export default function ConfirmHomePin({
         gestureHandling: "greedy", // allow single-finger pan on mobile
         clickableIcons: false,
         tilt: 0,
+        disableDoubleClickZoom: true,
       });
       mapInstanceRef.current = map;
 
