@@ -1601,6 +1601,7 @@ function HomePageInner() {
               void runEstimate(finalAddr);
             }}
             onCancel={() => {
+              console.log("[pin]", "pin_back", {});
               setPendingAddress(null);
               setAddress(null);
             }}
@@ -1872,7 +1873,10 @@ function HomePageInner() {
             <div className="mt-3 flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setPickingBuilding((p) => !p)}
+                onClick={() => {
+                  console.log("[pin]", "pin_fallback_button_used", {});
+                  setPickingBuilding((p) => !p);
+                }}
                 className="glass-button-secondary text-[12px] font-mono uppercase tracking-[0.14em]"
                 disabled={pickingLoading}
               >

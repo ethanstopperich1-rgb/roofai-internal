@@ -43,6 +43,37 @@ function animateMarker(
   tick();
 }
 
+type PinEvent =
+  | { type: "pin_confirm_shown"; address: string; geocodedLatLng: { lat: number; lng: number } }
+  | { type: "pin_smart_corrected"; geocodedLatLng: { lat: number; lng: number }; detectedLatLng: { lat: number; lng: number }; confidence: number; distanceM: number }
+  | { type: "pin_user_dragged"; from: { lat: number; lng: number }; to: { lat: number; lng: number }; distanceM: number }
+  | { type: "pin_confirmed"; finalLatLng: { lat: number; lng: number }; wasSmartCorrected: boolean; wasUserDragged: boolean; timeOnScreenMs: number }
+  | { type: "pin_back" };
+
+function logPinEvent(ev: PinEvent): void {
+  // Keeping this a console.log for now — the project doesn't have a
+  // dedicated analytics SDK yet. Sentry's breadcrumb collector picks
+  // up console output, so the event ends up in the same place as the
+  // existing roof-pipeline diagnostics.
+  console.log("[pin]", ev.type, ev);
+}
+
+function haversineM(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): number {
+  const R = 6_371_000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
 export interface ConfirmHomePinProps {
   /** Human-readable address shown above the map. */
   address: string;
@@ -64,6 +95,10 @@ export default function ConfirmHomePin({
   const markerRef = useRef<google.maps.Marker | null>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
   const [pinLatLng, setPinLatLng] = useState(geocodedLatLng);
+  const pinLatLngRef = useRef(pinLatLng);
+  useEffect(() => {
+    pinLatLngRef.current = pinLatLng;
+  });
   const [mapReady, setMapReady] = useState(false);
 
   // Smart auto-correction. While the user orients on the screen, ask
@@ -73,8 +108,23 @@ export default function ConfirmHomePin({
   // confirms before this returns, we discard the result silently.
   const [smartMoved, setSmartMoved] = useState(false);
   const userActedRef = useRef(false);
+  const userDraggedRef = useRef(false);
+  const mountedAtRef = useRef<number>(0);
+  useEffect(() => {
+    mountedAtRef.current = performance.now();
+  }, []);
 
   const hasApiKey = !!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
+
+  // Fire pin_confirm_shown once on mount
+  useEffect(() => {
+    logPinEvent({
+      type: "pin_confirm_shown",
+      address,
+      geocodedLatLng,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Lock body scroll while the overlay is open. On mobile, accidental
   // page scroll during a pin drag is jarring — we'd lose drag focus
@@ -136,11 +186,20 @@ export default function ConfirmHomePin({
       marker.addListener("dragend", () => {
         const pos = marker.getPosition();
         if (!pos) return;
-        setPinLatLng({ lat: pos.lat(), lng: pos.lng() });
+        const to = { lat: pos.lat(), lng: pos.lng() };
+        const from = pinLatLngRef.current;
+        logPinEvent({
+          type: "pin_user_dragged",
+          from,
+          to,
+          distanceM: haversineM(from, to),
+        });
+        setPinLatLng(to);
       });
 
       marker.addListener("dragstart", () => {
         userActedRef.current = true;
+        userDraggedRef.current = true;
       });
 
       setMapReady(true);
@@ -200,6 +259,13 @@ export default function ConfirmHomePin({
         // pan if needed.
         setPinLatLng({ lat: data.lat, lng: data.lng });
         setSmartMoved(true);
+        logPinEvent({
+          type: "pin_smart_corrected",
+          geocodedLatLng,
+          detectedLatLng: { lat: data.lat, lng: data.lng },
+          confidence: data.confidence,
+          distanceM: haversineM(geocodedLatLng, { lat: data.lat, lng: data.lng }),
+        });
       } catch {
         /* aborted or network error — silently fall through */
       }
@@ -210,8 +276,15 @@ export default function ConfirmHomePin({
 
   const handleConfirm = useCallback(() => {
     userActedRef.current = true;
+    logPinEvent({
+      type: "pin_confirmed",
+      finalLatLng: pinLatLng,
+      wasSmartCorrected: smartMoved,
+      wasUserDragged: userDraggedRef.current,
+      timeOnScreenMs: Math.round(performance.now() - mountedAtRef.current),
+    });
     onConfirm(pinLatLng);
-  }, [onConfirm, pinLatLng]);
+  }, [onConfirm, pinLatLng, smartMoved]);
 
   // No-key fallback rendered after all hooks so Rules of Hooks is satisfied.
   if (!hasApiKey) {
