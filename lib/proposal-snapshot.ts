@@ -58,6 +58,49 @@ export function summarizeProposalSnapshot(snapshot: Json | null): ProposalSummar
   };
   if (!isRecord(snapshot)) return empty;
 
+  // v2 saved-estimate shape: read from roofData / pricingInputs / priced.
+  if (snapshot.version === 2 && isRecord(snapshot.roofData)) {
+    const roofData = snapshot.roofData;
+    const totals = isRecord(roofData.totals) ? roofData.totals : {};
+    const pricingInputs = isRecord(snapshot.pricingInputs) ? snapshot.pricingInputs : {};
+    const addOnsRaw = Array.isArray(pricingInputs.addOns) ? pricingInputs.addOns : [];
+    const enabledAddOns = addOnsRaw.filter(
+      (a) => isRecord(a) && a.enabled === true,
+    ) as Array<Record<string, unknown>>;
+    const priced = isRecord(snapshot.priced) ? snapshot.priced : null;
+    const lineItems = priced && Array.isArray(priced.lineItems) ? priced.lineItems : [];
+    const photos = Array.isArray(snapshot.photos) ? snapshot.photos : [];
+
+    const pitchDeg = asNumber(totals.averagePitchDegrees);
+    const pitchLabel =
+      pitchDeg !== null && pitchDeg > 0
+        ? `${Math.round(Math.tan((pitchDeg * Math.PI) / 180) * 12 * 10) / 10}/12`
+        : null;
+
+    const totalLow = priced ? asNumber(priced.totalLow) : null;
+    const totalHigh = priced ? asNumber(priced.totalHigh) : null;
+
+    return {
+      material: asString(pricingInputs.material),
+      sqft: asNumber(totals.totalRoofAreaSqft),
+      pitch: pitchLabel,
+      addOnCount: enabledAddOns.length,
+      addOnLabels: enabledAddOns
+        .map((a) => asString(a.label))
+        .filter((s): s is string => s !== null)
+        .slice(0, 4),
+      lineItemCount: lineItems.length,
+      total: totalLow,
+      totalLow,
+      totalHigh,
+      isInsuranceClaim: snapshot.isInsuranceClaim === true,
+      hasPhotos: photos.length > 0,
+      photoCount: photos.length,
+      staff: asString(snapshot.staff),
+      notes: asString(snapshot.notes),
+    };
+  }
+
   const assumptions = isRecord(snapshot.assumptions) ? snapshot.assumptions : {};
   const addOnsRaw = Array.isArray(snapshot.addOns) ? snapshot.addOns : [];
   const enabledAddOns = addOnsRaw.filter(
