@@ -5,9 +5,13 @@ import {
   classifyEdges,
   computeFlashing,
   computeTotals,
+  makeDegradedRoofData,
+  priceRoofData,
   suggestedWastePctTierC,
 } from "@/lib/roof-engine";
-import type { Edge, Facet, RoofObject } from "@/types/roof";
+import type {
+  Edge, Facet, PricingInputs, RoofData, RoofObject,
+} from "@/types/roof";
 
 const tests: Array<{ name: string; run: () => void }> = [];
 function test(name: string, run: () => void) {
@@ -407,6 +411,123 @@ test("classifyEdges: ridge cap fires — only longest ridge passes; excess demot
   assert.ok(hips.length >= 1, "expected ridge cap to demote at least 1 to hip");
   // Total ridge + hip should equal shared count (no valleys since all parallel to axis)
   assert.equal(ridges.length + hips.length, 4);
+});
+
+// ---- priceRoofData + makeDegradedRoofData ---------------------------------
+
+const baselineInputs: PricingInputs = {
+  material: "asphalt-architectural",
+  materialMultiplier: 1.0,
+  laborMultiplier: 1.0,
+  serviceType: "reroof-tearoff",
+  addOns: [],
+};
+
+test("priceRoofData: degraded RoofData -> empty PricedEstimate", () => {
+  const degraded = makeDegradedRoofData({
+    address: { formatted: "x", lat: 0, lng: 0 },
+    attempts: [],
+  });
+  const result = priceRoofData(degraded, baselineInputs);
+  assert.equal(result.lineItems.length, 0);
+  assert.equal(result.totalLow, 0);
+});
+
+test("priceRoofData: 1-facet 1000 sqft roof produces non-zero total with shingle line item", () => {
+  const facet = emptyFacet("f1", [
+    { lat: 0, lng: 0 }, { lat: 0, lng: 0.001 },
+    { lat: 0.001, lng: 0.001 }, { lat: 0.001, lng: 0 },
+  ]);
+  facet.areaSqftSloped = 1000;
+  facet.areaSqftFootprint = 900;
+  facet.pitchDegrees = 22.6;
+  const data: RoofData = {
+    address: { formatted: "test", lat: 0, lng: 0 },
+    source: "tier-c-solar",
+    refinements: [], confidence: 0.85, imageryDate: null,
+    ageYearsEstimate: null, ageBucket: null,
+    facets: [facet], edges: [], objects: [],
+    flashing: {
+      chimneyLf: 0, skylightLf: 0, dormerStepLf: 0, wallStepLf: 0,
+      headwallLf: 0, apronLf: 0, valleyLf: 0, dripEdgeLf: 100,
+      pipeBootCount: 3, iwsSqft: 300,
+    },
+    totals: {
+      facetsCount: 1, edgesCount: 0, objectsCount: 0,
+      totalRoofAreaSqft: 1000, totalFootprintSqft: 900,
+      totalSquares: 10, averagePitchDegrees: 22.6,
+      wastePct: 11, complexity: "simple",
+      predominantMaterial: "asphalt-architectural",
+    },
+    diagnostics: { attempts: [], warnings: [], needsReview: [] },
+  };
+  const result = priceRoofData(data, baselineInputs);
+  assert.ok(result.totalLow > 0);
+  const shingle = result.lineItems.find((it) => it.code === "RFG ARCH");
+  assert.ok(shingle);
+  assert.ok(shingle.facetAttribution);
+  assert.equal(shingle.facetAttribution.length, 1);
+});
+
+test("priceRoofData: chimney + skylight + dormer flashing line items appear when LF > 0", () => {
+  const facet = emptyFacet("f1", []);
+  facet.areaSqftSloped = 1000;
+  const data: RoofData = {
+    address: { formatted: "test", lat: 0, lng: 0 },
+    source: "tier-c-solar",
+    refinements: [], confidence: 0.85, imageryDate: null,
+    ageYearsEstimate: null, ageBucket: null,
+    facets: [facet], edges: [], objects: [],
+    flashing: {
+      chimneyLf: 14, skylightLf: 24, dormerStepLf: 16,
+      wallStepLf: 0, headwallLf: 0, apronLf: 0,
+      valleyLf: 0, dripEdgeLf: 0, pipeBootCount: 0, iwsSqft: 0,
+    },
+    totals: {
+      facetsCount: 1, edgesCount: 0, objectsCount: 0,
+      totalRoofAreaSqft: 1000, totalFootprintSqft: 900,
+      totalSquares: 10, averagePitchDegrees: 22.6,
+      wastePct: 11, complexity: "simple",
+      predominantMaterial: "asphalt-architectural",
+    },
+    diagnostics: { attempts: [], warnings: [], needsReview: [] },
+  };
+  const result = priceRoofData(data, baselineInputs);
+  assert.ok(result.lineItems.find((it) => it.code === "FLASH CHIM"));
+  assert.ok(result.lineItems.find((it) => it.code === "FLASH SKY"));
+  assert.ok(result.lineItems.find((it) => it.code === "FLASH DRMR"));
+});
+
+test("priceRoofData: per-facet attribution sums to shingle extended", () => {
+  const f1 = emptyFacet("f1", []);
+  f1.areaSqftSloped = 600; f1.pitchDegrees = 22.6;
+  const f2 = emptyFacet("f2", []);
+  f2.areaSqftSloped = 400; f2.pitchDegrees = 35;
+  const data: RoofData = {
+    address: { formatted: "test", lat: 0, lng: 0 },
+    source: "tier-c-solar",
+    refinements: [], confidence: 0.85, imageryDate: null,
+    ageYearsEstimate: null, ageBucket: null,
+    facets: [f1, f2], edges: [], objects: [],
+    flashing: {
+      chimneyLf: 0, skylightLf: 0, dormerStepLf: 0, wallStepLf: 0,
+      headwallLf: 0, apronLf: 0, valleyLf: 0, dripEdgeLf: 0,
+      pipeBootCount: 0, iwsSqft: 0,
+    },
+    totals: {
+      facetsCount: 2, edgesCount: 0, objectsCount: 0,
+      totalRoofAreaSqft: 1000, totalFootprintSqft: 900,
+      totalSquares: 10, averagePitchDegrees: 27.6,
+      wastePct: 11, complexity: "simple",
+      predominantMaterial: "asphalt-architectural",
+    },
+    diagnostics: { attempts: [], warnings: [], needsReview: [] },
+  };
+  const result = priceRoofData(data, baselineInputs);
+  const shingle = result.lineItems.find((it) => it.code === "RFG ARCH")!;
+  const sumAttribLow = shingle.facetAttribution!.reduce((s, a) => s + a.extendedLow, 0);
+  // Allow 5¢ rounding tolerance
+  assert.ok(Math.abs(sumAttribLow - shingle.extendedLow) < 0.05);
 });
 
 // ---- runner ---------------------------------------------------------------

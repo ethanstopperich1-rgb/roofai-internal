@@ -1,7 +1,13 @@
 // lib/roof-engine.ts
 import type {
-  ComplexityTier, Edge, Facet, FlashingBreakdown, Material, RoofObject, RoofTotals,
+  ComplexityTier, Edge, Facet, FacetAttribution, FlashingBreakdown,
+  LineItem, LineItemCategory, LineItemUnit, Material, PricedEstimate,
+  PricingInputs, RoofData, RoofDiagnostics, RoofObject, RoofTotals,
+  SimplifiedItem,
 } from "@/types/roof";
+import {
+  BRAND_CONFIG, getMaterialPrice, type MaterialPriceKey,
+} from "@/lib/branding";
 
 /**
  * Compute flashing line items from facets + edges + objects.
@@ -463,4 +469,470 @@ export function classifyEdges(
     });
   }
   return result;
+}
+
+// ---- Pricing engine (Tier C) -----------------------------------------------
+
+export function makeDegradedRoofData(opts: {
+  address: RoofData["address"];
+  attempts: RoofDiagnostics["attempts"];
+}): RoofData {
+  return {
+    address: opts.address,
+    source: "none",
+    refinements: [],
+    confidence: 0,
+    imageryDate: null,
+    ageYearsEstimate: null,
+    ageBucket: null,
+    facets: [],
+    edges: [],
+    objects: [],
+    flashing: {
+      chimneyLf: 0, skylightLf: 0, dormerStepLf: 0, wallStepLf: 0,
+      headwallLf: 0, apronLf: 0, valleyLf: 0, dripEdgeLf: 0,
+      pipeBootCount: 0, iwsSqft: 0,
+    },
+    totals: {
+      facetsCount: 0, edgesCount: 0, objectsCount: 0,
+      totalRoofAreaSqft: 0, totalFootprintSqft: 0, totalSquares: 0,
+      averagePitchDegrees: 0, wastePct: 11, complexity: "moderate",
+      predominantMaterial: null,
+    },
+    diagnostics: {
+      attempts: opts.attempts,
+      warnings: ["We couldn't analyze this address — no source had coverage."],
+      needsReview: [],
+    },
+  };
+}
+
+const UNDERLAYMENT_WASTE_FACTOR = 1.1;
+
+const SHINGLE_KEY: Record<Material, MaterialPriceKey> = {
+  "asphalt-3tab": "RFG_3T",
+  "asphalt-architectural": "RFG_ARCH",
+  "metal-standing-seam": "RFG_METAL",
+  "tile-concrete": "RFG_TILE",
+  // Tier C: no Xactimate codes for these yet — fall back to ARCH pricing
+  // until specific codes are added. They're rare in FL; reps override
+  // material before save.
+  "wood-shake": "RFG_ARCH",
+  "flat-membrane": "RFG_ARCH",
+};
+
+const SHINGLE_CODE: Record<Material, string> = {
+  "asphalt-3tab": "RFG 3T",
+  "asphalt-architectural": "RFG ARCH",
+  "metal-standing-seam": "RFG METAL",
+  "tile-concrete": "RFG TILE",
+  "wood-shake": "RFG WOOD",
+  "flat-membrane": "RFG MEMBRANE",
+};
+
+const SHINGLE_LABEL: Record<Material, string> = {
+  "asphalt-3tab": "3-tab composition shingle",
+  "asphalt-architectural": "Architectural composition shingle",
+  "metal-standing-seam": "Standing-seam metal",
+  "tile-concrete": "Concrete / clay tile",
+  "wood-shake": "Wood shake",
+  "flat-membrane": "Flat membrane",
+};
+
+function steepChargeMultiplier(pitchDegrees: number): number {
+  if (pitchDegrees < 33.7) return 0;   // < ~8/12
+  if (pitchDegrees < 39.8) return 0.25; // 8-10/12
+  return 0.35;                          // > 10/12
+}
+
+function complexityMultiplier(c: ComplexityTier): number {
+  if (c === "simple") return 1.0;
+  if (c === "moderate") return 1.1;
+  return 1.25;
+}
+
+const SIMPLIFIED_GROUPS: Array<{ name: string; codes: string[] }> = [
+  { name: "Materials & shingles", codes: ["RFG ARCH", "RFG 3T", "RFG METAL", "RFG TILE", "RFG WOOD", "RFG MEMBRANE", "RFG STARTER", "RFG RIDG"] },
+  { name: "Underlayment & weatherproofing", codes: ["RFG SYNF", "RFG IWS"] },
+  { name: "Flashing & metal", codes: ["RFG DRIP", "RFG VAL", "RFG PIPEFL", "FLASH CHIM", "FLASH SKY", "FLASH DRMR"] },
+  { name: "Tear-off & disposal", codes: ["RFG SHGLR", "RFG DEPSTL"] },
+  { name: "Decking repair (allowance)", codes: ["RFG DECK"] },
+  { name: "Ventilation", codes: ["RFG RDGV"] },
+  { name: "Add-ons & upgrades", codes: ["ADDON"] },
+  { name: "Labor adjustments", codes: ["RFG STP", "COMPLEXITY"] },
+  { name: "Overhead & profit", codes: ["O&P"] },
+];
+
+function makeFlatItem(args: {
+  code: string;
+  description: string;
+  friendlyName: string;
+  quantity: number;
+  unit: LineItemUnit;
+  unitCostLow: number;
+  unitCostHigh: number;
+  category: LineItemCategory;
+}): LineItem {
+  const q = Math.max(0, args.quantity);
+  return {
+    code: args.code,
+    description: args.description,
+    friendlyName: args.friendlyName,
+    quantity: Math.round(q * 100) / 100,
+    unit: args.unit,
+    unitCostLow: args.unitCostLow,
+    unitCostHigh: args.unitCostHigh,
+    extendedLow: Math.round(q * args.unitCostLow * 100) / 100,
+    extendedHigh: Math.round(q * args.unitCostHigh * 100) / 100,
+    category: args.category,
+  };
+}
+
+export function priceRoofData(data: RoofData, inputs: PricingInputs): PricedEstimate {
+  // Degraded RoofData → empty PricedEstimate
+  if (data.source === "none" || data.facets.length === 0) {
+    return {
+      lineItems: [], simplifiedItems: [],
+      subtotalLow: 0, subtotalHigh: 0,
+      overheadProfit: { low: 0, high: 0 },
+      totalLow: 0, totalHigh: 0,
+      squares: 0, hasPerFacetDetail: false,
+    };
+  }
+
+  const items: LineItem[] = [];
+  const totalSqft = data.totals.totalRoofAreaSqft;
+  const totalSquares = totalSqft / 100;
+  const wastePct = inputs.wasteOverridePct ?? data.totals.wastePct;
+  const wasteFactor = 1 + wastePct / 100;
+
+  // ---- Tear-off ----------------------------------------------------------
+  const tearoffMultiplier =
+    inputs.serviceType === "new" ? 0 :
+    inputs.serviceType === "layover" ? 0 :
+    inputs.serviceType === "repair" ? 0.25 : 1;
+  if (tearoffMultiplier > 0) {
+    const t = getMaterialPrice("RFG_SHGLR");
+    items.push(makeFlatItem({
+      code: "RFG SHGLR",
+      description: "Tear off composition shingles",
+      friendlyName: "Remove old shingles",
+      quantity: totalSquares * tearoffMultiplier,
+      unit: "SQ",
+      unitCostLow: t.low, unitCostHigh: t.high,
+      category: "tearoff",
+    }));
+    const d = getMaterialPrice("RFG_DEPSTL");
+    items.push(makeFlatItem({
+      code: "RFG DEPSTL",
+      description: "Disposal / dump fee",
+      friendlyName: "Disposal & dumpster",
+      quantity: totalSquares * tearoffMultiplier,
+      unit: "SQ",
+      unitCostLow: d.low, unitCostHigh: d.high,
+      category: "tearoff",
+    }));
+  }
+
+  // ---- Decking allowance -------------------------------------------------
+  if (inputs.serviceType === "reroof-tearoff" || inputs.serviceType === "new") {
+    const dk = getMaterialPrice("RFG_DECK");
+    items.push(makeFlatItem({
+      code: "RFG DECK",
+      description: "Sheathing replacement allowance",
+      friendlyName: "Decking repair (10% allowance)",
+      quantity: totalSqft * 0.1,
+      unit: "SF",
+      unitCostLow: dk.low, unitCostHigh: dk.high,
+      category: "decking",
+    }));
+  }
+
+  // ---- Underlayment ------------------------------------------------------
+  if (inputs.serviceType !== "repair") {
+    const u = getMaterialPrice("RFG_SYNF");
+    items.push(makeFlatItem({
+      code: "RFG SYNF",
+      description: "Synthetic underlayment",
+      friendlyName: "Synthetic underlayment",
+      quantity: totalSquares * UNDERLAYMENT_WASTE_FACTOR,
+      unit: "SQ",
+      unitCostLow: u.low, unitCostHigh: u.high,
+      category: "underlayment",
+    }));
+  }
+
+  // ---- IWS ---------------------------------------------------------------
+  if (data.flashing.iwsSqft > 0 && inputs.serviceType !== "repair") {
+    const iws = getMaterialPrice("RFG_IWS");
+    items.push(makeFlatItem({
+      code: "RFG IWS",
+      description: "Ice & water shield (eaves + valleys)",
+      friendlyName: "Ice & water shield (eaves + valleys)",
+      quantity: data.flashing.iwsSqft / 100,
+      unit: "SQ",
+      unitCostLow: iws.low, unitCostHigh: iws.high,
+      category: "underlayment",
+    }));
+  }
+
+  // ---- Drip edge ---------------------------------------------------------
+  if (data.flashing.dripEdgeLf > 0 && inputs.serviceType !== "repair") {
+    const dr = getMaterialPrice("RFG_DRIP");
+    items.push(makeFlatItem({
+      code: "RFG DRIP",
+      description: "Drip edge",
+      friendlyName: "Drip edge",
+      quantity: data.flashing.dripEdgeLf,
+      unit: "LF",
+      unitCostLow: dr.low, unitCostHigh: dr.high,
+      category: "flashing",
+    }));
+  }
+
+  // ---- Valley metal ------------------------------------------------------
+  if (data.flashing.valleyLf > 0 && inputs.serviceType !== "repair") {
+    const v = getMaterialPrice("RFG_VAL");
+    items.push(makeFlatItem({
+      code: "RFG VAL",
+      description: "Valley metal",
+      friendlyName: "Valley metal",
+      quantity: data.flashing.valleyLf,
+      unit: "LF",
+      unitCostLow: v.low, unitCostHigh: v.high,
+      category: "flashing",
+    }));
+  }
+
+  // ---- Chimney / skylight / dormer-step flashing (NEW in Tier C) ---------
+  // Per-feature LF, replacing the legacy 3-row constant table.
+  // RFG_FLASH isn't yet a branding key, so fall back to RFG_DRIP per-LF rate
+  // (the closest existing flashing-metal material).
+  const flashKey: MaterialPriceKey = "RFG_DRIP";
+  if (data.flashing.chimneyLf > 0 && inputs.serviceType !== "repair") {
+    const f = getMaterialPrice(flashKey);
+    items.push(makeFlatItem({
+      code: "FLASH CHIM",
+      description: "Chimney flashing kit (counter + step)",
+      friendlyName: "Chimney flashing",
+      quantity: data.flashing.chimneyLf,
+      unit: "LF",
+      unitCostLow: f.low, unitCostHigh: f.high,
+      category: "flashing",
+    }));
+  }
+  if (data.flashing.skylightLf > 0 && inputs.serviceType !== "repair") {
+    const f = getMaterialPrice(flashKey);
+    items.push(makeFlatItem({
+      code: "FLASH SKY",
+      description: "Skylight flashing kit",
+      friendlyName: "Skylight flashing",
+      quantity: data.flashing.skylightLf,
+      unit: "LF",
+      unitCostLow: f.low, unitCostHigh: f.high,
+      category: "flashing",
+    }));
+  }
+  if (data.flashing.dormerStepLf > 0 && inputs.serviceType !== "repair") {
+    const f = getMaterialPrice(flashKey);
+    items.push(makeFlatItem({
+      code: "FLASH DRMR",
+      description: "Dormer step flashing",
+      friendlyName: "Dormer step flashing",
+      quantity: data.flashing.dormerStepLf,
+      unit: "LF",
+      unitCostLow: f.low, unitCostHigh: f.high,
+      category: "flashing",
+    }));
+  }
+
+  // ---- Shingles (per-facet pricing) --------------------------------------
+  const sh = getMaterialPrice(SHINGLE_KEY[inputs.material]);
+  const facetAttribution: FacetAttribution[] = [];
+  let shingleQty = 0;
+  let shingleExtLow = 0;
+  let shingleExtHigh = 0;
+  for (const facet of data.facets) {
+    const facetSquares = (facet.areaSqftSloped / 100) *
+      (inputs.serviceType === "repair" ? 0.15 : wasteFactor);
+    const facetSteep = 1 + steepChargeMultiplier(facet.pitchDegrees);
+    const unitLow = sh.low * inputs.materialMultiplier * facetSteep;
+    const unitHigh = sh.high * inputs.materialMultiplier * facetSteep;
+    const extLow = facetSquares * unitLow;
+    const extHigh = facetSquares * unitHigh;
+    facetAttribution.push({
+      facetId: facet.id,
+      areaSqftSloped: facet.areaSqftSloped,
+      pitchDegrees: facet.pitchDegrees,
+      extendedLow: Math.round(extLow * 100) / 100,
+      extendedHigh: Math.round(extHigh * 100) / 100,
+    });
+    shingleQty += facetSquares;
+    shingleExtLow += extLow;
+    shingleExtHigh += extHigh;
+  }
+  items.push({
+    code: SHINGLE_CODE[inputs.material],
+    description: SHINGLE_LABEL[inputs.material],
+    friendlyName: SHINGLE_LABEL[inputs.material],
+    quantity: Math.round(shingleQty * 100) / 100,
+    unit: "SQ",
+    unitCostLow: sh.low * inputs.materialMultiplier,
+    unitCostHigh: sh.high * inputs.materialMultiplier,
+    extendedLow: Math.round(shingleExtLow * 100) / 100,
+    extendedHigh: Math.round(shingleExtHigh * 100) / 100,
+    category: "shingles",
+    facetAttribution,
+  });
+
+  // ---- Starter strip -----------------------------------------------------
+  if (data.flashing.dripEdgeLf > 0 && inputs.serviceType !== "repair") {
+    const st = getMaterialPrice("RFG_STARTER");
+    items.push(makeFlatItem({
+      code: "RFG STARTER",
+      description: "Starter strip",
+      friendlyName: "Starter strip (eaves)",
+      quantity: data.flashing.dripEdgeLf,
+      unit: "LF",
+      unitCostLow: st.low, unitCostHigh: st.high,
+      category: "shingles",
+    }));
+  }
+
+  // ---- Ridge / hip cap ---------------------------------------------------
+  const ridgeHipLf = data.edges
+    .filter((e) => e.type === "ridge" || e.type === "hip")
+    .reduce((s, e) => s + e.lengthFt, 0);
+  if (ridgeHipLf > 0) {
+    const rd = getMaterialPrice("RFG_RIDG");
+    items.push(makeFlatItem({
+      code: "RFG RIDG",
+      description: "Ridge / hip cap",
+      friendlyName: "Ridge & hip caps",
+      quantity: ridgeHipLf,
+      unit: "LF",
+      unitCostLow: rd.low, unitCostHigh: rd.high,
+      category: "shingles",
+    }));
+  }
+
+  // ---- Pipe boots --------------------------------------------------------
+  if (inputs.serviceType !== "repair" && data.flashing.pipeBootCount > 0) {
+    const pf = getMaterialPrice("RFG_PIPEFL");
+    items.push(makeFlatItem({
+      code: "RFG PIPEFL",
+      description: "Pipe jack / flashing",
+      friendlyName: "Pipe flashings",
+      quantity: data.flashing.pipeBootCount,
+      unit: "EA",
+      unitCostLow: pf.low, unitCostHigh: pf.high,
+      category: "flashing",
+    }));
+  }
+
+  // ---- Add-ons -----------------------------------------------------------
+  for (const a of inputs.addOns.filter((a) => a.enabled)) {
+    items.push({
+      code: "ADDON",
+      description: a.label,
+      friendlyName: a.label,
+      quantity: 1, unit: "EA",
+      unitCostLow: a.price, unitCostHigh: a.price,
+      extendedLow: a.price, extendedHigh: a.price,
+      category: "addons",
+    });
+  }
+
+  // ---- Labor adjustments (steep + complexity over 35% of subtotal) -------
+  const baseSubLow = items.reduce((s, it) => s + it.extendedLow, 0);
+  const baseSubHigh = items.reduce((s, it) => s + it.extendedHigh, 0);
+  const laborLow = baseSubLow * 0.35 * inputs.laborMultiplier;
+  const laborHigh = baseSubHigh * 0.35 * inputs.laborMultiplier;
+
+  // Steep charge: area-weighted across facets
+  const totalArea = data.facets.reduce((s, f) => s + f.areaSqftSloped, 0);
+  const weightedSteep = totalArea > 0
+    ? data.facets.reduce(
+        (s, f) => s + steepChargeMultiplier(f.pitchDegrees) * f.areaSqftSloped,
+        0,
+      ) / totalArea
+    : 0;
+  if (weightedSteep > 0) {
+    const low = laborLow * weightedSteep;
+    const high = laborHigh * weightedSteep;
+    items.push({
+      code: "RFG STP",
+      description: "Steep roof charge (continuous pitch surcharge)",
+      friendlyName: `Steep-pitch labor surcharge (+${Math.round(weightedSteep * 100)}%)`,
+      quantity: 1, unit: "%",
+      unitCostLow: low, unitCostHigh: high,
+      extendedLow: Math.round(low * 100) / 100,
+      extendedHigh: Math.round(high * 100) / 100,
+      category: "labor",
+    });
+  }
+
+  const complexityMult = complexityMultiplier(data.totals.complexity);
+  if (complexityMult > 1) {
+    const extra = complexityMult - 1;
+    const low = laborLow * extra;
+    const high = laborHigh * extra;
+    items.push({
+      code: "COMPLEXITY",
+      description: "Cut-up roof / complexity adjustment",
+      friendlyName: `Cut-up roof adjustment (+${Math.round(extra * 100)}%)`,
+      quantity: 1, unit: "%",
+      unitCostLow: low, unitCostHigh: high,
+      extendedLow: Math.round(low * 100) / 100,
+      extendedHigh: Math.round(high * 100) / 100,
+      category: "labor",
+    });
+  }
+
+  // ---- O&P ---------------------------------------------------------------
+  const subLow = items.reduce((s, it) => s + it.extendedLow, 0);
+  const subHigh = items.reduce((s, it) => s + it.extendedHigh, 0);
+  const opPct =
+    (BRAND_CONFIG.defaultMarkup.overheadPercent +
+      BRAND_CONFIG.defaultMarkup.profitPercent) / 100;
+  const opLow = subLow * opPct;
+  const opHigh = subHigh * opPct;
+  items.push({
+    code: "O&P",
+    description: "Overhead & profit",
+    friendlyName: `Overhead & profit (${Math.round(opPct * 100)}%)`,
+    quantity: 1, unit: "%",
+    unitCostLow: opLow, unitCostHigh: opHigh,
+    extendedLow: Math.round(opLow * 100) / 100,
+    extendedHigh: Math.round(opHigh * 100) / 100,
+    category: "op",
+  });
+
+  const totalLow = subLow + opLow;
+  const totalHigh = subHigh + opHigh;
+
+  const simplifiedItems: SimplifiedItem[] = SIMPLIFIED_GROUPS.map((g) => {
+    const matching = items.filter((it) => g.codes.includes(it.code));
+    return {
+      group: g.name,
+      totalLow: Math.round(matching.reduce((s, it) => s + it.extendedLow, 0) * 100) / 100,
+      totalHigh: Math.round(matching.reduce((s, it) => s + it.extendedHigh, 0) * 100) / 100,
+      codes: matching.map((it) => it.code),
+    };
+  }).filter((g) => g.totalLow > 0 || g.totalHigh > 0);
+
+  return {
+    lineItems: items,
+    simplifiedItems,
+    subtotalLow: Math.round(subLow * 100) / 100,
+    subtotalHigh: Math.round(subHigh * 100) / 100,
+    overheadProfit: {
+      low: Math.round(opLow * 100) / 100,
+      high: Math.round(opHigh * 100) / 100,
+    },
+    totalLow: Math.round(totalLow * 100) / 100,
+    totalHigh: Math.round(totalHigh * 100) / 100,
+    squares: Math.round((totalSqft / 100) * 100) / 100,
+    hasPerFacetDetail: data.facets.length >= 2,
+  };
 }
