@@ -81,8 +81,14 @@ def check_3dep_coverage(*, lat: float, lng: float) -> dict[str, Any]:
     if not items:
         return _no_coverage()
 
-    # Each item has downloadURL + publicationDate. Filter to LAZ/LAS
-    # only (TNM occasionally returns related artefacts).
+    # TNM returns up to 4 tiles that overlap our query bbox. Each tile
+    # is ~1500m × 1500m, query bbox is 500m × 500m, so most queries
+    # return 2-4 tiles even when only ONE strictly contains the
+    # parcel point. The first tile in the response is alphabetical
+    # (not spatial relevance), so we MUST filter to the tile whose
+    # boundingBox actually contains (lat, lng). Falling back to
+    # closest-center if no exact match (defensive — TNM bbox metadata
+    # has occasional off-by-one issues at tile edges).
     tiles: list[dict[str, Any]] = []
     for item in items:
         url = item.get("downloadURL")
@@ -91,15 +97,40 @@ def check_3dep_coverage(*, lat: float, lng: float) -> dict[str, Any]:
             continue
         if fmt not in ("LAZ", "LAS"):
             continue
+        bb = item.get("boundingBox") or {}
+        try:
+            min_x = float(bb.get("minX", 0.0))
+            max_x = float(bb.get("maxX", 0.0))
+            min_y = float(bb.get("minY", 0.0))
+            max_y = float(bb.get("maxY", 0.0))
+        except (TypeError, ValueError):
+            min_x = max_x = min_y = max_y = 0.0
+        contains_parcel = (min_x <= lng <= max_x) and (min_y <= lat <= max_y)
+        center_dist = (
+            ((min_x + max_x) / 2 - lng) ** 2 +
+            ((min_y + max_y) / 2 - lat) ** 2
+        ) ** 0.5
         tiles.append({
             "url": url,
             "publicationDate": item.get("publicationDate"),
             "title": item.get("title"),
             "sizeInBytes": item.get("sizeInBytes"),
+            "contains_parcel": contains_parcel,
+            "center_dist": center_dist,
         })
 
     if not tiles:
         return _no_coverage()
+
+    # Prefer tiles that strictly contain the parcel; fall back to the
+    # tile whose center is closest to the parcel. Returns sorted list
+    # so tile_ids[:1] in pull_lidar gets the right one.
+    tiles.sort(key=lambda t: (not t["contains_parcel"], t["center_dist"]))
+    if not tiles[0]["contains_parcel"]:
+        log.warning(
+            "no tile strictly contains parcel (%.6f, %.6f); using nearest-center fallback: %s",
+            lat, lng, tiles[0]["title"],
+        )
 
     capture_date = max(
         (t["publicationDate"] for t in tiles if t.get("publicationDate")),
