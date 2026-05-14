@@ -29,9 +29,18 @@ export async function POST(req: Request) {
   const __rl = await rateLimit(req, "expensive");
   if (__rl) return __rl;
 
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.warn("[find-residence] ANTHROPIC_API_KEY not set");
+    return NextResponse.json(
+      { lat: null, lng: null, confidence: 0, reasoning: "no_anthropic_key" },
+      { status: 200 },
+    );
+  }
+
   const googleKey =
     process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
   if (!googleKey) {
+    console.warn("[find-residence] no Google Maps key configured");
     return NextResponse.json(
       { lat: null, lng: null, confidence: 0, reasoning: "no_google_key" },
       { status: 200 },
