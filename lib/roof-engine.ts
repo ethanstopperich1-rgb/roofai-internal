@@ -129,8 +129,24 @@ export function computeUnionConvexity(facets: Facet[]): number {
     hullArea += a.x * b.y - b.x * a.y;
   }
   hullArea = Math.abs(hullArea) / 2;
-  return hullArea > 0 ? polyArea / hullArea : 1;
+  // polyArea is sum-of-facet-areas, not the true union area. If facets
+  // overlap in footprint, the ratio can exceed 1; clamp to keep the
+  // metric in its documented [0, 1] range.
+  return hullArea > 0 ? Math.min(1, polyArea / hullArea) : 1;
 }
+
+/** Tier C complexity-classifier thresholds. Mirrors the v1 heuristic so
+ *  estimates don't shift on existing addresses just because the data path
+ *  changed. Tier B/A replaces this with continuous signals. */
+const TIER_C_COMPLEXITY_THRESHOLDS = {
+  reflexConvexity: 0.78,
+  complexFacetCount: 6,
+  complexDormerCount: 3,
+  complexValleyLf: 60,
+  moderateFacetCount: 3,
+  moderateDormerCount: 1,
+  moderateValleyLf: 20,
+} as const;
 
 /**
  * Tier C complexity classifier — facet count + dormer count + valley LF +
@@ -141,17 +157,27 @@ export function classifyComplexity(input: {
   edges: Edge[];
   objects: RoofObject[];
 }): ComplexityTier {
+  const T = TIER_C_COMPLEXITY_THRESHOLDS;
   const facetCount = input.facets.length;
   const dormerCount = input.objects.filter((o) => o.kind === "dormer").length;
   const valleyLf = input.edges
     .filter((e) => e.type === "valley")
     .reduce((s, e) => s + e.lengthFt, 0);
-  const hasReflex = computeUnionConvexity(input.facets) < 0.78;
+  const hasReflex = computeUnionConvexity(input.facets) < T.reflexConvexity;
 
-  if (facetCount >= 6 || hasReflex || dormerCount >= 3 || valleyLf >= 60) {
+  if (
+    facetCount >= T.complexFacetCount ||
+    hasReflex ||
+    dormerCount >= T.complexDormerCount ||
+    valleyLf >= T.complexValleyLf
+  ) {
     return "complex";
   }
-  if (facetCount >= 3 || dormerCount >= 1 || valleyLf >= 20) {
+  if (
+    facetCount >= T.moderateFacetCount ||
+    dormerCount >= T.moderateDormerCount ||
+    valleyLf >= T.moderateValleyLf
+  ) {
     return "moderate";
   }
   return "simple";
