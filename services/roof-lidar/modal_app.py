@@ -47,7 +47,11 @@ image = (
         "libpng-dev",
     )
     .pip_install_from_requirements("requirements.txt")
-    .copy_local_dir(".", "/app")
+    # Modal 1.0+ renamed copy_local_dir → add_local_dir. The new method
+    # defaults to runtime mount (faster iteration); we pass copy=True
+    # so the .py files land in the image layer and subsequent FastAPI
+    # imports / @app.function decorators see them at build time.
+    .add_local_dir(".", "/app", copy=True)
     .workdir("/app")
 )
 
