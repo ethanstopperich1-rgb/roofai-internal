@@ -59,7 +59,19 @@ import type {
   Estimate,
   RoofVision,
   SolarSummary,
+  DetailedEstimate,
 } from "@/types/estimate";
+import type {
+  RoofData,
+  PricingInputs,
+  PricedEstimate,
+  EstimateV2,
+} from "@/types/roof";
+import { priceRoofData } from "@/lib/roof-engine";
+import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
+import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
+import { FacetList } from "@/components/roof/FacetList";
+import { saveEstimateV2 } from "@/lib/storage";
 import {
   DEFAULT_ADDONS,
   buildDetailedEstimate,
@@ -153,6 +165,12 @@ function HomePageInner() {
   const [vision, setVision] = useState<RoofVision | null>(null);
   const [visionLoading, setVisionLoading] = useState(false);
   const [visionError, setVisionError] = useState<string>("");
+  // Tier C unified pipeline result. Replaces the parallel solar/vision/
+  // OSM/SAM3 orchestration with a single canonical RoofData feed. See
+  // lib/roof-pipeline.ts + /api/roof-pipeline.
+  const [roofData, setRoofData] = useState<RoofData | null>(null);
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [photos, setPhotos] = useState<PhotoMeta[]>([]);
   const [claim, setClaim] = useState<ClaimContext>({ carrier: "state-farm" });
@@ -1205,6 +1223,32 @@ function HomePageInner() {
     setPendingAddress(addr);
   };
 
+  /** Tier C unified pipeline call. Replaces the legacy parallel
+   *  Solar/Vision/OSM/MSBuildings/SAM3 fan-out — one fetch, one
+   *  canonical RoofData feed for everything downstream. */
+  const runRoofPipelineFetch = async (addr: AddressInfo) => {
+    if (addr.lat == null || addr.lng == null) return;
+    setPipelineLoading(true);
+    setPipelineError(null);
+    try {
+      const nocacheSuffix = sam3NoCacheSuffix; // "&nocache=1" or ""
+      const res = await fetch(
+        `/api/roof-pipeline?lat=${addr.lat}&lng=${addr.lng}` +
+          `&address=${encodeURIComponent(addr.formatted)}` +
+          nocacheSuffix,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(`pipeline ${res.status}`);
+      const data = (await res.json()) as RoofData;
+      setRoofData(data);
+    } catch (err) {
+      setPipelineError(err instanceof Error ? err.message : String(err));
+      setRoofData(null);
+    } finally {
+      setPipelineLoading(false);
+    }
+  };
+
   const runEstimate = async (explicitAddr?: AddressInfo) => {
     // Accept an explicit address from the autocomplete pick so we don't
     // race with React state. Falls back to current state for the
@@ -1226,6 +1270,9 @@ function HomePageInner() {
     setLivePolygons(null);
     hasUserEditedRef.current = false;
     editOriginIsWallFootprintRef.current = false;
+    // Reset pipeline state on every address change.
+    setRoofData(null);
+    setPipelineError(null);
 
     if (addr.lat == null || addr.lng == null) {
       setAssumptions((a) => ({
@@ -1235,6 +1282,10 @@ function HomePageInner() {
       }));
       return;
     }
+
+    // Fire the unified Tier C pipeline. It serially tries Solar → Vision
+    // sources and returns a single RoofData. Cached for 1h server-side.
+    void runRoofPipelineFetch(addr);
 
     setVisionLoading(true);
     const solarPromise = fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`)
