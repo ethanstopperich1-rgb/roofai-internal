@@ -290,7 +290,13 @@ export default function ConfirmHomePin({
       }
     })();
     return () => ctrl.abort();
+    // We deliberately depend on geocodedLatLng.lat/.lng (primitives) rather
+    // than the geocodedLatLng object itself — the parent passes a fresh
+    // object literal on every render, so depending on the object would
+    // make this effect re-fire and re-hit /api/find-residence on every
+    // parent rerender. The primitive lat/lng are the stable signals.
     // hasApiKey is a compile-time constant (Next.js env inline) — safe to include
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, geocodedLatLng.lat, geocodedLatLng.lng, address, hasApiKey]);
 
   const handleConfirm = useCallback(() => {
