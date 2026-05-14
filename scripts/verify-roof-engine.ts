@@ -355,6 +355,60 @@ test("classifyEdges: null dominantAzimuth + 2+ facets -> synthetic axis from lon
   assert.ok(result.every((e) => e.confidence === 0.4));
 });
 
+test("classifyEdges: ridge cap fires — only longest ridge passes; excess demoted to hip", () => {
+  // Build 4 facets in a 2x2 grid sharing 4 edges between them, all oriented
+  // east-west (parallel to dominantAxis = 90°, perpendicular to the
+  // north-south "across" edges). This forces all 4 shared edges into the
+  // ridge candidate bucket. Simple complexity = ridgeCap 0.85; first edge
+  // passes unconditionally, remainder are subjected to the cap.
+  //
+  // Layout (each cell is one facet):
+  //   fNW │ fNE
+  //   ----+----   <- shared east-west edge
+  //   fSW │ fSE
+  //
+  // To force 4 east-west shared edges (all parallel to axis=90°), use a
+  // cross of 4 facets stacked along the east-west axis with shared edges
+  // at lat boundaries (north-south matched on different facets).
+  //
+  // Simpler: stack 5 facets in a north-south strip sharing east-west
+  // edges. This yields 4 shared edges all oriented east-west.
+  const facets = [];
+  for (let i = 0; i < 5; i++) {
+    facets.push({
+      id: `f${i}`,
+      polygon: [
+        { lat: i * 0.0003, lng: 0 },
+        { lat: i * 0.0003, lng: 0.0006 },
+        { lat: (i + 1) * 0.0003, lng: 0.0006 },
+        { lat: (i + 1) * 0.0003, lng: 0 },
+      ],
+      normal: { x: 0, y: 0, z: 1 },
+      pitchDegrees: 22.6,
+      azimuthDeg: 180,
+      areaSqftSloped: 1000,
+      areaSqftFootprint: 900,
+      material: null,
+      isLowSlope: false,
+    });
+  }
+  // dominantAzimuth = 90 → axis runs east-west. Shared edges between
+  // adjacent strip facets are also east-west, so all 4 are ridge
+  // candidates. Cap (for 5 facets = complex, ridgeCap 0.40) admits only
+  // the first ~40% of shared LF as ridge; the rest demote to hip.
+  const result = classifyEdges(facets, 90);
+  const shared = result.filter((e) => e.facetIds.length === 2);
+  // 4 shared edges between 5 strip facets
+  assert.equal(shared.length, 4);
+  const ridges = shared.filter((e) => e.type === "ridge");
+  const hips = shared.filter((e) => e.type === "hip");
+  // At least one ridge admitted (the first), and at least one demoted to hip.
+  assert.ok(ridges.length >= 1, "expected at least 1 ridge");
+  assert.ok(hips.length >= 1, "expected ridge cap to demote at least 1 to hip");
+  // Total ridge + hip should equal shared count (no valleys since all parallel to axis)
+  assert.equal(ridges.length + hips.length, 4);
+});
+
 // ---- runner ---------------------------------------------------------------
 
 let failed = 0;

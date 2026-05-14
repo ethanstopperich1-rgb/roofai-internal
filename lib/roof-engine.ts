@@ -364,6 +364,8 @@ export function classifyEdges(
       const dAxis = angularDistDeg(pair.primary.bearingDeg, axisDeg);
       const dPerp = angularDistDeg(pair.primary.bearingDeg, (axisDeg + 90) % 180);
       let type: "ridge" | "hip" | "valley";
+      // At exactly 15° the bearing branch wins (ridge/valley over hip;
+      // eave over rake).
       if (dAxis <= 15) type = "ridge";
       else if (dPerp <= 15) type = "valley";
       else type = "hip";
@@ -396,6 +398,9 @@ export function classifyEdges(
     const totalSharedLf = sharedPairs.reduce((s, p) => s + p.primary.lengthFt, 0);
     const ranked = [...sharedPairs].sort((a, b) => b.primary.lengthFt - a.primary.lengthFt);
     let consumed = 0;
+    // `ratio` is the cumulative consumed BEFORE adding the current edge,
+    // so the first (longest) shared edge always lands as a ridge — same
+    // invariant as the bearing branch's first-ridge unconditional admit.
     for (const pair of ranked) {
       const ratio = consumed / Math.max(totalSharedLf, 1);
       let type: "ridge" | "hip" | "valley";
