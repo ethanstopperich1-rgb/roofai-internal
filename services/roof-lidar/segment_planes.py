@@ -39,11 +39,36 @@ def segment_plane_regions(roof_pts: dict[str, Any]) -> list[dict[str, Any]]:
     if len(xyz) == 0:
         return []
 
-    # DBSCAN on normals — eps tuned to ~10° angular separation.
-    # cos(10°) ≈ 0.985, so 1-dot >= 0.015 is the angular threshold.
-    # Working in normalized-normal space, eps in L2 maps to angle.
-    clustering = DBSCAN(eps=0.18, min_samples=15).fit(normals)
-    labels = clustering.labels_
+    # Downsample for DBSCAN. sklearn DBSCAN is O(n²) worst-case and on
+    # 200k+ normal vectors (typical 3DEP tile of a residential parcel)
+    # it hangs for 10+ min. A 5-10x stride keeps geometric integrity
+    # while bringing the clustering step under 30s. The plane-fitting
+    # SVD below still uses ALL original points via the propagated
+    # labels, so accuracy is preserved.
+    MAX_DBSCAN_POINTS = 40_000
+    if len(xyz) > MAX_DBSCAN_POINTS:
+        import numpy as np  # noqa: PLC0415
+        from scipy.spatial import cKDTree  # noqa: PLC0415
+        stride = max(1, len(xyz) // MAX_DBSCAN_POINTS)
+        sample_idx = np.arange(0, len(xyz), stride)
+        sampled_normals = normals[sample_idx]
+        log.info(
+            "downsampling %d → %d for DBSCAN (stride=%d)",
+            len(xyz), len(sample_idx), stride,
+        )
+        clustering = DBSCAN(eps=0.18, min_samples=15).fit(sampled_normals)
+        sample_labels = clustering.labels_
+        # Propagate sample labels back to the full cloud via
+        # nearest-normal lookup. KDTree on 40k sampled normals = ~1s.
+        tree = cKDTree(sampled_normals)
+        _, nearest_idx = tree.query(normals, k=1)
+        labels = sample_labels[nearest_idx]
+    else:
+        # DBSCAN on normals — eps tuned to ~10° angular separation.
+        # cos(10°) ≈ 0.985, so 1-dot >= 0.015 is the angular threshold.
+        # Working in normalized-normal space, eps in L2 maps to angle.
+        clustering = DBSCAN(eps=0.18, min_samples=15).fit(normals)
+        labels = clustering.labels_
 
     planes: list[dict[str, Any]] = []
     for label in sorted(set(labels)):

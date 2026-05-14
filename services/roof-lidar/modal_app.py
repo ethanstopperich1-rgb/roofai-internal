@@ -68,12 +68,20 @@ VOLUME_PATH = "/cache/lidar"
     image=image,
     volumes={VOLUME_PATH: lidar_cache_volume},
     timeout=900,  # 15 min — covers cold 360MB LAZ download + processing
-    # Memory headroom for point clouds — typical residential parcel @ 2pt/m²
-    # is ~30k points, but commercial / large parcels can hit 500k+.
-    memory=4096,
+    # Memory headroom for point clouds. Empirical: 1 tile @ 450k raw
+    # points = ~1.2GB after laspy.read + pyproj reproject + open3d
+    # PointCloud copy. Plane segmentation on 200k filtered points peaks
+    # at ~3.5GB total. The previous 4GB ceiling SIGKILL'd consistently.
+    # 16GB gives 4x headroom for commercial parcels (500k+ points).
+    memory=16384,
     # CPU-only — YOLO inference is small enough to not need GPU for the
     # n-model on 1280x1280 ortho renders.
     cpu=2.0,
+    # No automatic retries on failure. Tier A is expected to fall
+    # through to Tier C when it can't measure; retrying an OOM 10x
+    # just burns money and never recovers. The TS adapter handles
+    # failure correctly (returns null, pipeline falls through).
+    retries=0,
 )
 def run_extract(request_data: dict) -> dict:
     """Long-running heavy function. Runs the full Tier A pipeline:
