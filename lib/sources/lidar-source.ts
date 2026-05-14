@@ -20,8 +20,16 @@ interface LidarServiceResponse {
 }
 
 /** Default 30s timeout — Modal warm-call typical ~15s, cold-start can run
- *  ~60s. The pipeline orchestrator catches AbortError and falls through. */
-const DEFAULT_TIMEOUT_MS = 30_000;
+ *  ~60s. Override via LIDAR_FETCH_TIMEOUT_MS for slow Modal cold-starts or
+ *  alternate hosts (Fly/Railway). Clamped to [5s, 120s].
+ *  The pipeline orchestrator catches AbortError and falls through. */
+function resolveTimeoutMs(): number {
+  const raw = process.env.LIDAR_FETCH_TIMEOUT_MS;
+  if (!raw) return 30_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 30_000;
+  return Math.min(120_000, Math.max(5_000, Math.round(n)));
+}
 
 let unconfiguredLogged = false;
 function logUnconfiguredOnce() {
@@ -55,7 +63,7 @@ export async function tierALidarSource(opts: {
 
   const t0 = Date.now();
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), resolveTimeoutMs());
   let resp: Response;
   try {
     resp = await fetch(serviceUrl, {
