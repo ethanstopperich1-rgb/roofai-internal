@@ -1022,7 +1022,7 @@ function HomePageInner() {
   })();
 
   return (
-    <div className="space-y-8 sm:space-y-10">
+    <div className="space-y-7 sm:space-y-9">
       {pendingAddress && pendingAddress.lat != null && pendingAddress.lng != null && (
         <div className="fixed inset-0 z-[200] bg-black/95">
           <ConfirmHomePin
@@ -1141,10 +1141,13 @@ function HomePageInner() {
           covers it anyway). */}
       {pipelineError && !pipelineLoading && (
         <div
-          className="rounded-md border border-red-400/30 bg-red-50/95 px-3 py-2 text-sm text-red-900"
+          className="rounded-xl border border-rose/30 bg-rose/[0.06] px-4 py-3 text-[13px] text-rose"
           role="alert"
         >
-          Pipeline error: {pipelineError}. Try the &ldquo;re-analyze&rdquo; button or reload.
+          <span className="font-semibold">Pipeline error:</span> {pipelineError}.{" "}
+          <span className="text-rose/80">
+            Try the &ldquo;re-analyze&rdquo; button or reload.
+          </span>
         </div>
       )}
 
@@ -1161,7 +1164,7 @@ function HomePageInner() {
         inspectorStatus !== "running" &&
         (roofData.confidence < 0.5 || roofData.diagnostics.needsReview.length > 0) && (
           <div
-            className="rounded-md border border-amber-400/40 bg-amber-50/95 px-3 py-2 text-sm text-amber-900"
+            className="rounded-xl border border-amber/35 bg-amber/[0.06] px-4 py-3 text-[13px] text-amber"
             role="status"
           >
             <strong className="font-semibold">Review measurements:</strong>{" "}
@@ -1453,8 +1456,8 @@ function HomePageInner() {
           />
 
           {/* ─── Two-col grid for everything else ─────────────────────── */}
-          <div className="grid lg:grid-cols-3 gap-6 float-in">
-            <div className="lg:col-span-2 space-y-6">
+          <div className="grid lg:grid-cols-3 gap-5 lg:gap-7 float-in">
+            <div className="lg:col-span-2 space-y-5">
               {/* Tier C unified-pipeline panels. Driven entirely from
                   RoofData (single canonical feed). */}
               {roofData && roofData.source !== "none" && (
@@ -1466,11 +1469,19 @@ function HomePageInner() {
                 </>
               )}
               {roofData?.source === "none" && (
-                <div className="rounded-lg border bg-amber-50 p-4 text-sm text-amber-900">
-                  We couldn&rsquo;t analyze this address. Attempts:{" "}
-                  {roofData.diagnostics.attempts
-                    .map((a) => `${a.source}=${a.outcome}`)
-                    .join(", ")}
+                <div
+                  className="rounded-xl border border-amber/30 bg-amber/[0.05] p-4 text-[13px] text-amber"
+                  role="status"
+                >
+                  <div className="font-semibold mb-1">
+                    We couldn&rsquo;t analyze this address.
+                  </div>
+                  <div className="text-[11.5px] font-mono text-amber/70 tracking-wide">
+                    Attempts:{" "}
+                    {roofData.diagnostics.attempts
+                      .map((a) => `${a.source}=${a.outcome}`)
+                      .join(", ")}
+                  </div>
                 </div>
               )}
               {/* Tier C drops the legacy VisionPanel — DetectedFeaturesPanel
@@ -1496,7 +1507,12 @@ function HomePageInner() {
                 <AddOnsPanel addOns={addOns} onChange={setAddOns} />
               </div>
             </div>
-            <div className="space-y-6">
+            {/* Right rail — context + delivery. Sticks to the top while
+                the left column scrolls so the rep can always see the
+                storm card, customer fields, and Output buttons without
+                hunting. The lg:max-h + overflow-y-auto means a long
+                StormHistoryCard expansion stays scoped to the rail. */}
+            <aside className="space-y-5 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
               <PropertyContextPanel address={address} />
               <StormHistoryCard lat={address?.lat} lng={address?.lng} />
               <PhotoUploadPanel photos={photos} onChange={setPhotos} />
@@ -1581,7 +1597,7 @@ function HomePageInner() {
                 />
               </div>
               <InsightsPanel estimate={estimate} />
-            </div>
+            </aside>
           </div>
           {/* Floating estimate summary — fades in once the rep scrolls past
               the headline price card so the live total + sqft + source
