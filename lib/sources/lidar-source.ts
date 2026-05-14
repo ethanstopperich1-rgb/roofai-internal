@@ -62,39 +62,88 @@ export async function tierALidarSource(opts: {
   }
 
   const t0 = Date.now();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), resolveTimeoutMs());
-  let resp: Response;
+  const payload = {
+    lat: opts.address.lat,
+    lng: opts.address.lng,
+    address: opts.address.formatted,
+    imageryDate: opts.imageryDate ?? null,
+    parcelPolygon: opts.parcelPolygon,
+  };
+
+  // Modal HTTP gateway caps sync responses at 150s — a cold Tier A
+  // call routinely needs 300-500s for the 360MB LAZ download. Use the
+  // submit + poll pattern: POST /submit returns a call_id immediately,
+  // GET /result?call_id=... is non-blocking.
+  //
+  // serviceUrl may be the legacy /extract-roof endpoint (sync) or the
+  // new /submit endpoint. Detect by URL suffix.
+  const isLegacyEndpoint = /\/extract-roof\/?(\?|$)/.test(serviceUrl);
+  const submitUrl = isLegacyEndpoint
+    ? serviceUrl.replace(/\/extract-roof\/?(\?.*)?$/, "/submit$1")
+    : serviceUrl;
+  const resultUrl = submitUrl.replace(/\/submit\/?(\?.*)?$/, "/result$1");
+
+  const totalTimeoutMs = resolveTimeoutMs();
+  const deadline = Date.now() + totalTimeoutMs;
+
+  // Phase 1 — submit. Should return in <1s.
+  let callId: string;
   try {
-    resp = await fetch(serviceUrl, {
+    const submitResp = await fetch(submitUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        lat: opts.address.lat,
-        lng: opts.address.lng,
-        address: opts.address.formatted,
-        imageryDate: opts.imageryDate ?? null,
-        parcelPolygon: opts.parcelPolygon,
-      }),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
     });
+    if (!submitResp.ok) {
+      console.warn("[tier-a-lidar] submit non-ok:", submitResp.status);
+      return null;
+    }
+    const submitJson = await submitResp.json() as { call_id?: string };
+    if (!submitJson.call_id) {
+      console.warn("[tier-a-lidar] submit missing call_id");
+      return null;
+    }
+    callId = submitJson.call_id;
   } catch (err) {
-    console.warn("[tier-a-lidar] fetch failed:", err);
+    console.warn("[tier-a-lidar] submit failed:", err);
     return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
 
-  if (!resp.ok) {
-    console.warn("[tier-a-lidar] non-ok response:", resp.status);
-    return null;
+  // Phase 2 — poll. Default 10s interval, capped at total timeout.
+  let data: LidarServiceResponse | null = null;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10_000));
+    try {
+      const pollResp = await fetch(
+        `${resultUrl}?call_id=${encodeURIComponent(callId)}`,
+        { signal: AbortSignal.timeout(15_000) },
+      );
+      if (!pollResp.ok) {
+        console.warn("[tier-a-lidar] poll non-ok:", pollResp.status);
+        continue;
+      }
+      const pollJson = await pollResp.json() as {
+        status: "pending" | "done" | "error";
+        result?: LidarServiceResponse;
+        error?: string;
+      };
+      if (pollJson.status === "pending") continue;
+      if (pollJson.status === "error") {
+        console.warn("[tier-a-lidar] service error:", pollJson.error);
+        return null;
+      }
+      if (pollJson.status === "done" && pollJson.result) {
+        data = pollJson.result;
+        break;
+      }
+    } catch (err) {
+      console.warn("[tier-a-lidar] poll error:", err);
+      continue;
+    }
   }
-
-  let data: LidarServiceResponse;
-  try {
-    data = await resp.json() as LidarServiceResponse;
-  } catch (err) {
-    console.warn("[tier-a-lidar] response parse failed:", err);
+  if (!data) {
+    console.warn("[tier-a-lidar] polling timed out after", totalTimeoutMs, "ms");
     return null;
   }
 

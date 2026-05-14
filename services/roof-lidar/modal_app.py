@@ -67,7 +67,7 @@ VOLUME_PATH = "/cache/lidar"
 @app.function(
     image=image,
     volumes={VOLUME_PATH: lidar_cache_volume},
-    timeout=300,
+    timeout=900,  # 15 min — covers cold 360MB LAZ download + processing
     # Memory headroom for point clouds — typical residential parcel @ 2pt/m²
     # is ~30k points, but commercial / large parcels can hit 500k+.
     memory=4096,
@@ -75,16 +75,72 @@ VOLUME_PATH = "/cache/lidar"
     # n-model on 1280x1280 ortho renders.
     cpu=2.0,
 )
+def run_extract(request_data: dict) -> dict:
+    """Long-running heavy function. Runs the full Tier A pipeline:
+    coverage check → LAZ pull (200-500MB tiles, ~2-4 min cold) →
+    isolate roof → segment planes → build facets → topology →
+    YOLO detect → compute flashing.
+
+    Invoked via `run_extract.spawn(...)` from the public-facing
+    submit/result endpoints below — never directly via HTTP because
+    Modal's HTTP gateway caps sync responses at 150s and a cold-cache
+    Tier A call routinely needs 300-500s.
+    """
+    from api import extract_roof_pipeline  # noqa: PLC0415
+
+    return extract_roof_pipeline(request_data, cache_root=VOLUME_PATH)
+
+
+@app.function(image=image, timeout=30, cpu=0.25)
+@modal.fastapi_endpoint(method="POST")
+def submit(request_data: dict) -> dict:
+    """POST /submit — spawns the Tier A pipeline as a background
+    function call and returns {call_id} immediately. Pair with GET
+    /result?call_id=... below to retrieve the result.
+
+    Body:  { lat, lng, address, parcelPolygon?, imageryDate? }
+    Resp:  { call_id: string }
+    """
+    call = run_extract.spawn(request_data)
+    return {"call_id": call.object_id}
+
+
+@app.function(image=image, timeout=30, cpu=0.25)
+@modal.fastapi_endpoint(method="GET")
+def result(call_id: str) -> dict:
+    """GET /result?call_id=... — non-blocking poll. Returns:
+      { status: "pending" }                            (HTTP 202-equivalent in body)
+      { status: "done", result: { roofData, ... } }    (HTTP 200)
+      { status: "error", error: string }               (HTTP 200, app-level error)
+    """
+    fc = modal.FunctionCall.from_id(call_id)
+    try:
+        result = fc.get(timeout=0)
+        return {"status": "done", "result": result}
+    except TimeoutError:
+        return {"status": "pending"}
+    except modal.exception.OutputExpiredError:
+        return {"status": "error", "error": "output_expired"}
+    except Exception as err:  # noqa: BLE001
+        return {"status": "error", "error": f"{type(err).__name__}: {err}"}
+
+
+@app.function(
+    image=image,
+    volumes={VOLUME_PATH: lidar_cache_volume},
+    timeout=900,
+    memory=4096,
+    cpu=2.0,
+)
 @modal.fastapi_endpoint(method="POST")
 def extract_roof(request_data: dict) -> dict:
-    """
-    POST /extract-roof
-    Body:  { lat, lng, address, parcelPolygon?, imageryDate? }
-    Resp:  { roofData: RoofData, lidarCaptureDate, latencyMs, freshness }
+    """LEGACY synchronous endpoint — kept for backwards compatibility
+    with older TS adapters that haven't switched to submit/poll. New
+    callers should use POST /submit + GET /result.
 
-    Loaded inside the function so Modal's cold-import only touches the
-    FastAPI app definition, not the heavy LiDAR/Open3D/PyTorch imports
-    on every cold start of the Modal control plane.
+    This will 303-redirect after 150s of processing per Modal's HTTP
+    timeout; the TS adapter sees that as a failure and falls through
+    to Tier C. Not ideal but it's the documented async fallback.
     """
     from api import extract_roof_pipeline  # noqa: PLC0415
 
