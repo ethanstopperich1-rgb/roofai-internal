@@ -138,10 +138,16 @@ def fetch_lidar_for_bbox(
     xyz = np.vstack(all_xyz)
     classification = np.concatenate(all_class)
 
-    # Filter to a 250m square in the local meter frame (origin is the
-    # address). This is geometrically equivalent to the previous WGS84
-    # bbox but the math is trivial in local meters.
-    HALF_EXTENT_M = 250
+    # Filter to a residential-parcel-sized square in the local meter
+    # frame (origin is the address). Previous value of 250m grabbed
+    # ~500m × 500m of land, which on suburban density meant ~100 other
+    # houses' worth of roof points contaminated the segmentation —
+    # DBSCAN clustered them all as one giant near-horizontal plane
+    # (the dominant orientation across many roofs is "up-ish"). 60m
+    # half-extent is a 120m × 120m square — large enough to capture
+    # an oversized residential parcel (Oak Park is 80m × 50m) but
+    # tight enough to exclude immediate neighbours.
+    HALF_EXTENT_M = 60
     keep = (
         (np.abs(xyz[:, 0]) <= HALF_EXTENT_M) &
         (np.abs(xyz[:, 1]) <= HALF_EXTENT_M)
