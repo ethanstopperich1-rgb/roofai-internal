@@ -17,6 +17,7 @@ import {
   Radio,
   Check,
   AlertTriangle,
+  CloudHail,
 } from "lucide-react";
 import type { DemoOffice } from "@/lib/dashboard-demo";
 
@@ -36,7 +37,7 @@ import type { DemoOffice } from "@/lib/dashboard-demo";
 type RoleVisibility = "rep" | "manager" | "admin";
 
 type NavItem = {
-  segment: "" | "/estimate" | "/calls" | "/leads" | "/proposals" | "/analytics" | "/settings" | "/admin";
+  segment: "" | "/estimate" | "/canvass" | "/calls" | "/leads" | "/proposals" | "/analytics" | "/settings" | "/admin";
   label: string;
   icon: typeof LayoutDashboard;
   match: "exact" | "prefix";
@@ -61,6 +62,7 @@ const NAV: NavItem[] = [
   // bounce out to the legacy /  route mid-flow.
   { segment: "/estimate", label: "New Estimate", icon: Sparkles, match: "prefix", minRole: "rep", cta: true },
   { segment: "", label: "Overview", icon: LayoutDashboard, match: "exact", minRole: "rep" },
+  { segment: "/canvass", label: "Storm Canvass", icon: CloudHail, match: "prefix", minRole: "rep" },
   { segment: "/calls", label: "Sydney Calls", icon: PhoneCall, match: "prefix", minRole: "rep",
     labelByRole: { rep: "My calls" } },
   { segment: "/leads", label: "Leads", icon: Users, match: "prefix", minRole: "rep",
