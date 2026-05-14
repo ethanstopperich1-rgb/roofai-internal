@@ -231,9 +231,14 @@ test("computeTotals: area-weighted average pitch + squares rounding", () => {
   assert.equal(result.totalSquares, 20);
 });
 
-test("computeTotals: wasteOverridePct wins over suggested", () => {
+test("computeTotals: wasteOverridePct wins over suggested when positive", () => {
   const result = computeTotals([], [], [], 17);
   assert.equal(result.wastePct, 17);
+});
+
+test("computeTotals: wasteOverridePct = 0 falls through to suggested (not honored)", () => {
+  const result = computeTotals([], [], [], 0);
+  assert.equal(result.wastePct, 7); // empty -> simple -> 7%
 });
 
 test("computeTotals: predominant material is most-area material, ignoring null", () => {
@@ -243,8 +248,19 @@ test("computeTotals: predominant material is most-area material, ignoring null",
   const f2 = emptyFacet("f2", []);
   f2.material = "metal-standing-seam";
   f2.areaSqftSloped = 500;
-  const result = computeTotals([f1, f2], [], []);
+  const f3 = emptyFacet("f3", []);
+  f3.material = null;
+  f3.areaSqftSloped = 3000; // largest area, but null — must be ignored
+  const result = computeTotals([f1, f2, f3], [], []);
   assert.equal(result.predominantMaterial, "asphalt-architectural");
+});
+
+test("computeTotals: all-null facets -> predominantMaterial null", () => {
+  const f1 = emptyFacet("f1", []);
+  f1.material = null;
+  f1.areaSqftSloped = 1000;
+  const result = computeTotals([f1], [], []);
+  assert.equal(result.predominantMaterial, null);
 });
 
 // ---- runner ---------------------------------------------------------------

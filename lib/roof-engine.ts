@@ -201,9 +201,15 @@ export function computeTotals(
     : 0;
 
   const complexity = classifyComplexity({ facets, edges, objects });
-  const wastePct = wasteOverridePct ?? suggestedWastePctTierC(complexity);
+  // `??` would treat 0 as a valid override; in this domain a 0% waste is
+  // always a bug (no roofing job has zero cut waste). Use a positivity
+  // guard so accidental zeros fall through to the suggested value.
+  const wastePct = (wasteOverridePct != null && wasteOverridePct > 0)
+    ? wasteOverridePct
+    : suggestedWastePctTierC(complexity);
 
   // Material consensus by area, ignoring null facets.
+  // Ties broken by first-insertion order (deterministic via Map iteration).
   const materialVotes = new Map<Material | null, number>();
   for (const f of facets) {
     materialVotes.set(f.material, (materialVotes.get(f.material) ?? 0) + f.areaSqftSloped);
