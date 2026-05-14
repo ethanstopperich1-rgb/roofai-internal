@@ -61,16 +61,32 @@ def fetch_lidar_for_bbox(
     if not tile_ids:
         raise ValueError("no tile_ids supplied")
 
-    # Limit to the first 4 tiles. Most residential parcels fit on a
-    # single tile; we pull a few in case the parcel straddles edges.
+    # Limit to a single tile for residential parcels — multi-tile cold
+    # downloads from rockyweb.usgs.gov take 4+ min each (360MB tiles at
+    # ~12 Mbps); fetching 4 is a 15-minute hard floor on every cold
+    # call. The parcel bbox sent to TNM is 250m half-extent which fits
+    # in one tile 99% of the time; if it straddles, downstream falcet
+    # detection just misses the bleed and falls through to Tier C.
+    #
+    # Corrupt cache recovery: if laspy fails to parse a cached tile
+    # (e.g. partial download from a previous timed-out call), delete
+    # the cache file and re-download once before giving up.
     pulled: list[Any] = []
-    for tile_url in tile_ids[:4]:
+    for tile_url in tile_ids[:1]:
         local_path = _ensure_cached_tile(tile_url, cache_root)
         try:
             las = laspy.read(local_path)
             pulled.append(las)
         except Exception as err:  # noqa: BLE001
-            log.warning("failed to parse %s: %s", tile_url, err)
+            log.warning("failed to parse %s: %s — retrying download", tile_url, err)
+            try:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                local_path = _ensure_cached_tile(tile_url, cache_root)
+                las = laspy.read(local_path)
+                pulled.append(las)
+            except Exception as err2:  # noqa: BLE001
+                log.warning("retry also failed for %s: %s", tile_url, err2)
 
     if not pulled:
         raise RuntimeError("no tiles parseable")

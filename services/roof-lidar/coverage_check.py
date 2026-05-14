@@ -67,7 +67,7 @@ def check_3dep_coverage(*, lat: float, lng: float) -> dict[str, Any]:
         "datasets": "Lidar Point Cloud (LPC)",
         "bbox": bbox_str,
         "prodFormats": "LAS,LAZ",
-        "max": 25,  # cap pulls — 1-4 typical for a residential parcel
+        "max": 4,  # pull_lidar uses tile_ids[:1] for residential parcels
     }
     try:
         response = requests.get(TNM_API_URL, params=params, timeout=15)
