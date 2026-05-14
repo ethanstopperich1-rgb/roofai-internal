@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, use } from "react";
-import { getEstimate, tagEstimate } from "@/lib/storage";
+import { getEstimateTagged, tagEstimate } from "@/lib/storage";
 import type { Estimate } from "@/types/estimate";
 import type { EstimateV2, LoadedEstimate } from "@/types/roof";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
@@ -38,14 +38,15 @@ export default function CustomerProposalPage({ params }: { params: Promise<{ id:
             return;
           }
         }
-        const local = getEstimate(id);
-        setLoaded(local ? tagEstimate(local) : null);
+        // getEstimateTagged returns either v1 or v2 — getEstimate (the
+        // pre-Tier-C helper) silently filtered to v1 and dropped v2
+        // estimates saved only to localStorage on the way to /p/.
+        setLoaded(getEstimateTagged(id));
         setIsLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
-        const local = getEstimate(id);
-        setLoaded(local ? tagEstimate(local) : null);
+        setLoaded(getEstimateTagged(id));
         setIsLoaded(true);
       });
     return () => {
