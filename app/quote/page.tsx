@@ -1348,16 +1348,16 @@ function RoofStep({
 }) {
   return (
     <div className="space-y-6 float-in">
-      <div>
+      <header>
         <div className="glass-eyebrow">Step 2 · Confirm your roof</div>
-        <h2 className="font-display text-[32px] sm:text-[44px] leading-[1.05] tracking-[-0.025em] font-semibold mt-4 text-white/95">
+        <h2 className="font-display text-[32px] sm:text-[44px] leading-[1.05] tracking-[-0.025em] font-semibold mt-4 text-white/95 text-balance">
           This is your roof
         </h2>
-        <p className="text-white/55 text-[14px] mt-3 flex items-center gap-2">
-          <MapPin size={14} className="text-white/40" />
-          {address?.formatted ?? "—"}
-        </p>
-      </div>
+        <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.025] px-3 py-1.5 text-[12.5px] text-white/65">
+          <MapPin size={13} className="text-cy-300 flex-shrink-0" />
+          <span className="truncate">{address?.formatted ?? "—"}</span>
+        </div>
+      </header>
 
       <div className="glass-panel overflow-hidden aspect-video relative">
         {loading ? (
@@ -1428,10 +1428,13 @@ function RoofStep({
       {/* Photorealistic 3D flyover — visual centerpiece of the customer's
        *  roof. Loads only after the address is resolved + initial measurement
        *  is done, so the satellite map renders first and the heavy Cesium
-       *  bundle isn't blocking. No verification — pure visual. */}
+       *  bundle isn't blocking. No verification — pure visual.
+       *  Shorter aspect ratio than the 2D map (16:9 → 21:9) so it reads as
+       *  a complementary flyover rather than a second hero — kept the
+       *  combined first-screen weight from feeling top-heavy. */}
       {!loading && address?.lat != null && address?.lng != null && (
         <div
-          className="glass-panel overflow-hidden aspect-video relative"
+          className="glass-panel overflow-hidden aspect-[21/9] relative"
           aria-label={`3D photorealistic view of the roof at ${address?.formatted ?? "this property"}`}
           role="img"
         >
@@ -1465,6 +1468,16 @@ function RoofStep({
             />
           )}
         </div>
+      )}
+
+      {/* Provenance + cross-source verification — shown as soon as the
+          pipeline has settled, not at the very end of the wizard. This
+          is the customer's "we measured this with real data" moment;
+          burying it on Step 4 means they spent Step 2/3 trusting a
+          polygon they had no provenance signal on. Auto-hides on
+          source === "none". */}
+      {!loading && roofData && roofData.source !== "none" && (
+        <MeasurementVerification data={roofData} variant="customer" />
       )}
 
       <div className="grid sm:grid-cols-2 gap-4">
@@ -1773,12 +1786,16 @@ function QuoteStep({
         </>
       )}
       {roofData?.source === "none" && !pipelineLoading && (
-        <div className="rounded-lg border bg-amber-50 p-4 text-sm text-amber-900">
-          We couldn&apos;t analyze this address — please double-check the pin or try a different address.
+        <div
+          className="rounded-xl border border-amber/30 bg-amber/[0.06] px-4 py-3 text-[13px] text-amber"
+          role="status"
+        >
+          We couldn&apos;t analyze this address — please double-check the pin or
+          try a different address.
         </div>
       )}
       {pipelineError && !pipelineLoading && (
-        <div className="text-[11.5px] text-white/45">
+        <div className="text-[11.5px] text-white/45 font-mono tracking-wide">
           Analysis warning: {pipelineError}
         </div>
       )}
