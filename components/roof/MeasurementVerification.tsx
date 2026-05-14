@@ -40,21 +40,37 @@ export default function MeasurementVerification({
   className,
 }: Props) {
   const baseline = data.crossSourceBaseline?.solar;
-  // Only render when Tier A is the primary AND we have a Tier C baseline
-  // to compare against. Other cases: nothing to verify.
-  if (data.source !== "tier-a-lidar" || !baseline || baseline.sqft == null) {
-    return null;
+  const hasCrossSource =
+    data.source === "tier-a-lidar" && !!baseline && baseline.sqft != null;
+
+  // Single-source fallback path: Tier A didn't win OR we don't have a
+  // Tier C baseline to compare against. Still render a trust badge so
+  // the customer sees the provenance of the measurement instead of a
+  // silent gap. Cross-source agreement is the stronger signal — but
+  // "Measured by Google Solar imagery · 2023-11-05" is a real trust
+  // signal too, and the customer should see it.
+  if (!hasCrossSource) {
+    if (data.source === "none") return null;
+    return (
+      <SingleSourceBadge
+        data={data}
+        variant={variant}
+        className={className}
+      />
+    );
   }
 
+  // hasCrossSource guarantees baseline + baseline.sqft are non-null.
+  const baselineNN = baseline!;
   const tierASqft = data.totals.totalRoofAreaSqft;
-  const tierCSqft = baseline.sqft;
+  const tierCSqft = baselineNN.sqft!;
   const sqftDeltaPct = Math.abs(tierASqft - tierCSqft) / Math.max(1, tierCSqft);
 
   const tierAPitch = data.totals.averagePitchDegrees;
-  const tierCPitch = baseline.pitchDegrees ?? 0;
+  const tierCPitch = baselineNN.pitchDegrees ?? 0;
   const pitchDeltaDeg = Math.abs(tierAPitch - tierCPitch);
 
-  const facetDelta = Math.abs(data.totals.facetsCount - baseline.segmentCount);
+  const facetDelta = Math.abs(data.totals.facetsCount - baselineNN.segmentCount);
 
   // Confidence: 100% at zero delta, decaying linearly to 0% at 30%
   // sqft delta. Clamped so the trust badge stays motivating in the
@@ -86,10 +102,10 @@ export default function MeasurementVerification({
       tierAPitch={tierAPitch}
       tierCPitch={tierCPitch}
       tierAFacets={data.totals.facetsCount}
-      tierCFacets={baseline.segmentCount}
+      tierCFacets={baselineNN.segmentCount}
       tierAImageryDate={data.imageryDate}
-      tierCImageryDate={baseline.imageryDate}
-      tierCQuality={baseline.imageryQuality}
+      tierCImageryDate={baselineNN.imageryDate}
+      tierCQuality={baselineNN.imageryQuality}
       className={className}
     />
   );
@@ -270,6 +286,128 @@ function DeltaCell({
       <div className="mt-1 text-[10px] font-mono uppercase tracking-[0.14em] text-white/35">
         Δ {delta}
       </div>
+    </div>
+  );
+}
+
+// ─── Single-source fallback ──────────────────────────────────────────
+// Shown when there is no Tier A measurement to cross-verify against
+// the Tier C baseline. Still surfaces real provenance (which dataset
+// measured this roof, when the imagery was captured, and the source's
+// own confidence). Not as strong as the cross-source badge — but
+// dramatically stronger than no provenance signal at all.
+
+function SingleSourceBadge({
+  data,
+  variant,
+  className,
+}: {
+  data: RoofData;
+  variant: "customer" | "rep";
+  className?: string;
+}) {
+  const sourceLabel =
+    data.source === "tier-a-lidar"
+      ? "USGS LiDAR"
+      : data.source === "tier-b-multiview"
+      ? "Multiview Aerial"
+      : data.source === "tier-c-solar"
+      ? "Google Solar imagery"
+      : data.source === "tier-c-vision"
+      ? "Computer Vision"
+      : "Aerial imagery";
+
+  const confidencePct = Math.round(data.confidence * 100);
+  // Confidence ≥ 80 → green, 60-79 → amber, < 60 → muted.
+  const tier: "green" | "amber" | "muted" =
+    confidencePct >= 80 ? "green" : confidencePct >= 60 ? "amber" : "muted";
+  const accent =
+    tier === "green"
+      ? "border-emerald-400/30 bg-emerald-400/[0.04]"
+      : tier === "amber"
+      ? "border-amber-400/30 bg-amber-400/[0.04]"
+      : "border-white/10 bg-white/[0.02]";
+  const dot =
+    tier === "green"
+      ? "bg-emerald-400"
+      : tier === "amber"
+      ? "bg-amber-400"
+      : "bg-white/40";
+
+  const sqft = Math.round(data.totals.totalRoofAreaSqft).toLocaleString();
+  const facets = data.totals.facetsCount;
+  const dateStr = data.imageryDate ?? "date unknown";
+
+  if (variant === "customer") {
+    return (
+      <div
+        className={
+          className ??
+          `relative flex items-start gap-3 rounded-xl border ${accent} p-4 backdrop-blur-sm`
+        }
+      >
+        <div className="relative mt-0.5 flex h-2.5 w-2.5 shrink-0 items-center justify-center">
+          <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${dot} opacity-40`} />
+          <span className={`relative inline-flex h-2 w-2 rounded-full ${dot}`} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-white/55">
+            Measurement provenance
+          </div>
+          <div className="mt-1 text-[15px] font-medium text-white/95">
+            Measured by {sourceLabel}
+          </div>
+          <div className="mt-1 text-[12.5px] leading-snug text-white/55">
+            {sqft} sqft · {facets} planes · imagery {dateStr} · {confidencePct}% confidence
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={
+        className ??
+        "rounded-xl border border-white/10 bg-white/[0.02] p-4 backdrop-blur-sm"
+      }
+    >
+      <div className="flex items-center justify-between border-b border-white/5 pb-3">
+        <div>
+          <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-white/45">
+            Single-source measurement
+          </div>
+          <div className="mt-1 text-[13px] text-white/85">
+            {sourceLabel}
+            <span className="text-white/45"> · {confidencePct}% confidence</span>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-white/45">
+            Cross-verify
+          </div>
+          <div className="mt-1 text-[12px] font-mono text-white/45">unavailable</div>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-white/5 bg-white/5 text-[12px]">
+        <SingleCell label="Sqft" value={sqft} />
+        <SingleCell label="Pitch" value={`${data.totals.averagePitchDegrees.toFixed(1)}°`} />
+        <SingleCell label="Planes" value={String(facets)} />
+      </div>
+      <div className="mt-3 text-[10.5px] font-mono uppercase tracking-[0.14em] text-white/35">
+        Imagery · {dateStr}
+      </div>
+    </div>
+  );
+}
+
+function SingleCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-black/40 p-3">
+      <div className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-white/40">
+        {label}
+      </div>
+      <div className="mt-1.5 text-[13px] text-white/95">{value}</div>
     </div>
   );
 }
