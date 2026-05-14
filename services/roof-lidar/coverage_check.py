@@ -14,20 +14,36 @@ a 360MB LAZ tile that covers 1500m × 1500m. Cold path drops from
 USGS hosts EPT versions of every 3DEP project at:
     https://s3-us-west-2.amazonaws.com/usgs-lidar-public/<PROJECT>/ept.json
 
-FL coverage is published per-county under FL_Peninsular_FDEM_<County>_2018
-(2018/2019 statewide flight). When we expand outside FL we'll need
-either reverse-geocoding to find the right project or the full
-3DEP project index. For now: hardcoded map for Voxaris's service area.
+Two-stage coverage resolution:
+  1. Fast path — hardcoded FL_COUNTY_PROJECTS bounding-box table for the
+     Voxaris service area. Rectangular bboxes that approximate county
+     shapes; resolved in microseconds with zero network I/O.
+
+  2. AWS fallback — when the fast path misses (address near a county
+     line, outside FL, or new market), fetch the USGS-published
+     boundaries GeoJSON from the same `usgs-lidar-public` S3 bucket
+     (the authoritative AWS index of every 3DEP EPT project), do a
+     point-in-polygon test, and return the most recent covering
+     project. Cached on the Modal volume for 30 days so subsequent
+     misses are still O(1).
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import re
+import time
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 EPT_BASE_URL = "https://s3-us-west-2.amazonaws.com/usgs-lidar-public"
+# Official AWS index of every EPT project boundary. ~17 MB GeoJSON;
+# fetched once, cached on the Modal volume, then reused.
+BOUNDARIES_URL = f"{EPT_BASE_URL}/boundaries/resources.geojson"
+BOUNDARIES_CACHE_TTL_S = 30 * 24 * 3600  # 30 days
 
 # Hardcoded FL county bounds (rough lat/lng rectangles). Maps each
 # county to its USGS EPT project name. Expand as the service rolls
@@ -53,7 +69,9 @@ FL_COUNTY_PROJECTS: list[dict[str, Any]] = [
 ]
 
 
-def check_3dep_coverage(*, lat: float, lng: float) -> dict[str, Any]:
+def check_3dep_coverage(
+    *, lat: float, lng: float, cache_dir: str | None = None,
+) -> dict[str, Any]:
     """Return dict with keys:
         covered: bool
         tile_ids: list[str]           — [ept_url] when covered (single EPT
@@ -62,30 +80,152 @@ def check_3dep_coverage(*, lat: float, lng: float) -> dict[str, Any]:
         capture_date: str | None      — Hardcoded per-project; refine when
                                         we have project-metadata fetches
         coverage_pct: float           — 1.0 when project found, 0.0 otherwise
-    """
-    project = _find_project(lat=lat, lng=lng)
-    if not project:
-        log.warning("no EPT project found for (%.6f, %.6f)", lat, lng)
-        return _no_coverage()
 
-    ept_url = f"{EPT_BASE_URL}/{project['project']}/ept.json"
+    Resolution: try the hardcoded FL fast-path first, then fall back to
+    the AWS-published boundaries GeoJSON for any other US address."""
+    project = _find_project(lat=lat, lng=lng)
+    project_name: str | None = None
+    if project:
+        project_name = project["project"]
+    else:
+        project_name = _find_project_via_aws(
+            lat=lat, lng=lng, cache_dir=cache_dir,
+        )
+        if not project_name:
+            log.warning("no EPT project found for (%.6f, %.6f)", lat, lng)
+            return _no_coverage()
+        log.info(
+            "AWS fallback matched project %s for (%.6f, %.6f)",
+            project_name, lat, lng,
+        )
+
+    ept_url = f"{EPT_BASE_URL}/{project_name}/ept.json"
     return {
         "covered": True,
         # tile_ids[0] is the EPT URL. pull_lidar.py treats this as
         # a PDAL pipeline source, not a raw LAZ file.
         "tile_ids": [ept_url],
-        "project_name": project["project"],
-        "capture_date": project.get("capture_date") or _infer_capture_date(project["project"]),
+        "project_name": project_name,
+        "capture_date": (project or {}).get("capture_date")
+            or _infer_capture_date(project_name),
         "coverage_pct": 1.0,
     }
 
 
 def _find_project(*, lat: float, lng: float) -> dict[str, Any] | None:
-    """Match parcel lat/lng to the FL county whose bounds contain it."""
+    """Match parcel lat/lng to the FL county whose bounds contain it.
+    Fast-path only — exact county-bbox match. AWS fallback handles
+    everything outside this table."""
     for proj in FL_COUNTY_PROJECTS:
         if proj["min_lat"] <= lat <= proj["max_lat"] and proj["min_lng"] <= lng <= proj["max_lng"]:
             return proj
     return None
+
+
+def _find_project_via_aws(
+    *, lat: float, lng: float, cache_dir: str | None = None,
+) -> str | None:
+    """AWS fallback. Fetches the official USGS 3DEP boundaries GeoJSON
+    (https://registry.opendata.aws/usgs-lidar/), caches it locally,
+    does a point-in-polygon test against every project boundary, and
+    returns the most recent covering project's slug.
+
+    Cache key: `boundaries.geojson` under `cache_dir` (Modal volume on
+    prod; /tmp in local dev). TTL = 30 days. The GeoJSON is regenerated
+    by USGS when new flights publish, but the rate is monthly at most
+    — far slower than our cache window.
+
+    Picking the "best" project when several overlap:
+        - prefer the most recent year (last 4-digit run in the slug)
+        - tiebreak by alphabetical project name (deterministic)
+    """
+    try:
+        import requests  # noqa: PLC0415
+        from shapely.geometry import Point, shape  # noqa: PLC0415
+    except ImportError as err:
+        log.warning("AWS fallback unavailable: %s", err)
+        return None
+
+    geojson = _load_boundaries_geojson(cache_dir=cache_dir, requests_mod=requests)
+    if not geojson:
+        return None
+
+    pt = Point(lng, lat)
+    candidates: list[tuple[int, str]] = []  # (year, project_name)
+    for feature in geojson.get("features", []):
+        props = feature.get("properties") or {}
+        name = (props.get("name") or props.get("id") or "").strip()
+        geom = feature.get("geometry")
+        if not name or not geom:
+            continue
+        try:
+            poly = shape(geom)
+            if poly.contains(pt) or poly.touches(pt):
+                year = _year_from_name(name)
+                candidates.append((year, name))
+        except Exception:  # noqa: BLE001
+            continue
+
+    if not candidates:
+        return None
+
+    # Most recent year first, alphabetical tiebreak. Newer LiDAR is
+    # almost always more accurate — instrumentation has improved and
+    # ground-control quality has gone up across the 3DEP program.
+    candidates.sort(key=lambda t: (-t[0], t[1]))
+    return candidates[0][1]
+
+
+def _load_boundaries_geojson(
+    *, cache_dir: str | None, requests_mod: Any,
+) -> dict[str, Any] | None:
+    """Fetch + cache the AWS boundaries GeoJSON. Returns None on failure
+    so the caller can degrade gracefully (Tier A falls through to Tier C)."""
+    base = cache_dir or "/tmp"
+    try:
+        os.makedirs(base, exist_ok=True)
+    except OSError:
+        pass
+    cache_path = os.path.join(base, "usgs_3dep_boundaries.geojson")
+
+    # Cache hit
+    try:
+        if os.path.exists(cache_path):
+            age = time.time() - os.path.getmtime(cache_path)
+            if age < BOUNDARIES_CACHE_TTL_S:
+                with open(cache_path) as f:
+                    return json.load(f)
+    except (OSError, json.JSONDecodeError) as err:
+        log.warning("boundaries cache read failed: %s", err)
+
+    # Cache miss — fetch
+    log.info("fetching USGS 3DEP boundaries from %s", BOUNDARIES_URL)
+    try:
+        resp = requests_mod.get(BOUNDARIES_URL, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as err:  # noqa: BLE001
+        log.warning("boundaries fetch failed: %s", err)
+        return None
+
+    # Persist for next call
+    try:
+        with open(cache_path, "w") as f:
+            json.dump(data, f)
+    except OSError as err:
+        log.warning("boundaries cache write failed: %s", err)
+    return data
+
+
+def _year_from_name(project_name: str) -> int:
+    """Extract the most recent 4-digit year from a project slug. USGS
+    slugs typically end with a year (e.g. `FL_Peninsular_FDEM_PalmBeach_2019`).
+    A few have ranges (`USGS_LPC_..._2018_2019`); we pick the latter."""
+    years = [
+        int(y) for y in re.findall(r"\b(20\d{2})\b", project_name)
+        if 2000 <= int(y) <= 2030
+    ]
+    return max(years) if years else 0
 
 
 def _infer_capture_date(project_name: str) -> str | None:
