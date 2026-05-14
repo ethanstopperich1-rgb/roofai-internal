@@ -67,7 +67,7 @@ import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import { FacetList } from "@/components/roof/FacetList";
 import { saveEstimateV2 } from "@/lib/storage";
-import { DEFAULT_ADDONS } from "@/lib/pricing";
+import { DEFAULT_ADDONS, computeBase, computeTotal } from "@/lib/pricing";
 import { buildWasteTable, inferComplexityFromPolygons } from "@/lib/roof-geometry";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
@@ -339,11 +339,28 @@ function HomePageInner() {
   // already includes add-on contributions in subtotal/total, so we don't
   // double-add them here. The v1 Estimate.baseLow / baseHigh fields
   // below also use these as-is for the same reason.
-  const low = priced ? Math.round(priced.totalLow) : 0;
-  const high = priced ? Math.round(priced.totalHigh) : 0;
+  //
+  // Fallback: when the unified pipeline degrades (priced === null) but
+  // the rep has typed a sqft + material + pitch, fall back to the legacy
+  // computeBase/computeTotal so the headline doesn't collapse to "$0".
+  // This restores the pre-Tier-C "type-in-sqft-and-see-rough-price" UX
+  // for the degraded path while keeping the priced pipeline canonical
+  // for happy-path estimates.
+  const fallback = useMemo(() => {
+    if (priced) return null;
+    if (!assumptions.sqft || assumptions.sqft <= 0) return null;
+    if (!assumptions.material || !assumptions.pitch) return null;
+    return {
+      base: computeBase(assumptions),
+      total: computeTotal(assumptions, addOns),
+    };
+  }, [priced, assumptions, addOns]);
+
+  const low = priced ? Math.round(priced.totalLow) : (fallback?.base.low ?? 0);
+  const high = priced ? Math.round(priced.totalHigh) : (fallback?.base.high ?? 0);
   const total = priced
     ? Math.round((priced.totalLow + priced.totalHigh) / 2)
-    : 0;
+    : (fallback?.total ?? 0);
 
   // Legacy DetailedEstimate projection — feeds LineItemsPanel and the
   // v1-compatible Estimate object passed to OutputButtons / PDF / etc.
