@@ -50,16 +50,53 @@ async function fetchSolarHint(
   }
 }
 
+/** Expand a polygon outward from its centroid by `meters`. Used to
+ *  add a safety buffer around the Solar mask before clipping the
+ *  LiDAR cloud — Google's mask is occasionally conservative at edges
+ *  (traces inside the actual eave line by 0.5-1m), and the LiDAR
+ *  points at the real eave would otherwise be dropped.
+ *
+ *  Cheap centroid-expand approach: works well for convex-ish residential
+ *  roofs. For deeply concave L-shapes the expansion is slightly uneven
+ *  at the concave corners, but the downstream height + wall filters in
+ *  isolate_roof catch any non-roof bleed, so the imprecision is
+ *  asymmetrically safe (lets in too many, never too few). */
+function bufferPolygon(
+  poly: Array<{ lat: number; lng: number }>,
+  meters: number,
+): Array<{ lat: number; lng: number }> {
+  if (poly.length === 0 || meters === 0) return poly;
+  const cLat = poly.reduce((s, p) => s + p.lat, 0) / poly.length;
+  const cLng = poly.reduce((s, p) => s + p.lng, 0) / poly.length;
+  const M_PER_DEG_LAT = 111_320;
+  const M_PER_DEG_LNG = M_PER_DEG_LAT * Math.cos((cLat * Math.PI) / 180);
+  return poly.map((p) => {
+    const dLat = p.lat - cLat;
+    const dLng = p.lng - cLng;
+    const distM = Math.hypot(dLat * M_PER_DEG_LAT, dLng * M_PER_DEG_LNG);
+    if (distM < 1e-6) return p;
+    const scale = (distM + meters) / distM;
+    return {
+      lat: cLat + dLat * scale,
+      lng: cLng + dLng * scale,
+    };
+  });
+}
+
 /** Build a polygon hint for Tier A's isolate_roof clip step.
  *
  *  Preference order:
  *    1. Solar dataLayers mask polygon (pixel-accurate, ~20 vertices)
- *    2. Union of Solar findClosest segment polygons (rotated bboxes,
- *       gets the right outer shape on most residential buildings)
- *    3. None — Tier A relies on height + normal-vertical filters alone
+ *       buffered +1.5m for eave overhang + segmentation conservatism.
+ *    2. Union of Solar findClosest segment polygons (rotated bboxes)
+ *       buffered +2.5m (rotated bboxes already overshoot somewhat
+ *       so a smaller margin is enough).
+ *    3. None — Tier A relies on height + normal-vertical filters alone.
  *
- *  The mask polygon is preferred because it's the same data Project
- *  Sunroof uses; the segment-bbox union is the cheap fallback. */
+ *  Buffering is always-safer: the downstream height + wall-vertical
+ *  filters in isolate_roof drop non-roof points anyway, so a too-big
+ *  polygon costs ~nothing while a too-small polygon drops real roof
+ *  points (catastrophic). */
 async function buildParcelPolygon(
   lat: number,
   lng: number,
@@ -69,7 +106,9 @@ async function buildParcelPolygon(
   if (apiKey) {
     try {
       const mask = await fetchSolarRoofMask({ lat, lng, apiKey });
-      if (mask && mask.latLng.length >= 3) return mask.latLng;
+      if (mask && mask.latLng.length >= 3) {
+        return bufferPolygon(mask.latLng, 1.5);
+      }
     } catch {
       /* fall through */
     }
@@ -80,7 +119,7 @@ async function buildParcelPolygon(
     // to clip points. Not a clean union (would need a polygon
     // library) but residential segment polygons rarely have gaps
     // big enough to matter for point-in-polygon tests.
-    return solar.segmentPolygonsLatLng.flat();
+    return bufferPolygon(solar.segmentPolygonsLatLng.flat(), 2.5);
   }
   return null;
 }

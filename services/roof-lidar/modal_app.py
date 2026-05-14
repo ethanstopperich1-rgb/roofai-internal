@@ -20,30 +20,39 @@ import os
 import modal
 
 # ----------------------------------------------------------------------------
-# Image: Python 3.12 + native deps for Open3D / YOLO.
-# Originally listed `libpdal-dev` + `pdal`, but Debian Bookworm dropped those
-# from the main repo (would need `bookworm-backports`) AND nothing in this
-# service actually imports `pdal` — point clouds are read by laspy (pure
-# Python + Rust LAZ via lazrs) and processed by open3d. Removed PDAL and
-# stripped GDAL/PROJ system packages too: pyproj and shapely ship with
-# their own vendored PROJ / GEOS in their pip wheels, so the system libs
-# were unused dead weight that slowed the build by ~2 min.
+# Image: micromamba (conda-forge) Python 3.12 + native PDAL for COPC/EPT
+# spatial range reads. Switched from debian_slim to micromamba because PDAL
+# needs the native C++ library + GDAL/PROJ/etc. — pip alone can't install
+# these on Debian Bookworm (libpdal-dev is bookworm-backports only). Conda-
+# forge bundles everything cleanly.
+#
+# WHY PDAL: USGS publishes 3DEP data as Entwine Point Tile (EPT) sets
+# indexed in S3. PDAL's readers.ept supports bbox-bounded reads — we
+# fetch ~1-2 MB of points for a 60m parcel out of a 50 GB project,
+# instead of downloading 360MB LAZ tiles. Cold path goes from 6 min
+# → 30 sec.
 # ----------------------------------------------------------------------------
 
 image = (
-    modal.Image.debian_slim(python_version="3.12")
+    # PDAL's official Docker image — known-good GDAL/PROJ/SQLite combo.
+    # micromamba kept producing sqlite version conflicts because the
+    # conda solver chose libgdal compiled against a newer sqlite than
+    # the one it pulled in. This image bakes a complete working stack.
+    modal.Image.from_registry("pdal/pdal:latest", add_python="3.12")
     .apt_install(
-        # Open3D viewport deps — open3d's C++ binaries link against these
-        # even when we use it headless for plane segmentation only.
+        # Open3D viewport deps
         "libgl1",
         "libglib2.0-0",
         "libsm6",
         "libxext6",
         "libxrender-dev",
-        # Image manipulation for ortho composites + YOLO input
         "libjpeg-dev",
         "libpng-dev",
     )
+    # PDAL Python bindings — package is `pdal` on PyPI (different from
+    # conda's `python-pdal`). The official pdal/pdal Docker image has
+    # the native libs in /usr/local; this binds them to Python.
+    .pip_install("pdal>=3.5")
     .pip_install_from_requirements("requirements.txt")
     # Modal 1.0+ renamed copy_local_dir → add_local_dir. The new method
     # defaults to runtime mount (faster iteration); we pass copy=True

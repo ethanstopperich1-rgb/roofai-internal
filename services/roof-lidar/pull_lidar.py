@@ -1,32 +1,26 @@
 """
 services/roof-lidar/pull_lidar.py
 
-Fetch LAS/LAZ tiles directly from USGS 3DEP HTTPS endpoints (rockyweb.usgs.gov),
-decompress with laspy, reproject to WGS84 lat/lng, and return the
-concatenated point cloud filtered to a small bbox around the address.
+Fetch LiDAR points via PDAL's EPT reader (USGS-hosted Entwine Point Tile
+sets) with bbox-bounded range reads. Replaces the old full-LAZ-tile
+download path — instead of pulling 360MB to extract a 60m parcel, we
+fetch ~1-2 MB of relevant points directly. Cold path drops from ~6 min
+to ~30 sec.
 
-The Modal function mounts a persistent volume at `cache_root` so
-fetched tiles survive 24h between calls. Cache key is the tile URL
-hashed; cache invalidation isn't needed within 24h because 3DEP files
-are immutable once published.
-
-WHY HTTPS, NOT S3: USGS publishes 3DEP under prd-tnm S3 but also serves
-the same content via direct HTTPS (rockyweb.usgs.gov). The TNM Access
-API (used by coverage_check.py) returns HTTPS URLs, not S3 keys, so
-HTTPS is the consistent pull path. No anonymous S3 client needed.
-
-WHY CRS REPROJECTION: USGS LAZ files store coordinates in a state-plane
-or UTM projection encoded in the LAS header CRS. A naive XY-as-lng-lat
-filter (the previous implementation) places points thousands of km off
-in the wrong hemisphere. We use laspy's CRS parse + pyproj.Transformer
-to reproject every point to WGS84 lat/lng before bbox filtering.
+Pipeline:
+  1. Build a Web Mercator (EPSG:3857) bbox around the parcel — EPT
+     stores coords in Web Mercator so PDAL's `bounds` arg must use it.
+  2. Run a PDAL pipeline: readers.ept → filters.reprojection(EPSG:4326)
+     → filters.crop (refine to exact bbox).
+  3. Reproject to a local meter frame (AEQD centered on parcel) so
+     downstream isolate_roof / segment_planes / build_facets can work
+     in consistent meter-units.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import os
+import math
 import time
 from typing import Any
 
@@ -38,22 +32,21 @@ def fetch_lidar_for_bbox(
     lat: float,
     lng: float,
     tile_ids: list[str],
-    cache_root: str | None = None,
+    cache_root: str | None = None,  # unused for EPT — kept for backwards-compat sig
 ) -> dict[str, Any]:
     """Return a dict with:
-        xyz: numpy.ndarray of shape (N, 3) — points in WGS84
-            [lng, lat, alt_meters]
+        xyz: numpy.ndarray of shape (N, 3) — points in LOCAL METER FRAME
+            [east_m, north_m, alt_m] centered on the parcel
         classification: numpy.ndarray of shape (N,) — LAS class codes
-        bbox: dict with min/max lat/lng/alt
+        bbox: WGS84 bbox dict for downstream callers
+        origin_lat / origin_lng / frame metadata for back-projection
 
-    `tile_ids` are HTTPS download URLs (from coverage_check.py / TNM
-    API). Points are filtered to a 500m bbox around (lat, lng) to keep
-    downstream memory bounded for residential parcels.
+    `tile_ids` is now [ept_url] from coverage_check.py — a single
+    PDAL pipeline source URL, not a list of LAZ tile keys.
     """
     try:
-        import requests  # noqa: PLC0415
         import numpy as np  # noqa: PLC0415
-        import laspy  # noqa: PLC0415
+        import pdal  # noqa: PLC0415
         import pyproj  # noqa: PLC0415
     except ImportError as err:
         raise RuntimeError(f"required dep missing: {err}") from err
@@ -61,152 +54,98 @@ def fetch_lidar_for_bbox(
     if not tile_ids:
         raise ValueError("no tile_ids supplied")
 
-    # Limit to a single tile for residential parcels — multi-tile cold
-    # downloads from rockyweb.usgs.gov take 4+ min each (360MB tiles at
-    # ~12 Mbps); fetching 4 is a 15-minute hard floor on every cold
-    # call. The parcel bbox sent to TNM is 250m half-extent which fits
-    # in one tile 99% of the time; if it straddles, downstream falcet
-    # detection just misses the bleed and falls through to Tier C.
-    #
-    # Corrupt cache recovery: if laspy fails to parse a cached tile
-    # (e.g. partial download from a previous timed-out call), delete
-    # the cache file and re-download once before giving up.
-    pulled: list[Any] = []
-    for tile_url in tile_ids[:1]:
-        local_path = _ensure_cached_tile(tile_url, cache_root)
-        try:
-            las = laspy.read(local_path)
-            pulled.append(las)
-        except Exception as err:  # noqa: BLE001
-            log.warning("failed to parse %s: %s — retrying download", tile_url, err)
-            try:
-                if os.path.exists(local_path):
-                    os.remove(local_path)
-                local_path = _ensure_cached_tile(tile_url, cache_root)
-                las = laspy.read(local_path)
-                pulled.append(las)
-            except Exception as err2:  # noqa: BLE001
-                log.warning("retry also failed for %s: %s", tile_url, err2)
+    ept_url = tile_ids[0]
 
-    if not pulled:
-        raise RuntimeError("no tiles parseable")
+    # Build a Web Mercator (EPSG:3857) bbox of HALF_EXTENT_M around the
+    # parcel. EPT data is stored in Web Mercator so this is the native
+    # bounds format PDAL expects.
+    HALF_EXTENT_M = 75  # 150m × 150m square — covers oversized residential parcels
+    to_wmerc = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    cx, cy = to_wmerc.transform(lng, lat)
+    bounds_str = (
+        f"([{cx - HALF_EXTENT_M}, {cx + HALF_EXTENT_M}], "
+        f"[{cy - HALF_EXTENT_M}, {cy + HALF_EXTENT_M}])"
+    )
 
-    # Concatenate raw points + classifications, reprojecting from each
-    # LAS's native CRS to a LOCAL ENU METER FRAME centered on the
-    # parcel address. This is non-obvious but critical: the downstream
-    # pipeline (isolate_roof, segment_planes, build_facets) assumes
-    # x/y/z are all in METERS at the same scale so that Open3D normal
-    # estimation finds real surface normals. If we returned WGS84
-    # lng/lat for x/y while z is meters, the unit-mismatch makes every
-    # normal point near-straight-up (since z variance >> deg variance),
-    # collapsing all DBSCAN clusters into one plane and producing zero
-    # facets.
-    #
-    # Local frame: Azimuthal Equidistant projection centered on (lat, lng).
-    # Preserves distances around the origin perfectly — the parcel is
-    # within 500m of origin so distortion is negligible. x = meters east,
-    # y = meters north, z = meters up (untouched from LAS).
+    log.info("EPT query: url=%s bounds=%s", ept_url, bounds_str)
+
+    # Run PDAL pipeline. readers.ept fetches only octree chunks that
+    # intersect `bounds` — far cheaper than full LAZ download.
+    pipeline_json = {
+        "pipeline": [
+            {
+                "type": "readers.ept",
+                "filename": ept_url,
+                "bounds": bounds_str,
+                # `threads` controls the number of parallel HTTP fetches
+                # for octree chunks. Modern PDAL aliases this to
+                # `requests` — only set one. 8 is plenty for a parcel-
+                # sized bbox (typically 1-4 chunks).
+                "threads": 8,
+            },
+            # Reproject from EPT's Web Mercator to WGS84 lng/lat first
+            # (so we can apply consistent downstream logic).
+            {
+                "type": "filters.reprojection",
+                "out_srs": "EPSG:4326",
+            },
+        ],
+    }
+
+    t0 = time.time()
+    import json as _json  # noqa: PLC0415
+    pipeline = pdal.Pipeline(_json.dumps(pipeline_json))
+    n_points = pipeline.execute()
+    log.info("PDAL EPT fetch returned %d points in %.1fs", n_points, time.time() - t0)
+
+    if n_points == 0:
+        raise RuntimeError("no points returned from EPT query — bounds may not intersect coverage")
+
+    arr = pipeline.arrays[0]  # numpy structured array
+    # Standard EPT fields: X, Y, Z, Classification, ReturnNumber, NumberOfReturns
+    # After reprojection X=lng, Y=lat, Z=meters.
+    src_lng = np.asarray(arr["X"], dtype=np.float64)
+    src_lat = np.asarray(arr["Y"], dtype=np.float64)
+    src_z = np.asarray(arr["Z"], dtype=np.float64)
+    classification = np.asarray(arr["Classification"], dtype=np.uint8)
+
+    # Now reproject lng/lat → local AEQD meter frame centered on the
+    # parcel. Same frame downstream stages (isolate_roof, segment_planes,
+    # build_facets) expect: x = meters east, y = meters north, z = meters.
     local_crs = pyproj.CRS.from_proj4(
         f"+proj=aeqd +lat_0={lat} +lon_0={lng} +ellps=WGS84 +units=m",
     )
-    all_xyz: list[Any] = []
-    all_class: list[Any] = []
-    for las in pulled:
-        src_xyz = np.vstack((las.x, las.y, las.z)).T  # (N, 3) in native CRS
-        try:
-            src_crs = las.header.parse_crs()
-        except Exception as err:  # noqa: BLE001
-            log.warning("CRS parse failed for tile: %s", err)
-            src_crs = None
+    to_local = pyproj.Transformer.from_crs("EPSG:4326", local_crs, always_xy=True)
+    xs, ys = to_local.transform(src_lng, src_lat)
+    xyz = np.column_stack([xs, ys, src_z])
 
-        if src_crs is None:
-            log.warning(
-                "tile missing CRS; cannot reproject — falling back to "
-                "passing native coords (downstream segmentation will likely fail)",
-            )
-            xyz = src_xyz
-        else:
-            transformer = pyproj.Transformer.from_crs(
-                src_crs, local_crs, always_xy=True,
-            )
-            xs, ys = transformer.transform(src_xyz[:, 0], src_xyz[:, 1])
-            xyz = np.column_stack([xs, ys, src_xyz[:, 2]])
+    log.info(
+        "reprojected to local meters: bbox x=[%.1f, %.1f] y=[%.1f, %.1f] z=[%.1f, %.1f]",
+        xs.min(), xs.max(), ys.min(), ys.max(), src_z.min(), src_z.max(),
+    )
 
-        all_xyz.append(xyz)
-        all_class.append(np.asarray(las.classification))
-
-    xyz = np.vstack(all_xyz)
-    classification = np.concatenate(all_class)
-
-    # Filter to a residential-parcel-sized square in the local meter
-    # frame (origin is the address). Previous value of 250m grabbed
-    # ~500m × 500m of land, which on suburban density meant ~100 other
-    # houses' worth of roof points contaminated the segmentation —
-    # DBSCAN clustered them all as one giant near-horizontal plane
-    # (the dominant orientation across many roofs is "up-ish"). 60m
-    # half-extent is a 120m × 120m square — large enough to capture
-    # an oversized residential parcel (Oak Park is 80m × 50m) but
-    # tight enough to exclude immediate neighbours.
-    HALF_EXTENT_M = 60
+    # Final tight bbox filter in local meters. Already filtered roughly
+    # by the EPT bounds query, but EPT chunks return entire octree
+    # leaves, so we may have points up to ~15m past the bbox edge.
     keep = (
         (np.abs(xyz[:, 0]) <= HALF_EXTENT_M) &
         (np.abs(xyz[:, 1]) <= HALF_EXTENT_M)
     )
 
-    # Preserve the WGS84 bbox in the return value for callers that
-    # need to map output back to lat/lng (build_facets converts facet
-    # polygons back via the same aeqd CRS).
     bbox_wgs = _bbox_around(lat=lat, lng=lng, half_extent_m=HALF_EXTENT_M)
     return {
         "xyz": xyz[keep],
         "classification": classification[keep],
         "bbox": bbox_wgs,
-        "tile_count": len(pulled),
+        "tile_count": 1,  # EPT = one query, not multi-tile concat
         "fetched_at": int(time.time()),
-        # Used by downstream stages that need to project points back
-        # to WGS84 (e.g. when emitting RoofData.facets[].polygon).
         "origin_lat": lat,
         "origin_lng": lng,
         "frame": "aeqd_meters",
     }
 
 
-def _ensure_cached_tile(tile_url: str, cache_root: str | None) -> str:
-    """Download tile to local disk if not already cached. Returns local path.
-
-    Streams in 8MB chunks because 3DEP LAZ tiles are routinely 200-500MB
-    and we don't want to hold the whole thing in memory before writing.
-    """
-    import requests  # noqa: PLC0415
-
-    if not cache_root:
-        cache_root = "/tmp/voxaris-lidar"
-    os.makedirs(cache_root, exist_ok=True)
-    h = hashlib.sha1(tile_url.encode("utf-8")).hexdigest()[:16]
-    # Honour the actual file extension from the URL — defaults to .laz.
-    ext = ".laz"
-    for candidate in (".laz", ".las"):
-        if tile_url.lower().endswith(candidate):
-            ext = candidate
-            break
-    local_path = os.path.join(cache_root, f"{h}{ext}")
-    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-        log.info("cache hit: %s", local_path)
-        return local_path
-    log.info("downloading %s → %s", tile_url, local_path)
-    with requests.get(tile_url, stream=True, timeout=120) as resp:
-        resp.raise_for_status()
-        with open(local_path, "wb") as out:
-            for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
-                if chunk:
-                    out.write(chunk)
-    return local_path
-
-
 def _bbox_around(*, lat: float, lng: float, half_extent_m: int) -> dict[str, float]:
-    # Cheap meters→deg conversion at the latitude. Good for sub-km bboxes.
-    import math  # noqa: PLC0415
-
     m_per_deg_lat = 111_320.0
     m_per_deg_lng = m_per_deg_lat * math.cos(math.radians(lat))
     d_lat = half_extent_m / m_per_deg_lat

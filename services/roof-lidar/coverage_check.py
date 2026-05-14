@@ -2,26 +2,22 @@
 services/roof-lidar/coverage_check.py
 
 Decides whether the USGS 3DEP LiDAR archive has point cloud coverage
-for a given lat/lng, and returns the tile download URLs that intersect
-a ~500m bbox around the address plus the most recent capture date.
+for a given lat/lng, and returns the EPT (Entwine Point Tile) project
+URL that covers it.
 
-PRIMARY DATA SOURCE — USGS National Map TNM Access API:
+Why EPT instead of LAZ tiles? EPT is a spatially-indexed S3-hosted
+point-cloud format. PDAL's readers.ept supports bbox-bounded queries —
+we fetch ~1-2 MB of points covering the parcel instead of downloading
+a 360MB LAZ tile that covers 1500m × 1500m. Cold path drops from
+~6 min to ~30 sec.
 
-    https://tnmaccess.nationalmap.gov/api/v1/products
+USGS hosts EPT versions of every 3DEP project at:
+    https://s3-us-west-2.amazonaws.com/usgs-lidar-public/<PROJECT>/ept.json
 
-This is the same REST endpoint that powers the USGS National Map
-Viewer. It accepts a bbox query and returns matching products
-(including Lidar Point Cloud) with download URLs, capture dates, and
-size metadata. Much simpler — and CORRECT — than the previous attempt
-of listing S3 prefixes by state (which silently failed for FL because
-the project structure is nested several levels deep and the first 50
-keys alphabetically are metadata/browse JPGs, not .laz tiles).
-
-CONUS coverage is published at https://prd-tnm.s3.amazonaws.com/ under
-`StagedProducts/Elevation/LPC/Projects/`. The TNM API maps a bbox to a
-list of tiles; this function returns those tiles' direct-HTTPS
-downloadURLs which pull_lidar.py fetches over HTTPS (no S3 client
-needed for the data retrieval — TNM serves on rockyweb.usgs.gov).
+FL coverage is published per-county under FL_Peninsular_FDEM_<County>_2018
+(2018/2019 statewide flight). When we expand outside FL we'll need
+either reverse-geocoding to find the right project or the full
+3DEP project index. For now: hardcoded map for Voxaris's service area.
 """
 
 from __future__ import annotations
@@ -31,120 +27,76 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-TNM_API_URL = "https://tnmaccess.nationalmap.gov/api/v1/products"
-# Half-extent in meters for the bbox we send to TNM. Residential
-# parcels are typically <50m across; 250m gives margin for the 4
-# adjacent tiles a flight stores them in. 500m would pull in
-# neighbouring tiles unnecessarily.
-BBOX_HALF_EXTENT_M = 250
+EPT_BASE_URL = "https://s3-us-west-2.amazonaws.com/usgs-lidar-public"
+
+# Hardcoded FL county bounds (rough lat/lng rectangles). Maps each
+# county to its USGS EPT project name. Expand as the service rolls
+# out to new markets — replace with proper TIGER/Line lookup once
+# we're outside Florida.
+FL_COUNTY_PROJECTS: list[dict[str, Any]] = [
+    # Orlando metro (Voxaris primary market)
+    {"county": "Orange",  "project": "FL_Peninsular_FDEM_Orange_2018",   "min_lat": 28.34, "max_lat": 28.78, "min_lng": -81.66, "max_lng": -80.87},
+    {"county": "Seminole","project": "FL_Peninsular_Seminole_2018",     "min_lat": 28.60, "max_lat": 28.86, "min_lng": -81.45, "max_lng": -81.00},
+    {"county": "Osceola", "project": "FL_Peninsular_FDEM_Osceola_2018",  "min_lat": 27.78, "max_lat": 28.43, "min_lng": -81.65, "max_lng": -80.86},
+    {"county": "Lake",    "project": "FL_Peninsular_Lake_2018",          "min_lat": 28.45, "max_lat": 29.05, "min_lng": -81.96, "max_lng": -81.34},
+    {"county": "Volusia", "project": "FL_Peninsular_Volusia_2018",       "min_lat": 28.74, "max_lat": 29.39, "min_lng": -81.66, "max_lng": -80.78},
+    # Tampa metro
+    {"county": "Hillsborough", "project": "FL_Peninsular_Hillsborough_2018", "min_lat": 27.62, "max_lat": 28.17, "min_lng": -82.61, "max_lng": -82.05},
+    {"county": "Pinellas",     "project": "FL_Peninsular_Pinellas_2018",     "min_lat": 27.58, "max_lat": 28.18, "min_lng": -82.85, "max_lng": -82.55},
+    {"county": "Pasco",        "project": "FL_Peninsular_FDEM_Pasco_2018",   "min_lat": 28.16, "max_lat": 28.66, "min_lng": -82.78, "max_lng": -81.99},
+    {"county": "Polk",         "project": "FL_Peninsular_FDEM_Polk_2018",    "min_lat": 27.66, "max_lat": 28.31, "min_lng": -82.10, "max_lng": -81.20},
+    # South FL
+    {"county": "Brevard",      "project": "FL_Peninsular_FDEM_Brevard_2018",  "min_lat": 27.78, "max_lat": 28.99, "min_lng": -80.93, "max_lng": -80.42},
+    {"county": "PalmBeach",    "project": "FL_Peninsular_FDEM_PalmBeach_2019","min_lat": 26.32, "max_lat": 26.97, "min_lng": -80.42, "max_lng": -80.03},
+    {"county": "Broward",      "project": "FL_Peninsular_FDEM_Broward_2018",  "min_lat": 25.95, "max_lat": 26.32, "min_lng": -80.49, "max_lng": -80.04},
+    {"county": "Miami-Dade",   "project": "FL_Peninsular_FDEM_MiamiDade_2018","min_lat": 25.13, "max_lat": 25.98, "min_lng": -80.87, "max_lng": -80.12},
+]
 
 
 def check_3dep_coverage(*, lat: float, lng: float) -> dict[str, Any]:
     """Return dict with keys:
         covered: bool
-        tile_ids: list[str]           — Direct HTTPS download URLs for
-                                        each LAZ tile that intersects
-                                        the parcel bbox. pull_lidar.py
-                                        fetches these directly.
+        tile_ids: list[str]           — [ept_url] when covered (single EPT
+                                        URL, not LAZ tile URLs anymore)
         project_name: str | None      — USGS project slug
-                                        (e.g. "FL_Peninsular_FDEM_2018_D19_DRRA")
-        capture_date: str | None      — ISO date of the flight
-                                        (publicationDate from TNM)
-        coverage_pct: float           — fraction of the bbox covered.
-                                        1.0 when TNM returned ≥1 tile.
+        capture_date: str | None      — Hardcoded per-project; refine when
+                                        we have project-metadata fetches
+        coverage_pct: float           — 1.0 when project found, 0.0 otherwise
     """
-    try:
-        import requests  # noqa: PLC0415
-    except ImportError as err:
-        raise RuntimeError(f"requests not installed: {err}") from err
-
-    bbox = _bbox_around(lat=lat, lng=lng, half_extent_m=BBOX_HALF_EXTENT_M)
-    bbox_str = (
-        f"{bbox['min_lng']},{bbox['min_lat']},{bbox['max_lng']},{bbox['max_lat']}"
-    )
-
-    params = {
-        "datasets": "Lidar Point Cloud (LPC)",
-        "bbox": bbox_str,
-        "prodFormats": "LAS,LAZ",
-        "max": 4,  # pull_lidar uses tile_ids[:1] for residential parcels
-    }
-    try:
-        response = requests.get(TNM_API_URL, params=params, timeout=15)
-        response.raise_for_status()
-    except Exception as err:  # noqa: BLE001
-        log.warning("TNM API request failed: %s", err)
+    project = _find_project(lat=lat, lng=lng)
+    if not project:
+        log.warning("no EPT project found for (%.6f, %.6f)", lat, lng)
         return _no_coverage()
 
-    payload = response.json()
-    items = payload.get("items", []) or []
-    if not items:
-        return _no_coverage()
-
-    # TNM returns up to 4 tiles that overlap our query bbox. Each tile
-    # is ~1500m × 1500m, query bbox is 500m × 500m, so most queries
-    # return 2-4 tiles even when only ONE strictly contains the
-    # parcel point. The first tile in the response is alphabetical
-    # (not spatial relevance), so we MUST filter to the tile whose
-    # boundingBox actually contains (lat, lng). Falling back to
-    # closest-center if no exact match (defensive — TNM bbox metadata
-    # has occasional off-by-one issues at tile edges).
-    tiles: list[dict[str, Any]] = []
-    for item in items:
-        url = item.get("downloadURL")
-        fmt = (item.get("format") or "").upper()
-        if not url:
-            continue
-        if fmt not in ("LAZ", "LAS"):
-            continue
-        bb = item.get("boundingBox") or {}
-        try:
-            min_x = float(bb.get("minX", 0.0))
-            max_x = float(bb.get("maxX", 0.0))
-            min_y = float(bb.get("minY", 0.0))
-            max_y = float(bb.get("maxY", 0.0))
-        except (TypeError, ValueError):
-            min_x = max_x = min_y = max_y = 0.0
-        contains_parcel = (min_x <= lng <= max_x) and (min_y <= lat <= max_y)
-        center_dist = (
-            ((min_x + max_x) / 2 - lng) ** 2 +
-            ((min_y + max_y) / 2 - lat) ** 2
-        ) ** 0.5
-        tiles.append({
-            "url": url,
-            "publicationDate": item.get("publicationDate"),
-            "title": item.get("title"),
-            "sizeInBytes": item.get("sizeInBytes"),
-            "contains_parcel": contains_parcel,
-            "center_dist": center_dist,
-        })
-
-    if not tiles:
-        return _no_coverage()
-
-    # Prefer tiles that strictly contain the parcel; fall back to the
-    # tile whose center is closest to the parcel. Returns sorted list
-    # so tile_ids[:1] in pull_lidar gets the right one.
-    tiles.sort(key=lambda t: (not t["contains_parcel"], t["center_dist"]))
-    if not tiles[0]["contains_parcel"]:
-        log.warning(
-            "no tile strictly contains parcel (%.6f, %.6f); using nearest-center fallback: %s",
-            lat, lng, tiles[0]["title"],
-        )
-
-    capture_date = max(
-        (t["publicationDate"] for t in tiles if t.get("publicationDate")),
-        default=None,
-    )
-    project_name = _infer_project_name(tiles[0]["url"])
-
+    ept_url = f"{EPT_BASE_URL}/{project['project']}/ept.json"
     return {
         "covered": True,
-        "tile_ids": [t["url"] for t in tiles],
-        "project_name": project_name,
-        "capture_date": capture_date,
+        # tile_ids[0] is the EPT URL. pull_lidar.py treats this as
+        # a PDAL pipeline source, not a raw LAZ file.
+        "tile_ids": [ept_url],
+        "project_name": project["project"],
+        "capture_date": project.get("capture_date") or _infer_capture_date(project["project"]),
         "coverage_pct": 1.0,
     }
+
+
+def _find_project(*, lat: float, lng: float) -> dict[str, Any] | None:
+    """Match parcel lat/lng to the FL county whose bounds contain it."""
+    for proj in FL_COUNTY_PROJECTS:
+        if proj["min_lat"] <= lat <= proj["max_lat"] and proj["min_lng"] <= lng <= proj["max_lng"]:
+            return proj
+    return None
+
+
+def _infer_capture_date(project_name: str) -> str | None:
+    """Pull the year out of the project name as a coarse capture date.
+    E.g. FL_Peninsular_FDEM_Orange_2018 → 2018-01-01. Replace with real
+    metadata lookup once we have time-series projects in scope."""
+    parts = project_name.split("_")
+    for p in parts:
+        if p.isdigit() and len(p) == 4 and 2000 <= int(p) <= 2030:
+            return f"{p}-01-01"
+    return None
 
 
 def _no_coverage() -> dict[str, Any]:
@@ -155,31 +107,3 @@ def _no_coverage() -> dict[str, Any]:
         "capture_date": None,
         "coverage_pct": 0.0,
     }
-
-
-def _bbox_around(*, lat: float, lng: float, half_extent_m: float) -> dict[str, float]:
-    """Small WGS84 bbox using local-flat-earth approximation. Good
-    enough for the ±250m TNM query — we're not doing precise geodesy."""
-    import math  # noqa: PLC0415
-    lat_per_m = 1.0 / 111_320.0
-    lng_per_m = 1.0 / (111_320.0 * math.cos(math.radians(lat)))
-    dlat = half_extent_m * lat_per_m
-    dlng = half_extent_m * lng_per_m
-    return {
-        "min_lat": lat - dlat,
-        "max_lat": lat + dlat,
-        "min_lng": lng - dlng,
-        "max_lng": lng + dlng,
-    }
-
-
-def _infer_project_name(url: str) -> str | None:
-    """Pull the project slug out of a TNM download URL like
-    https://rockyweb.usgs.gov/.../Projects/FL_Peninsular_FDEM_2018_D19_DRRA/...
-    """
-    parts = url.split("/")
-    try:
-        idx = parts.index("Projects")
-        return parts[idx + 1] if idx + 1 < len(parts) else None
-    except ValueError:
-        return None
