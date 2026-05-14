@@ -1,7 +1,11 @@
 // scripts/verify-roof-engine.ts
 import assert from "node:assert/strict";
-import { computeFlashing } from "@/lib/roof-engine";
-import type { Edge, RoofObject } from "@/types/roof";
+import {
+  classifyComplexity,
+  computeFlashing,
+  suggestedWastePctTierC,
+} from "@/lib/roof-engine";
+import type { Edge, Facet, RoofObject } from "@/types/roof";
 
 const tests: Array<{ name: string; run: () => void }> = [];
 function test(name: string, run: () => void) {
@@ -98,6 +102,107 @@ test("computeFlashing: pipe boots count vents + stacks (not other kinds)", () =>
   ];
   const result = computeFlashing([], [], objects);
   assert.equal(result.pipeBootCount, 2);
+});
+
+// ---- classifyComplexity / suggestedWastePctTierC --------------------------
+
+function emptyFacet(id: string, polygon: Array<{ lat: number; lng: number }>): Facet {
+  return {
+    id, polygon,
+    normal: { x: 0, y: 0, z: 1 },
+    pitchDegrees: 22.6, azimuthDeg: 180,
+    areaSqftSloped: 1000, areaSqftFootprint: 900,
+    material: null, isLowSlope: false,
+  };
+}
+
+test("classifyComplexity: 1 facet, no dormers, no valleys -> simple", () => {
+  const result = classifyComplexity({
+    facets: [emptyFacet("f1", [
+      { lat: 0, lng: 0 }, { lat: 0, lng: 1 },
+      { lat: 1, lng: 1 }, { lat: 1, lng: 0 },
+    ])],
+    edges: [],
+    objects: [],
+  });
+  assert.equal(result, "simple");
+});
+
+test("classifyComplexity: 4 facets -> moderate", () => {
+  const facets = [1, 2, 3, 4].map((i) =>
+    emptyFacet(`f${i}`, [
+      { lat: 0, lng: 0 }, { lat: 0, lng: 1 },
+      { lat: 1, lng: 1 }, { lat: 1, lng: 0 },
+    ]),
+  );
+  const result = classifyComplexity({ facets, edges: [], objects: [] });
+  assert.equal(result, "moderate");
+});
+
+test("classifyComplexity: 6 facets -> complex", () => {
+  const facets = [1, 2, 3, 4, 5, 6].map((i) =>
+    emptyFacet(`f${i}`, [
+      { lat: 0, lng: 0 }, { lat: 0, lng: 1 },
+      { lat: 1, lng: 1 }, { lat: 1, lng: 0 },
+    ]),
+  );
+  const result = classifyComplexity({ facets, edges: [], objects: [] });
+  assert.equal(result, "complex");
+});
+
+test("classifyComplexity: 1 dormer bumps to moderate", () => {
+  const result = classifyComplexity({
+    facets: [emptyFacet("f1", [
+      { lat: 0, lng: 0 }, { lat: 0, lng: 1 },
+      { lat: 1, lng: 1 }, { lat: 1, lng: 0 },
+    ])],
+    edges: [],
+    objects: [{
+      id: "d1", kind: "dormer",
+      position: { lat: 0.5, lng: 0.5, heightM: 0 },
+      dimensionsFt: { width: 6, length: 8 },
+      facetId: null,
+    }],
+  });
+  assert.equal(result, "moderate");
+});
+
+test("classifyComplexity: 3 dormers -> complex (dormer-heavy signal)", () => {
+  const result = classifyComplexity({
+    facets: [emptyFacet("f1", [
+      { lat: 0, lng: 0 }, { lat: 0, lng: 1 },
+      { lat: 1, lng: 1 }, { lat: 1, lng: 0 },
+    ])],
+    edges: [],
+    objects: [1, 2, 3].map((i) => ({
+      id: `d${i}`, kind: "dormer" as const,
+      position: { lat: 0.5, lng: 0.5, heightM: 0 },
+      dimensionsFt: { width: 6, length: 8 },
+      facetId: null,
+    })),
+  });
+  assert.equal(result, "complex");
+});
+
+test("classifyComplexity: 60 LF of valleys -> complex", () => {
+  const result = classifyComplexity({
+    facets: [emptyFacet("f1", [
+      { lat: 0, lng: 0 }, { lat: 0, lng: 1 },
+      { lat: 1, lng: 1 }, { lat: 1, lng: 0 },
+    ])],
+    edges: [
+      { id: "v1", type: "valley", polyline: [], lengthFt: 30, facetIds: [], confidence: 0.4 },
+      { id: "v2", type: "valley", polyline: [], lengthFt: 35, facetIds: [], confidence: 0.4 },
+    ],
+    objects: [],
+  });
+  assert.equal(result, "complex");
+});
+
+test("suggestedWastePctTierC: 7 / 11 / 14", () => {
+  assert.equal(suggestedWastePctTierC("simple"), 7);
+  assert.equal(suggestedWastePctTierC("moderate"), 11);
+  assert.equal(suggestedWastePctTierC("complex"), 14);
 });
 
 // ---- runner ---------------------------------------------------------------
