@@ -9,11 +9,11 @@ import type {
  * Wall-step / headwall / apron are zero in Tier C (Tier B+ signals).
  */
 export function computeFlashing(
-  facets: Facet[],
+  _facets: Facet[],
   edges: Edge[],
   objects: RoofObject[],
 ): FlashingBreakdown {
-  void facets; // not used in Tier C flashing math; here for Tier B+ extension
+  // _facets reserved for Tier B+ extension (wall-step detection)
 
   const chimneys = objects.filter((o) => o.kind === "chimney");
   const chimneyLf = chimneys.reduce(
@@ -46,6 +46,7 @@ export function computeFlashing(
     .reduce((s, e) => s + e.lengthFt, 0);
   const dripEdgeLf = eaveLf + rakeLf;
 
+  // Uses unrounded valleyLf so IWS doesn't accumulate rounding error.
   const iwsSqft = Math.round(eaveLf * 3 + valleyLf * 6);
 
   const pipeBootCount = objects.filter(
