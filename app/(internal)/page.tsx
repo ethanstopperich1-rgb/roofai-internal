@@ -60,11 +60,13 @@ import type {
   RoofData,
   PricingInputs,
   PricedEstimate,
+  EstimateV2,
 } from "@/types/roof";
 import { priceRoofData } from "@/lib/roof-engine";
 import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import { FacetList } from "@/components/roof/FacetList";
+import { saveEstimateV2 } from "@/lib/storage";
 import { DEFAULT_ADDONS } from "@/lib/pricing";
 import { buildWasteTable } from "@/lib/roof-geometry";
 import { BRAND_CONFIG } from "@/lib/branding";
@@ -554,6 +556,10 @@ function HomePageInner() {
   };
 
   const enabledAddOns = addOns.filter((a) => a.enabled).reduce((s, x) => s + x.price, 0);
+  // v1-compatible projection — feeds OutputButtons / InsightsPanel /
+  // generatePdf / buildSummaryText, all of which still consume the
+  // legacy Estimate shape. detailed/lengths/waste come from priced
+  // (Tier C engine), polygons come from RoofData via activePolygons.
   const estimate: Estimate = {
     id: estimateId,
     createdAt: new Date().toISOString(),
@@ -578,13 +584,57 @@ function HomePageInner() {
     claim: isInsuranceClaim ? claim : undefined,
   };
 
+  // ─── EstimateV2 — canonical persisted shape ─────────────────────────
+  // Tier C save: roofData + pricingInputs + priced + meta. The v1
+  // Estimate above is still constructed for in-page consumers that
+  // haven't migrated yet (OutputButtons, generatePdf, InsightsPanel),
+  // but localStorage saves go through saveEstimateV2 from now on.
+  const estimateV2 = useMemo<EstimateV2 | null>(() => {
+    if (!roofData || roofData.source === "none" || !priced) return null;
+    return {
+      version: 2,
+      id: estimateId,
+      createdAt: new Date().toISOString(),
+      staff,
+      customerName,
+      notes,
+      address: address ?? { formatted: addressText },
+      roofData,
+      pricingInputs,
+      priced,
+      isInsuranceClaim,
+      photos: photos.length ? photos : undefined,
+      claim: isInsuranceClaim ? claim : undefined,
+    };
+  }, [
+    roofData,
+    priced,
+    pricingInputs,
+    estimateId,
+    staff,
+    customerName,
+    notes,
+    address,
+    addressText,
+    isInsuranceClaim,
+    photos,
+    claim,
+  ]);
+
   const applyTier = (tier: ProposalTier) => {
     setAssumptions((a) => ({ ...a, material: tier.material }));
     setAddOns((cur) => cur.map((x) => ({ ...x, enabled: tier.includedAddOnIds.includes(x.id) })));
   };
 
   useKeyboardShortcuts({
-    onSave: () => shown && saveEstimate(estimate),
+    // Save prefers v2 (canonical). Falls back to legacy v1 save only
+    // when no RoofData is available — defensive; this shouldn't happen
+    // once the rep is on the breakdown page since v2 requires priced.
+    onSave: () => {
+      if (!shown) return;
+      if (estimateV2) saveEstimateV2(estimateV2);
+      else saveEstimate(estimate);
+    },
     onPdf: () => shown && generatePdf(estimate),
     onEmail: () => {
       if (!shown) return;
