@@ -9,6 +9,14 @@ import { saveEstimate } from "@/lib/storage";
 interface Props {
   estimate: Estimate;
   onSaved?: () => void;
+  /** Optional override for the localStorage write. When provided, the
+   *  visible Save button calls this INSTEAD OF `saveEstimate(estimate)`
+   *  — letting the /internal page funnel saves through the canonical
+   *  EstimateV2 path (saveEstimateV2) while /quote and any other v1-only
+   *  callers continue to omit it and keep the legacy behavior. The
+   *  Supabase /api/proposals POST below is unaffected — it always runs
+   *  off the v1 Estimate shape since /api/proposals hasn't migrated. */
+  onSave?: () => void;
   /** Optional — when the rep opened this estimator from an existing lead
    *  drawer (or from a /quote ingest where we know the lead public_id),
    *  passing it here lets /api/proposals do an exact match by id rather
@@ -28,6 +36,7 @@ interface Props {
 export default function OutputButtons({
   estimate,
   onSaved,
+  onSave,
   leadPublicId,
   customerEmail,
   office,
@@ -53,7 +62,11 @@ export default function OutputButtons({
    *  the UI still reports "saved" instantly; failure logs a warning
    *  and the localStorage copy still works for the rep's own browser. */
   const persist = () => {
-    saveEstimate(estimate);
+    // If the caller provided an onSave override (e.g. /internal funnels
+    // through saveEstimateV2), use it instead of the legacy v1 write.
+    // Otherwise (e.g. /quote) keep the original saveEstimate path.
+    if (onSave) onSave();
+    else saveEstimate(estimate);
     void fetch("/api/proposals", {
       method: "POST",
       credentials: "same-origin",

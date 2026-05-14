@@ -137,6 +137,15 @@ function HomePageInner() {
   // Once-per-address guard so RoofData-driven sqft / complexity seeding
   // doesn't re-stomp rep edits made after the first auto-fill.
   const roofDataAppliedForAddressRef = useRef<string | null>(null);
+  // Flips to true on any user-initiated assumptions edit. Prevents the
+  // pre-arrival seed effect from stomping fields the rep already touched
+  // while the pipeline was still in flight (e.g. rep typed in sqft, then
+  // RoofData lands and would otherwise overwrite it).
+  const assumptionsTouchedRef = useRef(false);
+  // Fetch-generation counter for runRoofPipelineFetch — guards against
+  // out-of-order responses on rapid address switching. Each fetch captures
+  // the counter; the response is dropped if the counter has moved on.
+  const fetchGenRef = useRef(0);
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [photos, setPhotos] = useState<PhotoMeta[]>([]);
   const [claim, setClaim] = useState<ClaimContext>({ carrier: "state-farm" });
@@ -328,9 +337,8 @@ function HomePageInner() {
 
   // Headline totals — derived directly from `priced`. priceRoofData
   // already includes add-on contributions in subtotal/total, so we don't
-  // double-add them here. The legacy `enabledAddOns` local (used by the
-  // Estimate object below) still computes the add-on sum separately for
-  // the v1 Estimate.baseLow / baseHigh fields.
+  // double-add them here. The v1 Estimate.baseLow / baseHigh fields
+  // below also use these as-is for the same reason.
   const low = priced ? Math.round(priced.totalLow) : 0;
   const high = priced ? Math.round(priced.totalHigh) : 0;
   const total = priced
@@ -347,6 +355,10 @@ function HomePageInner() {
     const key = `${roofData.address.lat},${roofData.address.lng}`;
     if (roofDataAppliedForAddressRef.current === key) return;
     roofDataAppliedForAddressRef.current = key;
+    // If the rep already edited assumptions while the pipeline was
+    // in flight, don't stomp their work — leave sqft/complexity alone.
+    // They can still re-trigger seeding by clicking New and re-entering.
+    if (assumptionsTouchedRef.current) return;
     setAssumptions((a) => ({
       ...a,
       sqft: roofData.totals.totalRoofAreaSqft || a.sqft,
@@ -417,6 +429,16 @@ function HomePageInner() {
     );
   }, [roofData]);
 
+  // Wrapper for setAssumptions to use at *user-driven* call sites
+  // (AssumptionsEditor onChange, voice note merge, applyTier). Flips
+  // assumptionsTouchedRef so the post-arrival RoofData seed effect
+  // backs off and doesn't stomp the rep's edits. The seed effect itself
+  // calls the raw setAssumptions so it doesn't trip its own guard.
+  const userSetAssumptions: typeof setAssumptions = (updater) => {
+    assumptionsTouchedRef.current = true;
+    setAssumptions(updater);
+  };
+
   /**
    * Gate between address selection and the estimate pipeline. When the
    * incoming address has a lat/lng (= user picked from autocomplete or we
@@ -442,6 +464,11 @@ function HomePageInner() {
    *  canonical RoofData feed for everything downstream. */
   const runRoofPipelineFetch = async (addr: AddressInfo) => {
     if (addr.lat == null || addr.lng == null) return;
+    // Bump the gen counter and capture this fetch's slot. On rapid
+    // address switching, an older fetch's response will see its
+    // captured myGen no longer match fetchGenRef.current and bail
+    // before it can stomp the newer address's RoofData.
+    const myGen = ++fetchGenRef.current;
     setPipelineLoading(true);
     setPipelineError(null);
     try {
@@ -454,12 +481,14 @@ function HomePageInner() {
       );
       if (!res.ok) throw new Error(`pipeline ${res.status}`);
       const data = (await res.json()) as RoofData;
+      if (fetchGenRef.current !== myGen) return; // stale — newer fetch won
       setRoofData(data);
     } catch (err) {
+      if (fetchGenRef.current !== myGen) return;
       setPipelineError(err instanceof Error ? err.message : String(err));
       setRoofData(null);
     } finally {
-      setPipelineLoading(false);
+      if (fetchGenRef.current === myGen) setPipelineLoading(false);
     }
   };
 
@@ -479,6 +508,7 @@ function HomePageInner() {
     setRoofData(null);
     setPipelineError(null);
     roofDataAppliedForAddressRef.current = null;
+    assumptionsTouchedRef.current = false;
 
     if (addr.lat == null || addr.lng == null) {
       setAssumptions((a) => ({
@@ -501,7 +531,7 @@ function HomePageInner() {
    *  any field manually after the merge. */
   const onVoiceNoteResult = (result: VoiceNoteResult) => {
     const s = result.structured;
-    setAssumptions((a) => {
+    userSetAssumptions((a) => {
       const next: Assumptions = { ...a };
       if (s.material) next.material = s.material;
       if (s.complexity) next.complexity = s.complexity;
@@ -555,11 +585,14 @@ function HomePageInner() {
     }
   };
 
-  const enabledAddOns = addOns.filter((a) => a.enabled).reduce((s, x) => s + x.price, 0);
   // v1-compatible projection — feeds OutputButtons / InsightsPanel /
   // generatePdf / buildSummaryText, all of which still consume the
   // legacy Estimate shape. detailed/lengths/waste come from priced
   // (Tier C engine), polygons come from RoofData via activePolygons.
+  // baseLow / baseHigh / total are taken straight from `priced` —
+  // priceRoofData already folds enabled add-ons into the line items
+  // and applies O&P, so adding the add-on sum on top here would
+  // double-count it (this was the customer-facing range bug).
   const estimate: Estimate = {
     id: estimateId,
     createdAt: new Date().toISOString(),
@@ -570,8 +603,8 @@ function HomePageInner() {
     assumptions,
     addOns,
     total,
-    baseLow: Math.round(low + enabledAddOns),
-    baseHigh: Math.round(high + enabledAddOns),
+    baseLow: Math.round(low),
+    baseHigh: Math.round(high),
     isInsuranceClaim,
     // vision / solar fields intentionally omitted in Tier C — the new
     // RoofData feed is the single source of truth and lives in EstimateV2.
@@ -622,7 +655,7 @@ function HomePageInner() {
   ]);
 
   const applyTier = (tier: ProposalTier) => {
-    setAssumptions((a) => ({ ...a, material: tier.material }));
+    userSetAssumptions((a) => ({ ...a, material: tier.material }));
     setAddOns((cur) => cur.map((x) => ({ ...x, enabled: tier.includedAddOnIds.includes(x.id) })));
   };
 
@@ -665,7 +698,13 @@ function HomePageInner() {
     setLivePolygons(null);
     setRoofData(null);
     setPipelineError(null);
+    // Clear in-flight pipeline state — bumping fetchGenRef invalidates
+    // any pending fetch so its eventual resolution can't re-set roofData
+    // or pipelineLoading after the rep has hit New.
+    setPipelineLoading(false);
+    fetchGenRef.current++;
     roofDataAppliedForAddressRef.current = null;
+    assumptionsTouchedRef.current = false;
     hasUserEditedRef.current = false;
     editOriginIsWallFootprintRef.current = false;
   };
@@ -1086,7 +1125,7 @@ function HomePageInner() {
                 />
               )}
               <div className="grid md:grid-cols-2 gap-6">
-                <AssumptionsEditor value={assumptions} onChange={setAssumptions} />
+                <AssumptionsEditor value={assumptions} onChange={userSetAssumptions} />
                 <AddOnsPanel addOns={addOns} onChange={setAddOns} />
               </div>
             </div>
@@ -1118,7 +1157,19 @@ function HomePageInner() {
                   <div className="font-display font-semibold tracking-tight">Output</div>
                   <span className="label">deliver</span>
                 </div>
-                <OutputButtons estimate={estimate} office={office} />
+                <OutputButtons
+                  estimate={estimate}
+                  office={office}
+                  // Funnel the visible Save button through the canonical
+                  // EstimateV2 write when we have one; matches the ⌘S
+                  // shortcut behavior (which already prefers v2). Falls
+                  // back to legacy v1 storage only when no RoofData has
+                  // landed yet.
+                  onSave={() => {
+                    if (estimateV2) saveEstimateV2(estimateV2);
+                    else saveEstimate(estimate);
+                  }}
+                />
               </div>
               <InsightsPanel estimate={estimate} />
             </div>
