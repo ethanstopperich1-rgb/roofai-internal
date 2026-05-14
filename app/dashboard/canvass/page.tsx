@@ -66,7 +66,9 @@ async function load(): Promise<{
         "id, storm_event_id, address_line, city, zip, lat, lng, score, " +
           "distance_miles, status, contacted_at, " +
           "has_recent_roof_permit, last_permit_date, last_permit_type, " +
-          "permit_checked_at, lead_id, created_at",
+          "permit_checked_at, lead_id, created_at, " +
+          // 0015 — skip-trace columns
+          "phone_number, phone_source, phone_match_confidence, phone_checked_at",
       )
       .eq("office_id", officeId)
       .order("score", { ascending: false })

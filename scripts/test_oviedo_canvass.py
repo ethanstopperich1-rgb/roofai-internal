@@ -43,6 +43,12 @@ from pathlib import Path
 import httpx
 from dateutil import parser as dateparser
 
+# Shared skip-trace helpers (TruePeopleSearch / FastPeopleSearch / etc).
+# Sibling import works because both files live in scripts/.
+import os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from skip_trace import skip_trace_phone, PhoneFinding  # noqa: E402
+
 
 # ─── Storm context (real data from IEM, 2026-05-12) ───────────────────────
 
@@ -142,6 +148,9 @@ class CanvassRow:
     has_recent_roof_permit: bool | None
     last_permit_date: str | None
     last_permit_type: str | None
+    phone_number: str | None
+    phone_source: str | None
+    phone_confidence: str | None
     score: float
     notes: str
 
@@ -747,7 +756,9 @@ def main() -> None:
                 hail_inches=HAIL_INCHES, storm_date=STORM_DATE.isoformat(),
                 year_built=None, home_age=None,
                 has_recent_roof_permit=None, last_permit_date=None,
-                last_permit_type=None, score=score,
+                last_permit_type=None,
+                phone_number=None, phone_source=None, phone_confidence=None,
+                score=score,
                 notes="permit lookup skipped",
             ))
     else:
@@ -793,6 +804,32 @@ def main() -> None:
                 score = score_hot_lead(
                     a.distance_miles, finding.last_permit_date, year_built,
                 )
+
+                # Step 3 — skip-trace phone enrichment via the shared
+                # module. Polite-scrape pause built into the module
+                # itself between sources.
+                time.sleep(random.uniform(2.0, 3.0))
+                try:
+                    phone_finding = skip_trace_phone(
+                        page,
+                        a.address_line,
+                        a.city,
+                        a.zip,
+                        owner_name=None,  # Overpass doesn't give us owner
+                        debug_dir=debug_dir,
+                    )
+                except Exception as e:
+                    print(f"    skip-trace exception: {e}", file=sys.stderr)
+                    phone_finding = PhoneFinding(None, None, None, "", error=str(e))
+                if phone_finding.phone_number:
+                    print(
+                        f"    phone={phone_finding.phone_number} "
+                        f"({phone_finding.source}, {phone_finding.confidence} confidence)",
+                        file=sys.stderr,
+                    )
+                else:
+                    print("    phone=unknown", file=sys.stderr)
+
                 # Compose a notes string that surfaces year_built when
                 # known so the CSV reader doesn't have to guess.
                 base_note = finding.portal_error or finding.raw_summary[:80]
@@ -813,6 +850,9 @@ def main() -> None:
                     last_permit_date=(finding.last_permit_date.isoformat()
                                         if finding.last_permit_date else None),
                     last_permit_type=finding.last_permit_type,
+                    phone_number=phone_finding.phone_number,
+                    phone_source=phone_finding.source,
+                    phone_confidence=phone_finding.confidence,
                     score=score,
                     notes=(base_note + year_note).strip(),
                 ))

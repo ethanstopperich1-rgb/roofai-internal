@@ -69,6 +69,12 @@ except ImportError:
     )
     sys.exit(1)
 
+# Skip-trace lives in a sibling module so the test script can use the
+# same helpers without duplicating the polite-scrape logic. Sibling
+# import works because both scripts are run from the repo root.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from skip_trace import skip_trace_phone, PhoneFinding  # noqa: E402
+
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -125,6 +131,12 @@ class CanvassRow:
     # Context needed for the hot-lead re-score after permit data is in
     storm_date: dt.date
     year_built: int | None
+    # Owner name from the parcels table — used by skip_trace for the
+    # surname match that gates phone confidence high/medium/low.
+    owner_name: str | None
+    # Bool to track whether skip-trace has already been attempted on
+    # this row so we don't redo it every nightly run.
+    phone_checked_at: dt.datetime | None
 
 
 @dataclass
@@ -341,7 +353,9 @@ def fetch_pending(conn: psycopg.Connection, county_fips: str, limit: int) -> lis
       ct.zip,
       ct.score,
       se.event_date,
-      p.year_built
+      p.year_built,
+      p.owner_name,
+      ct.phone_checked_at
     from public.canvass_targets ct
     join public.storm_events se on se.id = ct.storm_event_id
     left join public.parcels p
@@ -365,6 +379,8 @@ def fetch_pending(conn: psycopg.Connection, county_fips: str, limit: int) -> lis
             score=float(r[4] or 0),
             storm_date=r[5],
             year_built=r[6],
+            owner_name=r[7],
+            phone_checked_at=r[8],
         )
         for r in rows
     ]
@@ -424,6 +440,45 @@ def score_hot_lead(
             score += 25
 
     return max(-200.0, min(200.0, round(score * 100) / 100))
+
+
+def write_phone_finding(
+    conn: psycopg.Connection,
+    row: CanvassRow,
+    finding: PhoneFinding,
+) -> None:
+    """Update one canvass_targets row with skip-traced phone data.
+
+    Always sets phone_checked_at = now() so the next cron pass
+    skips this row, even if no phone was found (we don't want to
+    re-hit the people-search sites on misses every night)."""
+    if os.environ.get("PERMIT_DRYRUN") == "1":
+        log.info("[DRYRUN] would write phone=%s for %s", finding.phone_number, row.id)
+        return
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update public.canvass_targets
+            set phone_number            = %s,
+                phone_source            = %s,
+                phone_match_confidence  = %s,
+                email                   = %s,
+                skip_trace_raw          = %s,
+                phone_checked_at        = now(),
+                updated_at              = now()
+            where id = %s::uuid
+            """,
+            (
+                finding.phone_number,
+                finding.source,
+                finding.confidence,
+                finding.email,
+                finding.raw_summary[:4000] if finding.raw_summary else None,
+                row.id,
+            ),
+        )
+    conn.commit()
 
 
 def write_finding(
@@ -525,7 +580,14 @@ def enrich_county(
         )
         page = ctx.new_page()
 
+        # Skip-trace tier — applied only to the top SKIP_TRACE_TOP_N rows
+        # of the pending list. Phone lookups are the slowest step
+        # (~15-20s/row with all three sources) so we cap to keep
+        # nightly runs inside the GH Actions free-tier budget.
+        skip_trace_cap = int(os.environ.get("SKIP_TRACE_TOP_N", "100"))
+
         for i, row in enumerate(pending):
+            # ───── Permit lookup (every row) ─────────────────────────
             try:
                 finding = cfg["query"](page, row)
                 write_finding(conn, row, finding)
@@ -543,8 +605,44 @@ def enrich_county(
                 )
             except Exception as e:
                 log.exception("row %s failed: %s", row.id, e)
-                # Mark checked anyway so we don't loop on this row.
                 write_finding(conn, row, None)
+
+            # ───── Skip-trace (top-N only, after permit) ─────────────
+            # Only fire skip-trace when:
+            #   * row is in the top-N by ranking (highest score first)
+            #   * row hasn't been checked already this cycle
+            #   * row has the minimum address fields we need
+            if (
+                i < skip_trace_cap
+                and row.phone_checked_at is None
+                and row.address_line
+                and row.zip
+            ):
+                try:
+                    phone_finding = skip_trace_phone(
+                        page,
+                        row.address_line,
+                        row.city,
+                        row.zip,
+                        owner_name=row.owner_name,
+                    )
+                    write_phone_finding(conn, row, phone_finding)
+                    if phone_finding.phone_number:
+                        log.info(
+                            "    └─ skip-trace: %s (%s, %s confidence)",
+                            phone_finding.phone_number,
+                            phone_finding.source,
+                            phone_finding.confidence,
+                        )
+                    else:
+                        log.info("    └─ skip-trace: no match")
+                except Exception as e:
+                    log.warning("skip-trace exception on %s: %s", row.id, e)
+                    # Mark checked anyway so the row doesn't loop next pass
+                    write_phone_finding(
+                        conn, row,
+                        PhoneFinding(None, None, None, "", error=str(e)),
+                    )
 
             # Polite-scrape jitter — randomized between 3-5s. Without
             # this every county portal will (a) detect us as automated

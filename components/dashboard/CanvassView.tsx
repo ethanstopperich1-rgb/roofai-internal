@@ -62,6 +62,11 @@ export interface CanvassRow {
   permit_checked_at: string | null;
   lead_id: string | null;
   created_at: string;
+  // Skip-traced contact data (migration 0015)
+  phone_number?: string | null;
+  phone_source?: string | null;
+  phone_match_confidence?: "high" | "medium" | "low" | null;
+  phone_checked_at?: string | null;
 }
 
 type SortKey = "score" | "distance" | "address" | "permit";
@@ -735,6 +740,31 @@ function PermitChip({ row }: { row: CanvassRow }) {
   );
 }
 
+function ConfidenceBadge({ level }: { level: "high" | "medium" | "low" }) {
+  const map = {
+    high: {
+      cls: "text-cy-300 border-cy-300/30 bg-cy-300/[0.06]",
+      label: "high confidence",
+    },
+    medium: {
+      cls: "text-amber border-amber/30 bg-amber/[0.06]",
+      label: "medium confidence",
+    },
+    low: {
+      cls: "text-white/55 border-white/[0.08] bg-white/[0.02]",
+      label: "low confidence",
+    },
+  } as const;
+  const v = map[level];
+  return (
+    <span
+      className={`text-[10px] font-mono tabular px-2 py-0.5 rounded-full border ${v.cls}`}
+    >
+      {v.label}
+    </span>
+  );
+}
+
 function ScorePill({ score }: { score: number }) {
   const cls =
     score >= 50
@@ -842,6 +872,39 @@ function RowDrawer({
           )}
         </section>
 
+        {row.phone_checked_at && (
+          <section className="glass-panel p-4">
+            <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-2 flex items-center justify-between">
+              <span>Contact · skip-traced</span>
+              {row.phone_match_confidence && (
+                <ConfidenceBadge level={row.phone_match_confidence} />
+              )}
+            </div>
+            {row.phone_number ? (
+              <div className="flex flex-col gap-1">
+                <a
+                  href={`tel:${row.phone_number}`}
+                  className="text-[15px] text-cy-300 font-mono tabular font-medium hover:text-white transition-colors"
+                >
+                  {row.phone_number}
+                </a>
+                <div className="text-[10.5px] text-white/45 font-mono tabular">
+                  source: {row.phone_source ?? "—"} · checked{" "}
+                  {fmtDateTime(row.phone_checked_at)}
+                </div>
+                <div className="text-[10px] text-white/40 mt-1.5 leading-relaxed">
+                  TCPA/DNC scrub before dialing. FL 8am-9pm window. No
+                  auto-dialer without express written consent.
+                </div>
+              </div>
+            ) : (
+              <div className="text-[13px] text-white/55">
+                No phone match returned by any source.
+              </div>
+            )}
+          </section>
+        )}
+
         <section className="glass-panel p-4">
           <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-2">
             Quick actions
@@ -853,7 +916,7 @@ function RowDrawer({
               )}`}
               target="_blank"
               rel="noreferrer"
-              className="glass-button-secondary inline-flex items-center gap-2 justify-center"
+              className="glass-button-secondary inline-flex items-center gap-2 justify-center active:translate-y-[1px] transition-transform"
             >
               <MapPin size={13} /> Open in Google Maps
             </a>
@@ -862,7 +925,7 @@ function RowDrawer({
                 href={`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${row.lat},${row.lng}`}
                 target="_blank"
                 rel="noreferrer"
-                className="glass-button-secondary inline-flex items-center gap-2 justify-center"
+                className="glass-button-secondary inline-flex items-center gap-2 justify-center active:translate-y-[1px] transition-transform"
               >
                 <Home size={13} /> Street View
               </a>
