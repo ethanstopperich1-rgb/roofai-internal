@@ -41,7 +41,9 @@ import { NextResponse, type NextRequest } from "next/server";
  *   /api/weather            weather context (used by /quote)
  *
  * Protected surfaces (staff-only, gated below):
- *   /                       internal estimator (rep tool)
+ *   /                       internal estimator (rep tool) — anonymous hits
+ *                             redirect to /quote (see root-domain block)
+ *   /rep                    same rep tool; no redirect — bookmark for Basic-auth staff
  *   /history                rep history
  *   /admin                  admin tools
  *   /eval-trace             eval mode
@@ -101,7 +103,7 @@ const PROTECTED_API_PREFIXES = [
  * leave it ungated. Likewise, anything new and rep-only goes in
  * PROTECTED_API_PREFIXES below.
  */
-const PROTECTED_PAGE_PATHS = new Set<string>(["/"]);
+const PROTECTED_PAGE_PATHS = new Set<string>(["/", "/rep"]);
 const PROTECTED_PAGE_PREFIXES = ["/history", "/admin", "/eval-trace", "/dashboard"];
 
 function isProtected(pathname: string, method: string): boolean {
