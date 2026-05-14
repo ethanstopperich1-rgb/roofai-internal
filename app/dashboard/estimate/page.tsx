@@ -31,13 +31,10 @@ import MapView from "@/components/MapView";
 import InsightsPanel from "@/components/InsightsPanel";
 import PropertyContextPanel from "@/components/PropertyContextPanel";
 import StormHistoryCard from "@/components/StormHistoryCard";
-import VisionPanel from "@/components/VisionPanel";
 import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
-import PolygonSizeWarning from "@/components/PolygonSizeWarning";
 import SectionHeader from "@/components/SectionHeader";
-import OutlineQualityWarning from "@/components/OutlineQualityWarning";
 import PhotoUploadPanel from "@/components/PhotoUploadPanel";
 import ImageryStormBanner from "@/components/ImageryStormBanner";
 import VoiceNoteRecorder, { type VoiceNoteResult } from "@/components/VoiceNoteRecorder";
@@ -55,20 +52,21 @@ import type {
   AddOn,
   AddressInfo,
   Assumptions,
+  DetailedEstimate,
   Estimate,
   RoofVision,
   SolarSummary,
 } from "@/types/estimate";
-import {
-  DEFAULT_ADDONS,
-  buildDetailedEstimate,
-  computeBase,
-  computeTotal,
-} from "@/lib/pricing";
+import type {
+  EdgeType,
+  PricedEstimate,
+  PricingInputs,
+  RoofData,
+} from "@/types/roof";
+import { priceRoofData } from "@/lib/roof-engine";
+import { DEFAULT_ADDONS, computeBase, computeTotal } from "@/lib/pricing";
 import {
   buildWasteTable,
-  deriveRoofLengthsFromPolygons,
-  deriveRoofLengthsHeuristic,
   inferComplexityFromPolygons,
 } from "@/lib/roof-geometry";
 import {
@@ -153,7 +151,16 @@ function HomePageInner() {
   const [solar, setSolar] = useState<SolarSummary | null>(null);
   const [vision, setVision] = useState<RoofVision | null>(null);
   const [visionLoading, setVisionLoading] = useState(false);
-  const [visionError, setVisionError] = useState<string>("");
+  const [, setVisionError] = useState<string>("");
+
+  // ─── Tier C unified pipeline result ──────────────────────────────────
+  // Parallel fetch to /api/roof-pipeline that returns a canonical RoofData
+  // feed. When present, drives priceRoofData (new engine); when null /
+  // degraded, the page falls back to the legacy computeBase/computeTotal
+  // headline. Mirrors /internal page's pattern with a fetch-generation
+  // token to drop out-of-order responses on rapid address switching.
+  const [roofData, setRoofData] = useState<RoofData | null>(null);
+  const fetchGenRef = useRef(0);
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [photos, setPhotos] = useState<PhotoMeta[]>([]);
   const [claim, setClaim] = useState<ClaimContext>({ carrier: "state-farm" });
@@ -329,12 +336,40 @@ function HomePageInner() {
     if (staff) localStorage.setItem("pitch.staff", staff);
   }, [staff]);
 
+  // ─── Tier C pricing — priceRoofData when roofData is available,
+  // otherwise the legacy sqft × $/sf fallback so the headline still
+  // renders while the rep types the address and the pipeline is in
+  // flight (or degraded).
+  const pricingInputs = useMemo<PricingInputs>(
+    () => ({
+      material: assumptions.material,
+      materialMultiplier: assumptions.materialMultiplier,
+      laborMultiplier: assumptions.laborMultiplier,
+      serviceType: assumptions.serviceType ?? "reroof-tearoff",
+      addOns,
+      wasteOverridePct: undefined,
+      isInsuranceClaim,
+    }),
+    [assumptions, addOns, isInsuranceClaim],
+  );
+
+  const priced = useMemo<PricedEstimate | null>(() => {
+    if (!roofData || roofData.source === "none") return null;
+    return priceRoofData(roofData, pricingInputs);
+  }, [roofData, pricingInputs]);
+
   const { low, high } = useMemo(() => {
+    if (priced) {
+      return { low: Math.round(priced.totalLow), high: Math.round(priced.totalHigh) };
+    }
     const b = computeBase(assumptions);
     return { low: b.low, high: b.high };
-  }, [assumptions]);
+  }, [priced, assumptions]);
 
-  const total = useMemo(() => computeTotal(assumptions, addOns), [assumptions, addOns]);
+  const total = useMemo(() => {
+    if (priced) return Math.round((priced.totalLow + priced.totalHigh) / 2);
+    return computeTotal(assumptions, addOns);
+  }, [priced, assumptions, addOns]);
 
   // Polygon priority: Solar API per-facet > Claude single-polygon fallback.
   // Claude's polygon is in pixel coords on the 640x640 zoom-20 satellite tile;
@@ -1145,41 +1180,59 @@ function HomePageInner() {
     }
   }, [activePolygons, vision, assumptions.complexity]);
 
-  const detailed = useMemo(
-    () =>
-      buildDetailedEstimate(assumptions, addOns, {
-        buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-        // Solar's segmentCount > everything. Otherwise, for a single-polygon
-        // source (OSM / SAM / Claude), use vertex count as a complexity
-        // proxy: a 4-vertex rectangle is 1 facet; a 12-vertex L is ~4-5.
-        segmentCount: solar?.segmentCount ?? polygonVertexComplexity(activePolygons),
-        segmentPolygonsLatLng: activePolygons,
-      }),
-    [assumptions, addOns, solar, activePolygons],
-  );
+  // Legacy DetailedEstimate projection — feeds LineItemsPanel and the
+  // v1-compatible Estimate object passed to OutputButtons / PDF / etc.
+  // When the pipeline is degraded (priced === null), detailed is null;
+  // LineItemsPanel handles the null case gracefully.
+  const detailed = useMemo<DetailedEstimate | null>(() => {
+    if (!priced) return null;
+    return {
+      lineItems: priced.lineItems.map((li) => ({
+        code: li.code,
+        description: li.description,
+        friendlyName: li.friendlyName,
+        quantity: li.quantity,
+        unit: li.unit,
+        unitCostLow: li.unitCostLow,
+        unitCostHigh: li.unitCostHigh,
+        extendedLow: li.extendedLow,
+        extendedHigh: li.extendedHigh,
+        category: li.category,
+      })),
+      simplifiedItems: priced.simplifiedItems,
+      subtotalLow: priced.subtotalLow,
+      subtotalHigh: priced.subtotalHigh,
+      overheadProfit: priced.overheadProfit,
+      totalLow: priced.totalLow,
+      totalHigh: priced.totalHigh,
+      squares: priced.squares,
+    };
+  }, [priced]);
 
+  // ─── Tier C lengths — derived from RoofData.edges + RoofData.flashing
+  // when available. Null when the pipeline is degraded —
+  // MeasurementsPanel handles the null case.
   const lengths = useMemo(() => {
-    const polys = activePolygons;
-    const complexity = assumptions.complexity ?? "moderate";
-    if (polys && polys.length > 1) {
-      const pitchDegrees =
-        ({ "4/12": 18.43, "5/12": 22.62, "6/12": 26.57, "7/12": 30.26, "8/12+": 35.0 } as const)[
-          assumptions.pitch
-        ];
-      return deriveRoofLengthsFromPolygons({
-        polygons: polys,
-        pitchDegrees,
-        complexity,
-      });
-    }
-    return deriveRoofLengthsHeuristic({
-      totalRoofSqft: assumptions.sqft,
-      buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-      segmentCount: solar?.segmentCount ?? polygonVertexComplexity(activePolygons),
-      complexity,
-      pitch: assumptions.pitch,
-    });
-  }, [assumptions, solar, activePolygons]);
+    if (!roofData || roofData.source === "none") return null;
+    const sum = (type: EdgeType) =>
+      roofData.edges
+        .filter((e) => e.type === type)
+        .reduce((s, e) => s + e.lengthFt, 0);
+    return {
+      perimeterLf: roofData.flashing.dripEdgeLf,
+      eavesLf: sum("eave"),
+      rakesLf: sum("rake"),
+      ridgesLf: sum("ridge"),
+      hipsLf: sum("hip"),
+      valleysLf: sum("valley"),
+      dripEdgeLf: roofData.flashing.dripEdgeLf,
+      flashingLf:
+        roofData.flashing.chimneyLf + roofData.flashing.skylightLf,
+      stepFlashingLf: roofData.flashing.dormerStepLf,
+      iwsSqft: roofData.flashing.iwsSqft,
+      source: "polygons" as const,
+    };
+  }, [roofData]);
 
   const waste = useMemo(
     () => buildWasteTable(assumptions.sqft, assumptions.complexity ?? "moderate"),
@@ -1205,6 +1258,7 @@ function HomePageInner() {
     setSam3Source(null);
     setSam3InFlight(false); // reset gate on address change / clear
     setLivePolygons(null);
+    setRoofData(null);
     hasUserEditedRef.current = false;
     editOriginIsWallFootprintRef.current = false;
 
@@ -1218,6 +1272,25 @@ function HomePageInner() {
     }
 
     setVisionLoading(true);
+
+    // ─── Tier C unified pipeline ─────────────────────────────────────
+    // Fire /api/roof-pipeline alongside the legacy chain. Result populates
+    // `roofData`, which drives priceRoofData (new engine) for the
+    // headline price, line items, and lengths. Out-of-order responses
+    // are dropped via fetchGenRef.
+    const gen = ++fetchGenRef.current;
+    fetch(`/api/roof-pipeline?lat=${addr.lat}&lng=${addr.lng}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (gen !== fetchGenRef.current) return;
+        if (data && typeof data === "object" && "source" in data) {
+          setRoofData(data as RoofData);
+        }
+      })
+      .catch(() => {
+        /* pipeline degraded — UI falls back to legacy headline */
+      });
+
     const solarPromise = fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`)
       .then(async (r) => (r.ok ? ((await r.json()) as SolarSummary) : null))
       .catch(() => null);
@@ -1469,8 +1542,8 @@ function HomePageInner() {
     isInsuranceClaim,
     vision: vision ?? undefined,
     solar: solar ?? undefined,
-    detailed,
-    lengths,
+    detailed: detailed ?? undefined,
+    lengths: lengths ?? undefined,
     waste,
     polygons: activePolygons ?? undefined,
     polygonSource: polygonSource === "none" ? undefined : polygonSource,
@@ -1917,60 +1990,12 @@ function HomePageInner() {
             lng={address?.lng}
           />
 
-          {/* ─── Outline accuracy warning — surfaces low / moderate
-                confidence + Claude's specific issues to the rep so they
-                know what to check. Hidden when high-confidence. */}
-          {polygonReady && polygonSource !== "none" && (
-            <OutlineQualityWarning
-              level={estimateConfidence.level}
-              rationale={estimateConfidence.rationale}
-              issues={
-                polygonSource && claudeVerifications[polygonSource]?.issues
-                  ? (claudeVerifications[polygonSource]!.issues ?? [])
-                  : []
-              }
-              sourceLabel={
-                polygonSource === "solar-mask"
-                  ? "Solar mask"
-                  : polygonSource === "roboflow"
-                    ? "Roof AI"
-                    : polygonSource === "sam"
-                      ? "SAM 2"
-                      : polygonSource === "osm"
-                        ? "OSM"
-                        : polygonSource === "microsoft-buildings"
-                          ? "MS Footprints"
-                          : polygonSource === "ai"
-                            ? "Claude vision"
-                            : polygonSource === "solar"
-                              ? "Solar facets"
-                              : polygonSource === "edited"
-                                ? "Edited"
-                                : undefined
-              }
-              onManualEdit={() => {
-                const map = document.querySelector(".gm-style");
-                map?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
-            />
-          )}
+          {/* ─── Outline accuracy + size-warning panels removed —
+                superseded by RoofTotalsCard / DetectedFeaturesPanel in
+                /internal. This page keeps the legacy polygon chain for
+                now; quality warnings will be re-mounted as part of a
+                later full migration to the v2 RoofData feed. */}
 
-          {/* ─── Polygon size sanity check ──────────────────────────────── */}
-          <PolygonSizeWarning
-            detectedSqft={assumptions.sqft}
-            solarFootprintSqft={solar?.buildingFootprintSqft ?? null}
-            pitchDegrees={solar?.pitchDegrees ?? null}
-            onAcceptSuggestion={(sqft) =>
-              setAssumptions((a) => ({ ...a, sqft }))
-            }
-            onManualEdit={() => {
-              const el = document.querySelector<HTMLInputElement>(
-                'input[type="number"]',
-              );
-              el?.focus();
-              el?.scrollIntoView({ behavior: "smooth", block: "center" });
-            }}
-          />
 
           {/* ═══ 04 ESTIMATE — headline price + breakdown ═══════════════ */}
           <SectionHeader
@@ -2045,15 +2070,17 @@ function HomePageInner() {
                     addOns={addOns}
                     onApplyTier={applyTier}
                   />
-                  <LineItemsPanel
-                    detailed={detailed}
-                    defaultOpen={
-                      isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
-                    }
-                    alwaysShowXactimate={
-                      isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
-                    }
-                  />
+                  {detailed && (
+                    <LineItemsPanel
+                      detailed={detailed}
+                      defaultOpen={
+                        isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
+                      }
+                      alwaysShowXactimate={
+                        isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
+                      }
+                    />
+                  )}
                 </div>
                 <div className="space-y-6">
                   <AssumptionsEditor
@@ -2068,20 +2095,15 @@ function HomePageInner() {
             {breakdownTab === "measurements" && (
               <div className="grid lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 space-y-6">
-                  <MeasurementsPanel
-                    lengths={lengths}
-                    waste={waste}
-                    defaultOpen={
-                      isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
-                    }
-                  />
-                  <VisionPanel
-                    vision={vision}
-                    loading={visionLoading}
-                    error={visionError}
-                    ageYears={assumptions.ageYears}
-                    zip={address?.zip}
-                  />
+                  {lengths && (
+                    <MeasurementsPanel
+                      lengths={lengths}
+                      waste={waste}
+                      defaultOpen={
+                        isInsuranceClaim || BRAND_CONFIG.showXactimateCodes
+                      }
+                    />
+                  )}
                 </div>
                 <div className="space-y-6">
                   <PropertyContextPanel address={address} />
@@ -2256,60 +2278,7 @@ function EmptyState() {
   );
 }
 
-/**
- * Map a single-polygon source's vertex count to a "Solar-equivalent" segment
- * count for the line-item / lengths heuristics. A 4-vertex rectangle is one
- * gable; an 8-vertex L is roughly two gables; complex multi-bay houses with
- * 12+ vertices behave like 4-5 facets. Returns 4 (the heuristic default) when
- * we have nothing.
- */
-function polygonVertexComplexity(
-  polys: Array<Array<{ lat: number; lng: number }>> | undefined,
-): number {
-  if (!polys || polys.length === 0) return 4;
-  if (polys.length > 1) return polys.length;
-  const poly = polys[0];
-  if (poly.length < 4) return 2;
-
-  // Count REFLEX vertices (interior angle > 180°). Each reflex vertex
-  // marks a junction between two distinct roof sections — an L-shape has
-  // one reflex vertex (where the L bends), a T-shape has two, etc.
-  // Reflex count is a much better "number of wings" signal than raw
-  // vertex count, which gets confused by jagged segmentation noise.
-  // Project to local meters around centroid for stable cross-products.
-  let cLat = 0;
-  for (const p of poly) cLat += p.lat;
-  cLat /= poly.length;
-  const cosLat = Math.cos((cLat * Math.PI) / 180);
-  const pts = poly.map((p) => ({
-    x: p.lng * 111_320 * cosLat,
-    y: p.lat * 111_320,
-  }));
-  // Polygon orientation via signed shoelace (positive = CCW in this
-  // x-east / y-north frame).
-  let signedArea2 = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const a = pts[i];
-    const b = pts[(i + 1) % pts.length];
-    signedArea2 += a.x * b.y - b.x * a.y;
-  }
-  const ccw = signedArea2 > 0;
-  let reflex = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const prev = pts[(i - 1 + pts.length) % pts.length];
-    const cur = pts[i];
-    const next = pts[(i + 1) % pts.length];
-    const cross =
-      (cur.x - prev.x) * (next.y - cur.y) -
-      (cur.y - prev.y) * (next.x - cur.x);
-    // For a CCW polygon, convex turns are positive cross. Reflex = sign
-    // opposite to orientation. (And reverse for CW.)
-    const isReflex = ccw ? cross < 0 : cross > 0;
-    if (isReflex) reflex++;
-  }
-  // Approximate segment count: each "wing" (one reflex separation)
-  // typically contributes ~2 roof facets (front + back). So segments
-  // ≈ 2 × (reflex + 1). Bounded between 2 (simple gable) and 8.
-  const segments = 2 * (reflex + 1);
-  return Math.max(2, Math.min(8, segments));
-}
+// polygonVertexComplexity removed — it fed buildDetailedEstimate /
+// deriveRoofLengthsHeuristic's segmentCount fallback, both of which were
+// retired as part of Phase 4. The Tier C pipeline (RoofData.totals.complexity)
+// is the single source of truth for complexity now.
