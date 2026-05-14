@@ -168,8 +168,17 @@ export const DEFAULT_ADDONS: AddOn[] = [
 ];
 
 /**
- * @deprecated Same as buildDetailedEstimate below — kept for lib/tiers.ts
- * and app/dashboard/estimate/page.tsx. Phase 4 migration target.
+ * Legacy per-sqft × material-rate × pitch headline pricer.
+ *
+ * @kept-for-tiers — `lib/tiers.ts buildTiers` (the v1 entrypoint, still
+ * wired to the rep-side /internal TiersPanel) uses this for the
+ * Good/Better/Best band math. Tier C ships `priceRoofData` as the
+ * canonical engine and `buildTiersFromRoofData` for the v2 path; this
+ * v1 helper stays alive because /internal hasn't migrated TiersPanel yet
+ * and the inline replacement (re-implementing pitch + multiplier band
+ * math) isn't worth the ~20-LOC churn.
+ *
+ * Do not add new callers.
  */
 export function computeBase(a: Assumptions): { low: number; high: number; mid: number } {
   // Installed cost per sqft already includes labor (~60% of total per
