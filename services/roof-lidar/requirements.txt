@@ -1,0 +1,29 @@
+# services/roof-lidar/requirements.txt
+# Pinned to compatible versions for Modal's Python 3.12 container.
+# PDAL needs native libs installed via image.apt_install (see modal_app.py).
+
+fastapi==0.115.5
+uvicorn==0.32.1
+pydantic==2.10.3
+
+# Geospatial / point cloud
+numpy==1.26.4
+scipy==1.14.1
+shapely==2.0.6
+pyproj==3.7.0
+laspy[lazrs]==2.5.4
+
+# Plane segmentation. Open3D for region-growing + alpha-shape.
+open3d==0.19.0
+
+# YOLO object detection (penetrations on ortho render)
+ultralytics==8.3.39
+torch==2.5.1
+torchvision==0.20.1
+pillow==11.0.0
+
+# 3DEP S3 access
+boto3==1.35.84
+
+# HTTP
+requests==2.32.3

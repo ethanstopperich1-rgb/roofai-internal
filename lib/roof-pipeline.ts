@@ -3,6 +3,7 @@ import type { RoofData, RoofDiagnostics } from "@/types/roof";
 import { makeDegradedRoofData } from "@/lib/roof-engine";
 import { tierCSolarSource } from "@/lib/sources/solar-source";
 import { tierCVisionSource } from "@/lib/sources/vision-source";
+import { tierALidarSource } from "@/lib/sources/lidar-source";
 import { getCached, setCached } from "@/lib/cache";
 
 function nanoid(): string {
@@ -37,7 +38,11 @@ export async function runRoofPipeline(opts: {
 
   const requestId = nanoid();
   const attempts: RoofDiagnostics["attempts"] = [];
+  // Tier A is registered as the highest-priority source, but its adapter
+  // returns null when LIDAR_SERVICE_URL is unset — so the pipeline degrades
+  // cleanly to Tier C on deploys that don't have the Modal service wired.
   const sources: Array<{ name: string; fn: RoofSource }> = [
+    { name: "tier-a-lidar", fn: tierALidarSource },
     { name: "tier-c-solar", fn: tierCSolarSource },
     { name: "tier-c-vision", fn: tierCVisionSource },
   ];

@@ -48,6 +48,11 @@ import { BRAND_CONFIG } from "@/lib/branding";
 
 // 3D viewer is heavy (Cesium + 3D Tiles) — lazy-load it so the initial
 // /quote bundle stays small. SSR off because Cesium is browser-only.
+// Tier A.2 visual layer for tier-a-lidar RoofData. Lazy-loaded; falls
+// through to Roof3DViewer for Tier B/C data.
+const RoofViewer = dynamic(() => import("@/components/roof/RoofViewer"), {
+  ssr: false,
+});
 const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
   ssr: false,
 });
@@ -894,6 +899,7 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
             pitch={pitch}
             satelliteUrl={satelliteUrl}
             roofPolygon={roofPolygon}
+            roofData={roofData}
             loading={loadingRoof || pipelineLoading}
             pickingLoading={pickingLoading}
             // Click-pick re-trace. Fired when the customer taps a
@@ -1205,6 +1211,7 @@ function RoofStep({
   pitch,
   satelliteUrl,
   roofPolygon,
+  roofData,
   loading,
   pickingLoading,
   onChangeSqft,
@@ -1218,6 +1225,9 @@ function RoofStep({
   pitch: string | null;
   satelliteUrl: string | null;
   roofPolygon: Array<{ lat: number; lng: number }> | null;
+  /** Tier C/B/A canonical RoofData. When source === "tier-a-lidar", the
+   *  Tier A.2 RoofViewer mounts instead of the legacy Roof3DViewer. */
+  roofData: RoofData | null;
   loading: boolean;
   pickingLoading: boolean;
   onChangeSqft: (n: number) => void;
@@ -1307,22 +1317,32 @@ function RoofStep({
           aria-label={`3D photorealistic view of the roof at ${address?.formatted ?? "this property"}`}
           role="img"
         >
-          <Roof3DViewer
-            // Hard-remount on every address change so the previous Cesium
-            // camera + tiles can't linger.
-            key={`${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
-            lat={address.lat}
-            lng={address.lng}
-            address={address.formatted}
-            polygons={roofPolygon ? [roofPolygon] : undefined}
-            polygonSource={roofPolygon ? "sam3" : undefined}
-            // Lock user input on the customer-facing flow: auto-orbit still
-            // plays (the wow factor) but pan/zoom/rotate are disabled, so
-            // the customer can't drive up Map Tiles cost by exploring the
-            // neighborhood. Caps per-session cost at ~$0.05–0.10 instead
-            // of $0.30+ on heavily-explored sessions.
-            interactive={false}
-          />
+          {roofData?.source === "tier-a-lidar" ? (
+            <RoofViewer
+              key={`lidar-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
+              data={roofData}
+              // Customer-facing — disable interaction to bound Map Tiles
+              // spend (same calculus as the Tier B/C path below).
+              interactive={false}
+            />
+          ) : (
+            <Roof3DViewer
+              // Hard-remount on every address change so the previous Cesium
+              // camera + tiles can't linger.
+              key={`${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
+              lat={address.lat}
+              lng={address.lng}
+              address={address.formatted}
+              polygons={roofPolygon ? [roofPolygon] : undefined}
+              polygonSource={roofPolygon ? "sam3" : undefined}
+              // Lock user input on the customer-facing flow: auto-orbit still
+              // plays (the wow factor) but pan/zoom/rotate are disabled, so
+              // the customer can't drive up Map Tiles cost by exploring the
+              // neighborhood. Caps per-session cost at ~$0.05–0.10 instead
+              // of $0.30+ on heavily-explored sessions.
+              interactive={false}
+            />
+          )}
         </div>
       )}
 

@@ -21,6 +21,12 @@ import { useSearchParams } from "next/navigation";
 const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
   ssr: false,
 });
+// Tier A.2 visual layer — only mounts when Tier A LiDAR is the active
+// source. For Tier B/C the existing Roof3DViewer (polygon-verify path)
+// continues to own the slot.
+const RoofViewer = dynamic(() => import("@/components/roof/RoofViewer"), {
+  ssr: false,
+});
 import AddressInput from "@/components/AddressInput";
 import AssumptionsEditor from "@/components/AssumptionsEditor";
 import AddOnsPanel from "@/components/AddOnsPanel";
@@ -1095,6 +1101,24 @@ function HomePageInner() {
                  nothing, so the grid layout doesn't collapse to single-
                  column and orphan the MapView. */}
             {polygonReady &&
+            polygonSource !== "none" &&
+            address?.lat != null &&
+            address?.lng != null &&
+            roofData?.source === "tier-a-lidar" ? (
+              // Tier A path — LiDAR-derived facets + edges + objects rendered
+              // on top of Google Photorealistic 3D Tiles via RoofViewer.
+              <div
+                className="glass-panel overflow-hidden h-full relative"
+                aria-label={`3D LiDAR-derived view of the roof at ${address.formatted ?? "this property"}`}
+                role="img"
+              >
+                <RoofViewer
+                  key={`lidar-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
+                  data={roofData}
+                  interactive
+                />
+              </div>
+            ) : polygonReady &&
             polygonSource !== "none" &&
             address?.lat != null &&
             address?.lng != null ? (
