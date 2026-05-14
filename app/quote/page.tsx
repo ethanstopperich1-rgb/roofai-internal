@@ -43,6 +43,7 @@ import type {
 } from "@/types/roof";
 import { priceRoofData } from "@/lib/roof-engine";
 import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
+import MeasurementVerification from "@/components/roof/MeasurementVerification";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import { BRAND_CONFIG } from "@/lib/branding";
 
@@ -51,6 +52,15 @@ import { BRAND_CONFIG } from "@/lib/branding";
 // Tier A.2 visual layer for tier-a-lidar RoofData. Lazy-loaded; falls
 // through to Roof3DViewer for Tier B/C data.
 const RoofViewer = dynamic(() => import("@/components/roof/RoofViewer"), {
+  ssr: false,
+});
+// Standalone Three.js LiDAR roof renderer. No Google 3D Tiles, no
+// Cesium — just a stylized rendering of the per-facet LiDAR output.
+// Replaces the old Cesium-overlay path when we have Tier A data
+// because a stylized standalone render reads as intentional, while
+// an overlay onto a photorealistic mesh creates visible mismatch
+// when our measurement isn't perfect.
+const RoofRenderer = dynamic(() => import("@/components/roof/RoofRenderer"), {
   ssr: false,
 });
 const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
@@ -336,6 +346,12 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
       const data = (await res.json()) as RoofData;
       if (fetchGenRef.current !== myGen) return; // stale
       setRoofData(data);
+      // Note: we intentionally do NOT setRoofPolygon(data.outlinePolygon)
+      // here. /quote's tier ladder (Tier 1 SAM3 → Tier 2 mask → Tier 3
+      // MS Buildings) drives the displayed polygon, and SAM3 is usually
+      // tighter than the bbox-rotated facets. The Tier C mask outline is
+      // already integrated as a quality-gated fallback inside the tier
+      // ladder below — see the SAM3 quality check.
     } catch (err) {
       if (fetchGenRef.current !== myGen) return;
       setPipelineError(err instanceof Error ? err.message : String(err));
@@ -529,11 +545,13 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
         let pitchDegrees: number | null = null;
         let solarFootprintSqft: number | null = null;
         let solarSegmentSqft: number | null = null;
+        let solarSegmentCount = 0;
         if (solarRes.ok) {
           const data = await solarRes.json();
           pitchDegrees = data.pitchDegrees ?? null;
           solarFootprintSqft = data.buildingFootprintSqft ?? null;
           solarSegmentSqft = data.sqft ?? null;
+          solarSegmentCount = typeof data.segmentCount === "number" ? data.segmentCount : 0;
           resolvedPitch = data.pitch ?? null;
         }
         const slope =
@@ -543,6 +561,9 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
 
         // Tier 1 — Custom SAM3 (with GIS reconciliation built-in server-side)
         let resolvedKind: "eave" | "wall" | null = null;
+        let sam3Footprint: number | null = null;
+        let sam3VertexCount = 0;
+        let sam3Source: string | null = null;
         if (sam3Res?.ok) {
           try {
             const sam3 = await sam3Res.json();
@@ -556,6 +577,9 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
               if (footprintSqft >= 200 && footprintSqft <= 20_000) {
                 resolvedPolygon = poly;
                 resolvedSqft = Math.round(footprintSqft * slope);
+                sam3Footprint = footprintSqft;
+                sam3VertexCount = poly.length;
+                sam3Source = typeof sam3?.source === "string" ? sam3.source : null;
                 // Reconciler returned "footprint-only" / "footprint-occluded"
                 // → the polygon traces the GIS wall footprint (1.06 already
                 // baked into footprintSqft). Other SAM3 sources trace eaves.
@@ -573,6 +597,92 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
             }
           } catch {
             /* fall through to Solar mask */
+          }
+        }
+
+        // Tier 1.5 — SAM3 quality gate. SAM3 sometimes returns a single
+        // simplified rectangle on L-shaped / complex roofs, missing
+        // gables and overhanging into lawn/driveway. When the cheap
+        // signals say SAM3 is suspect, fetch the Solar dataLayers mask
+        // (pixel-accurate, $0.075) and prefer it.
+        //
+        // Suspect signals (ANY):
+        //   • SAM3 area is >30% off from Solar findClosest footprint
+        //     (the two are independent measurements of the same building;
+        //     disagreement is real signal)
+        //   • SAM3 returned ≤5 vertices on a Solar building with ≥3
+        //     facets (over-simplification — real roofs that complex
+        //     have ≥6 polygon vertices)
+        //   • SAM3 source is "footprint-only" / "footprint-occluded"
+        //     (server-side fallback — same as Tier 3 quality)
+        //
+        // Disable with QUOTE_SAM3_MASK_QUALITY_GATE=0. The mask is
+        // additive: we use it only if it returns a valid polygon. If
+        // the gate triggers but mask fails, SAM3 stays.
+        const qualityGateEnabled =
+          process.env.NEXT_PUBLIC_QUOTE_SAM3_MASK_QUALITY_GATE !== "0";
+        if (qualityGateEnabled && resolvedPolygon && sam3Footprint != null) {
+          let suspect = false;
+          let suspectReason = "";
+          if (
+            solarFootprintSqft &&
+            Math.abs(sam3Footprint - solarFootprintSqft) / solarFootprintSqft > 0.30
+          ) {
+            suspect = true;
+            suspectReason = `sam3_area_${Math.round(
+              ((sam3Footprint - solarFootprintSqft) / solarFootprintSqft) * 100,
+            )}pct_off_solar`;
+          }
+          // solarSegmentCount was extracted from solarRes above; we don't
+          // re-fetch /api/solar here.
+          if (!suspect && sam3VertexCount <= 5 && solarSegmentCount >= 3) {
+            suspect = true;
+            suspectReason = `sam3_${sam3VertexCount}vtx_for_${solarSegmentCount}_facets`;
+          }
+          if (
+            !suspect &&
+            (sam3Source === "footprint-only" || sam3Source === "footprint-occluded")
+          ) {
+            suspect = true;
+            suspectReason = `sam3_fallback_source_${sam3Source}`;
+          }
+          if (suspect) {
+            console.log("[telemetry] sam3_suspect_fetching_mask", {
+              address: addr.formatted,
+              reason: suspectReason,
+              sam3Footprint,
+              solarFootprintSqft,
+              sam3VertexCount,
+            });
+            try {
+              const maskRes = await fetch(
+                `/api/solar-mask?lat=${addr.lat}&lng=${addr.lng}`,
+              );
+              if (maskRes.ok) {
+                const mask = await maskRes.json();
+                const poly: Array<{ lat: number; lng: number }> | null =
+                  Array.isArray(mask?.latLng) && mask.latLng.length >= 3
+                    ? mask.latLng
+                    : null;
+                if (poly) {
+                  const maskFootprint = polygonAreaSqftLocal(poly);
+                  if (maskFootprint >= 200 && maskFootprint <= 20_000) {
+                    resolvedPolygon = poly;
+                    resolvedSqft = Math.round(maskFootprint * slope);
+                    resolvedKind = "eave";
+                    console.log("[telemetry] mask_replaced_sam3", {
+                      address: addr.formatted,
+                      sam3Footprint,
+                      maskFootprint,
+                      maskVertexCount: poly.length,
+                      reason: suspectReason,
+                    });
+                  }
+                }
+              }
+            } catch {
+              /* mask soft-fails — keep SAM3 */
+            }
           }
         }
 
@@ -1238,16 +1348,16 @@ function RoofStep({
 }) {
   return (
     <div className="space-y-6 float-in">
-      <div>
+      <header>
         <div className="glass-eyebrow">Step 2 · Confirm your roof</div>
-        <h2 className="font-display text-[32px] sm:text-[44px] leading-[1.05] tracking-[-0.025em] font-semibold mt-4 text-white/95">
+        <h2 className="font-display text-[32px] sm:text-[44px] leading-[1.05] tracking-[-0.025em] font-semibold mt-4 text-white/95 text-balance">
           This is your roof
         </h2>
-        <p className="text-white/55 text-[14px] mt-3 flex items-center gap-2">
-          <MapPin size={14} className="text-white/40" />
-          {address?.formatted ?? "—"}
-        </p>
-      </div>
+        <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.025] px-3 py-1.5 text-[12.5px] text-white/65">
+          <MapPin size={13} className="text-cy-300 flex-shrink-0" />
+          <span className="truncate">{address?.formatted ?? "—"}</span>
+        </div>
+      </header>
 
       <div className="glass-panel overflow-hidden aspect-video relative">
         {loading ? (
@@ -1267,6 +1377,14 @@ function RoofStep({
               onPolygonChanged={onPolygonEdited}
               onClickPick={onClickPick}
               pickingLoading={pickingLoading}
+              // Per-facet overlay is OFF for now. The original idea was to
+              // render Solar's per-facet polygons as faint structural lines
+              // under the editable polygon — but Solar's findClosest
+              // returns bbox-rotated rectangles, and on a 17-facet hip
+              // roof those overlap into visual chaos. Until we have
+              // pixel-accurate facet outlines from Tier A LiDAR, the
+              // single editable mask polygon is the cleanest UX.
+              facetOverlay={null}
             />
             {/* Click-pick re-trace overlay. Fires when the customer
                 hits "Wrong roof?" and taps a new building — the
@@ -1310,20 +1428,26 @@ function RoofStep({
       {/* Photorealistic 3D flyover — visual centerpiece of the customer's
        *  roof. Loads only after the address is resolved + initial measurement
        *  is done, so the satellite map renders first and the heavy Cesium
-       *  bundle isn't blocking. No verification — pure visual. */}
+       *  bundle isn't blocking. No verification — pure visual.
+       *  Shorter aspect ratio than the 2D map (16:9 → 21:9) so it reads as
+       *  a complementary flyover rather than a second hero — kept the
+       *  combined first-screen weight from feeling top-heavy. */}
       {!loading && address?.lat != null && address?.lng != null && (
         <div
-          className="glass-panel overflow-hidden aspect-video relative"
+          className="glass-panel overflow-hidden aspect-[21/9] relative"
           aria-label={`3D photorealistic view of the roof at ${address?.formatted ?? "this property"}`}
           role="img"
         >
           {roofData?.source === "tier-a-lidar" ? (
-            <RoofViewer
-              key={`lidar-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
+            // Standalone LiDAR roof — no photorealistic mesh under it.
+            // Each facet plotted as a tilted polygon, color-coded by
+            // azimuth. Reads as "we measured your roof" instead of
+            // "wrong overlay on top of your actual roof." Bonus: no
+            // Map Tiles billing for this view.
+            <RoofRenderer
+              key={`renderer-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
               data={roofData}
-              // Customer-facing — disable interaction to bound Map Tiles
-              // spend (same calculus as the Tier B/C path below).
-              interactive={false}
+              className="absolute inset-0"
             />
           ) : (
             <Roof3DViewer
@@ -1344,6 +1468,16 @@ function RoofStep({
             />
           )}
         </div>
+      )}
+
+      {/* Provenance + cross-source verification — shown as soon as the
+          pipeline has settled, not at the very end of the wizard. This
+          is the customer's "we measured this with real data" moment;
+          burying it on Step 4 means they spent Step 2/3 trusting a
+          polygon they had no provenance signal on. Auto-hides on
+          source === "none". */}
+      {!loading && roofData && roofData.source !== "none" && (
+        <MeasurementVerification data={roofData} variant="customer" />
       )}
 
       <div className="grid sm:grid-cols-2 gap-4">
@@ -1646,17 +1780,22 @@ function QuoteStep({
           the wizard usable. */}
       {hasPricedV2 && roofData && (
         <>
+          <MeasurementVerification data={roofData} variant="customer" />
           <RoofTotalsCard data={roofData} />
           <DetectedFeaturesPanel data={roofData} variant="customer" />
         </>
       )}
       {roofData?.source === "none" && !pipelineLoading && (
-        <div className="rounded-lg border bg-amber-50 p-4 text-sm text-amber-900">
-          We couldn&apos;t analyze this address — please double-check the pin or try a different address.
+        <div
+          className="rounded-xl border border-amber/30 bg-amber/[0.06] px-4 py-3 text-[13px] text-amber"
+          role="status"
+        >
+          We couldn&apos;t analyze this address — please double-check the pin or
+          try a different address.
         </div>
       )}
       {pipelineError && !pipelineLoading && (
-        <div className="text-[11.5px] text-white/45">
+        <div className="text-[11.5px] text-white/45 font-mono tracking-wide">
           Analysis warning: {pipelineError}
         </div>
       )}

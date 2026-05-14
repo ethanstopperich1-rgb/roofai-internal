@@ -62,7 +62,7 @@ def extract_roof_pipeline(
 
     # ---- Stage 1: coverage check ------------------------------------------
     try:
-        coverage = check_3dep_coverage(lat=lat, lng=lng)
+        coverage = check_3dep_coverage(lat=lat, lng=lng, cache_dir=cache_root)
         attempts.append({"stage": "coverage_check", "outcome": "succeeded"})
     except Exception as err:
         log.exception("coverage_check failed")

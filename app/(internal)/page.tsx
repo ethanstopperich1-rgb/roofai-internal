@@ -34,6 +34,7 @@ import ResultsPanel from "@/components/ResultsPanel";
 import EstimateSticky from "@/components/EstimateSticky";
 import OutputButtons from "@/components/OutputButtons";
 import MapView from "@/components/MapView";
+import { polygonAreaSqft } from "@/lib/polygon";
 import ConfirmHomePin from "@/components/ConfirmHomePin";
 import InsightsPanel from "@/components/InsightsPanel";
 import PropertyContextPanel from "@/components/PropertyContextPanel";
@@ -75,6 +76,7 @@ import {
 } from "@/lib/sources/multiview-source";
 import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
+import MeasurementVerification from "@/components/roof/MeasurementVerification";
 import { FacetList } from "@/components/roof/FacetList";
 import { saveEstimateV2 } from "@/lib/storage";
 import { DEFAULT_ADDONS, computeBase, computeTotal } from "@/lib/pricing";
@@ -148,7 +150,7 @@ function HomePageInner() {
   // indicator while the roof-inspector call is in flight. Independent of
   // pipelineLoading because Tier B is additive and runs after Tier C lands.
   const [inspectorStatus, setInspectorStatus] = useState<
-    "idle" | "running" | "done" | "skipped"
+    "idle" | "running" | "done" | "skipped" | "failed"
   >("idle");
   // Per-address guard: only run the inspector once per (address × Tier C
   // RoofData identity) so that minor re-renders don't re-fire the call.
@@ -174,6 +176,20 @@ function HomePageInner() {
   const [livePolygons, setLivePolygons] = useState<
     Array<Array<{ lat: number; lng: number }>> | null
   >(null);
+  // SAM3-trace polygon, mirrored from /quote's tier ladder so the rep sees
+  // the same tight outline the customer sees. Fetched in parallel with the
+  // Tier C pipeline; when present, overrides roofData.outlinePolygon /
+  // facets for display. Pricing math still reads from roofData (SAM3
+  // doesn't have per-facet pitch / area), so this is display-only.
+  const [sam3Polygon, setSam3Polygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
+  // SAM3 server-side source label. When "footprint-only" or
+  // "footprint-occluded" the polygon is actually OSM/GIS data dressed
+  // up as SAM3 — quality gate treats those as automatically-suspect.
+  // Without this signal the gate's area + vertex checks miss the case
+  // where SAM3 silently fell through to GIS footprint × 1.06.
+  const [sam3Source, setSam3Source] = useState<string | null>(null);
   // Tracked via ref so late-arriving SAM doesn't stomp in-progress edits
   // (the sam-refine fetch resolves ~5-10s after OSM, by which point the rep
   // may have already moved vertices on the OSM polygon).
@@ -273,25 +289,94 @@ function HomePageInner() {
     | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
+    // Mirror the same gate logic as `sourcePolygons` so the chip below
+    // the map labels the polygon that's ACTUALLY visible, not the
+    // theoretical winner. If SAM3 is present and clean, "sam3". If
+    // SAM3 was rejected by the quality gate but the mask took over,
+    // "solar" (the mask is Solar dataLayers). If neither, fall through
+    // to the RoofData source mapping.
+    const hasSam3 = sam3Polygon && sam3Polygon.length >= 3;
+    const hasMask =
+      roofData?.outlinePolygon && roofData.outlinePolygon.length >= 3;
+    if (hasSam3) {
+      const sam3Area = polygonAreaSqft(sam3Polygon);
+      const solarFootprint = roofData?.totals?.totalFootprintSqft ?? 0;
+      const solarFacets = roofData?.totals?.facetsCount ?? 0;
+      const sam3Suspect =
+        (solarFootprint > 0 &&
+          Math.abs(sam3Area - solarFootprint) / solarFootprint > 0.3) ||
+        (sam3Polygon.length <= 5 && solarFacets >= 3) ||
+        sam3Source === "footprint-only" ||
+        sam3Source === "footprint-occluded";
+      if (!sam3Suspect) return "sam3";
+      if (hasMask) return "solar"; // mask wins
+      return "sam3"; // no mask alt, keep SAM3
+    }
     if (!roofData || roofData.source === "none" || roofData.facets.length === 0) return "none";
-    // Map RoofData.source → legacy union for Roof3DViewer / Estimate types:
-    //   tier-c-solar  → "solar"   (Solar API photogrammetric facets)
-    //   tier-c-vision → "ai"      (Claude vision fallback)
-    //   tier-a/b      → "sam3"    (placeholder; lab-quality multiview/LiDAR)
-    if (roofData.source === "tier-c-solar") return "solar";
+    if (hasMask || roofData.source === "tier-c-solar") return "solar";
     if (roofData.source === "tier-c-vision") return "ai";
     return "sam3";
-  }, [livePolygons, roofData]);
+  }, [livePolygons, sam3Polygon, sam3Source, roofData]);
 
   // sourcePolygons / activePolygons feed MapView + Roof3DViewer + the
-  // legacy Estimate.polygons field. RoofData.facets[].polygon is the
-  // canonical source-of-truth shape; livePolygons override after edit.
+  // legacy Estimate.polygons field. Mirrors /quote's tier ladder so the
+  // rep sees exactly what the customer sees:
+  //
+  //   1. Prefer sam3Polygon when SAM3 looks tight.
+  //   2. Run a quality gate: if SAM3's area disagrees with Solar
+  //      findClosest by >30%, OR has ≤5 vertices for a ≥3-facet Solar
+  //      building → SAM3 is suspect, fall through to the Solar mask
+  //      (roofData.outlinePolygon).
+  //   3. Solar mask outline is the next-best fallback.
+  //   4. Bbox-rotated facets are the last resort (loose).
+  //
+  // livePolygons override everything once the rep edits a vertex.
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
+    const hasSam3 = sam3Polygon && sam3Polygon.length >= 3;
+    const hasMask =
+      roofData?.outlinePolygon && roofData.outlinePolygon.length >= 3;
+
+    if (hasSam3) {
+      // Quality gate: SAM3 is suspect when ANY of:
+      //   - area >30% off from Solar findClosest footprint
+      //   - ≤5 vertices on a ≥3-facet Solar building (over-simplified)
+      //   - server-side source flag says it silently fell through to
+      //     GIS footprint (these polygons aren't actually SAM3 at all —
+      //     they're OSM/Microsoft Buildings × 1.06 overhang, dressed
+      //     up as SAM3. Always prefer mask when available.)
+      let sam3Suspect = false;
+      const sam3Area = polygonAreaSqft(sam3Polygon);
+      const solarFootprint = roofData?.totals?.totalFootprintSqft ?? 0;
+      const solarFacets = roofData?.totals?.facetsCount ?? 0;
+      if (
+        solarFootprint > 0 &&
+        Math.abs(sam3Area - solarFootprint) / solarFootprint > 0.3
+      ) {
+        sam3Suspect = true;
+      }
+      if (!sam3Suspect && sam3Polygon.length <= 5 && solarFacets >= 3) {
+        sam3Suspect = true;
+      }
+      if (
+        !sam3Suspect &&
+        (sam3Source === "footprint-only" || sam3Source === "footprint-occluded")
+      ) {
+        sam3Suspect = true;
+      }
+      if (!sam3Suspect) {
+        return [sam3Polygon];
+      }
+      // SAM3 is suspect — fall through to the mask if available.
+      if (hasMask) return [roofData.outlinePolygon!];
+      // No mask either — SAM3 is still better than nothing.
+      return [sam3Polygon];
+    }
     if (!roofData || roofData.source === "none") return undefined;
+    if (hasMask) return [roofData.outlinePolygon!];
     return roofData.facets.map((f) => f.polygon);
-  }, [roofData]);
+  }, [sam3Polygon, sam3Source, roofData]);
   const activePolygons = livePolygons ?? sourcePolygons;
   const polygonReady = roofData != null && roofData.source !== "none";
   const renderedSourcePolygons = polygonReady ? sourcePolygons : undefined;
@@ -533,6 +618,37 @@ function HomePageInner() {
     setPendingAddress(addr);
   };
 
+  /** SAM3 polygon fetch — mirrors /quote's Tier 1 in the tier ladder.
+   *  Runs in parallel with the Tier C pipeline. When the response is a
+   *  usable polygon, /internal renders it as the display outline (same
+   *  visible polygon the customer sees on /quote). Pricing math still
+   *  consumes roofData, not this. Failure is soft — display falls back
+   *  to roofData.outlinePolygon (Solar mask) → roofData.facets. */
+  const fetchSam3Polygon = async (addr: AddressInfo, myGen: number) => {
+    if (addr.lat == null || addr.lng == null) return;
+    try {
+      const nocacheSuffix = sam3NoCacheSuffix;
+      const res = await fetch(
+        `/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}` +
+          `&address=${encodeURIComponent(addr.formatted ?? "")}` +
+          nocacheSuffix,
+        { cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const poly: Array<{ lat: number; lng: number }> | null =
+        Array.isArray(data?.polygon) && data.polygon.length >= 3
+          ? data.polygon
+          : null;
+      if (!poly) return;
+      if (fetchGenRef.current !== myGen) return; // stale — newer fetch won
+      setSam3Polygon(poly);
+      setSam3Source(typeof data?.source === "string" ? data.source : null);
+    } catch {
+      /* soft-fail — display falls back to roofData */
+    }
+  };
+
   /** Tier C unified pipeline call. Replaces the legacy parallel
    *  Solar/Vision/OSM/MSBuildings/SAM3 fan-out — one fetch, one
    *  canonical RoofData feed for everything downstream. */
@@ -545,6 +661,9 @@ function HomePageInner() {
     const myGen = ++fetchGenRef.current;
     setPipelineLoading(true);
     setPipelineError(null);
+    // Kick off SAM3 in parallel — same source /quote uses, so /internal
+    // shows the same tight polygon the customer sees.
+    fetchSam3Polygon(addr, myGen);
     try {
       const nocacheSuffix = sam3NoCacheSuffix; // "&nocache=1" or ""
       const res = await fetch(
@@ -594,6 +713,11 @@ function HomePageInner() {
       if (inspectorRanForKeyRef.current === key) return;
       inspectorRanForKeyRef.current = key;
       setInspectorStatus("running");
+      console.log("[telemetry] tier_b_attempted", {
+        address: data.address.formatted,
+        source: data.source,
+        facets: data.facets.length,
+      });
       (async () => {
         try {
           const { refined, patch, latencyMs } = await refineRoofDataViaMultiview({
@@ -619,9 +743,18 @@ function HomePageInner() {
               `objects=${patch.objects?.length ?? 0} ` +
               `wallJunctions=${patch.wallJunctions?.length ?? 0}`,
           );
+          console.log(
+            didRefine ? "[telemetry] tier_b_succeeded" : "[telemetry] tier_b_skipped",
+            {
+              address: data.address.formatted,
+              source: data.source,
+              latencyMs,
+              reason: didRefine ? "applied" : "gated_no_op",
+            },
+          );
         } catch (err) {
-          console.warn("[internal] tier-b refinement skipped:", err);
-          setInspectorStatus("skipped");
+          console.warn("[internal] tier-b refinement failed:", err);
+          setInspectorStatus("failed");
           console.log("[telemetry] tier_b_failed", {
             address: data.address.formatted,
             source: data.source,
@@ -629,7 +762,8 @@ function HomePageInner() {
             message: err instanceof Error ? err.message : String(err),
           });
           // Don't clear the ref — failed inspector call shouldn't re-fire
-          // on the same RoofData. Rep can re-analyze to force a fresh try.
+          // on the same RoofData (avoids paid-loop on transient errors).
+          // Rep can re-analyze (resets ref in runEstimate) to force retry.
         }
       })();
     },
@@ -654,6 +788,8 @@ function HomePageInner() {
     editOriginIsWallFootprintRef.current = false;
     // Reset pipeline state on every address change.
     setRoofData(null);
+    setSam3Polygon(null);
+    setSam3Source(null);
     setPipelineError(null);
     setInspectorStatus("idle");
     inspectorRanForKeyRef.current = null;
@@ -866,8 +1002,13 @@ function HomePageInner() {
     if (polygonSource === "edited") badges.push("Edited");
     else if (roofData?.source === "tier-c-solar") badges.push("Solar facets");
     else if (roofData?.source === "tier-c-vision") badges.push("AI traced");
-    else if (roofData?.source === "tier-b-multiview") badges.push("Multi-view");
     else if (roofData?.source === "tier-a-lidar") badges.push("LiDAR");
+    // Tier B is a refinement layer, not a source — mergeRefinement
+    // preserves the original source. Surface it via the refinements
+    // marker so the badge appears whenever obliques have been merged.
+    if (roofData?.refinements.includes("multiview-obliques")) {
+      badges.push("Multi-view");
+    }
     if (roofData && roofData.source !== "none" && roofData.totals.facetsCount > 0) {
       badges.push(`${roofData.totals.facetsCount} facet${roofData.totals.facetsCount === 1 ? "" : "s"}`);
     }
@@ -881,7 +1022,7 @@ function HomePageInner() {
   })();
 
   return (
-    <div className="space-y-8 sm:space-y-10">
+    <div className="space-y-7 sm:space-y-9">
       {pendingAddress && pendingAddress.lat != null && pendingAddress.lng != null && (
         <div className="fixed inset-0 z-[200] bg-black/95">
           <ConfirmHomePin
@@ -929,24 +1070,32 @@ function HomePageInner() {
         className="glass-panel-hero p-5 sm:p-7 md:p-9 relative"
         style={{ isolation: "isolate" }}
       >
-        <div className="relative flex items-end justify-between gap-6 mb-6 flex-wrap">
-          <div className="flex items-end gap-3">
-            <div className="glass-eyebrow">
-              <Zap size={11} /> Quick Estimate
-            </div>
-            <div className="hidden md:flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-slate-300">
-              <span>address</span>
-              <span className="w-3 h-px bg-slate-400/60" />
-              <span>analyze</span>
-              <span className="w-3 h-px bg-slate-400/60" />
-              <span>review</span>
-              <span className="w-3 h-px bg-slate-400/60" />
-              <span className="text-cy-300 font-semibold">deliver</span>
-            </div>
-          </div>
-          <div className="flex items-stretch gap-2 w-full sm:w-auto">
+        {/* Top strip — dynamic progress stepper on the left, rep meta
+            (name input + New) on the right. The stepper used to be a
+            static "ADDRESS — ANALYZE — REVIEW — DELIVER" breadcrumb
+            with "DELIVER" hardcoded as the active step, which was both
+            wrong and noisy. Now it reflects actual pipeline state:
+              address  → active until an address resolves
+              analyze  → active while the pipeline is in flight
+              review   → active once roofData lands
+              deliver  → active once a priced estimate exists
+            On narrow widths the labels collapse to dots so the bar
+            stays a single row. */}
+        <div className="relative flex items-center justify-between gap-4 mb-7 flex-wrap">
+          <HeroStepper
+            current={
+              !shown
+                ? "address"
+                : pipelineLoading || !roofData
+                  ? "analyze"
+                  : !priced
+                    ? "review"
+                    : "deliver"
+            }
+          />
+          <div className="flex items-stretch gap-2 ml-auto">
             <input
-              className="glass-input flex-1 sm:flex-none sm:w-44 text-[13px]"
+              className="glass-input flex-1 sm:flex-none sm:w-40 text-[13px]"
               placeholder="Your name"
               value={staff}
               onChange={(e) => setStaff(e.target.value)}
@@ -964,13 +1113,14 @@ function HomePageInner() {
           </div>
         </div>
 
-        <h1 className="font-display text-[28px] sm:text-4xl md:text-[44px] leading-[1.05] tracking-tight font-medium mb-1.5">
+        <h1 className="font-display text-[30px] sm:text-[40px] md:text-[48px] leading-[1.02] tracking-[-0.025em] font-semibold mb-2 text-balance">
           Where are we{" "}
           <span className="iridescent-text">roofing</span>{" "}
           today?
         </h1>
-        <p className="text-[13.5px] text-slate-400 mb-6 max-w-xl">
-          Type or paste an address. Pick a suggestion — Pitch auto-measures and assesses the roof.
+        <p className="text-[14px] text-slate-400 mb-6 max-w-xl leading-relaxed">
+          Type or paste an address. Pitch auto-measures the roof and assesses
+          it against LiDAR + satellite + storm data.
         </p>
 
         <AddressInput
@@ -980,15 +1130,25 @@ function HomePageInner() {
           onSubmit={requestEstimate}
         />
 
-        {/* Keyboard discoverability strip — surfaces the shortcuts the
-            useKeyboardShortcuts hook already binds. Hidden on mobile
-            (touch users have no keyboard) and on small screens. */}
-        <div className="hidden md:flex flex-wrap items-center gap-x-4 gap-y-2 mt-4 text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500">
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘K</span> Address</span>
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘N</span> New</span>
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘S</span> Save</span>
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘P</span> PDF</span>
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘E</span> Email</span>
+        {/* Keyboard shortcuts — collapsed to a single subtle line so they
+            stop visually competing with the address input. Power users
+            still get the hint; new reps don't see a noise strip. */}
+        <div className="hidden md:flex items-center gap-4 mt-4 text-[10.5px] font-mono uppercase tracking-[0.14em] text-slate-500">
+          <span className="flex items-center gap-1.5">
+            <span className="kbd">⌘K</span> Address
+          </span>
+          <span className="text-slate-600">·</span>
+          <span className="flex items-center gap-1.5">
+            <span className="kbd">⌘S</span> Save
+          </span>
+          <span className="text-slate-600">·</span>
+          <span className="flex items-center gap-1.5">
+            <span className="kbd">⌘P</span> PDF
+          </span>
+          <span className="text-slate-600">·</span>
+          <span className="flex items-center gap-1.5">
+            <span className="kbd">⌘E</span> Email
+          </span>
         </div>
       </section>
 
@@ -1000,12 +1160,42 @@ function HomePageInner() {
           covers it anyway). */}
       {pipelineError && !pipelineLoading && (
         <div
-          className="rounded-md border border-red-400/30 bg-red-50/95 px-3 py-2 text-sm text-red-900"
+          className="rounded-xl border border-rose/30 bg-rose/[0.06] px-4 py-3 text-[13px] text-rose"
           role="alert"
         >
-          Pipeline error: {pipelineError}. Try the &ldquo;re-analyze&rdquo; button or reload.
+          <span className="font-semibold">Pipeline error:</span> {pipelineError}.{" "}
+          <span className="text-rose/80">
+            Try the &ldquo;re-analyze&rdquo; button or reload.
+          </span>
         </div>
       )}
+
+      {/* Low-confidence / needs-review banner. Fires when the pipeline
+          returned RoofData but Tier C flagged it as low-confidence (e.g.
+          vision-only fallback) OR diagnostics surfaced facets/edges/objects
+          that need rep review. Tier B refinement (when enabled) is the
+          fastest path to clear most of these; Tier A LiDAR is the long-term
+          fix for vision-only addresses. Suppressed once Tier B has applied. */}
+      {roofData &&
+        roofData.source !== "none" &&
+        !pipelineError &&
+        !pipelineLoading &&
+        inspectorStatus !== "running" &&
+        (roofData.confidence < 0.5 || roofData.diagnostics.needsReview.length > 0) && (
+          <div
+            className="rounded-xl border border-amber/35 bg-amber/[0.06] px-4 py-3 text-[13px] text-amber"
+            role="status"
+          >
+            <strong className="font-semibold">Review measurements:</strong>{" "}
+            {roofData.confidence < 0.5
+              ? `Pipeline confidence ${(roofData.confidence * 100).toFixed(0)}% (source: ${roofData.source}).`
+              : `${roofData.diagnostics.needsReview.length} feature${roofData.diagnostics.needsReview.length === 1 ? "" : "s"} flagged for review.`}{" "}
+            {process.env.NEXT_PUBLIC_ENABLE_TIER_B_REFINEMENT === "1" ||
+            roofData.refinements.includes("multiview-obliques")
+              ? "Confirm the polygon on the satellite view; the inspector overlay shows what was flagged."
+              : "Consider enabling Tier B inspector (ENABLE_TIER_B_REFINEMENT=1) or re-analyzing."}
+          </div>
+        )}
 
       {!shown && <EmptyState />}
 
@@ -1068,7 +1258,15 @@ function HomePageInner() {
                below — adding it here gave the grid 3 children and broke
                the side-by-side layout (3D viewer wrapped to row 2,
                overflowing the fixed-height section). */}
-          <section className="grid lg:grid-cols-2 gap-4 h-[420px] sm:h-[520px] lg:h-[640px] float-in relative">
+          {/* Property hero — 2D map + 3D mesh side-by-side. Height was
+              previously a fixed 640px on lg+ which reserved a giant
+              empty black panel while the 3D viewer / pipeline were
+              still loading (Cesium tiles + LiDAR can take 30-60s). Now
+              capped at min-h instead of fixed h, with a tighter
+              aspect-clipped 3D column — the section fills naturally
+              when content lands and doesn't reserve a viewport of
+              dead space when it doesn't. */}
+          <section className="grid lg:grid-cols-2 gap-4 min-h-[360px] sm:min-h-[440px] lg:min-h-[520px] float-in relative">
             <MapView
               lat={address?.lat}
               lng={address?.lng}
@@ -1164,12 +1362,35 @@ function HomePageInner() {
                   )}
               </div>
             ) : (
-              // Placeholder keeps the 2-column grid intact while SAM3
-              // is in flight. Falls back to a soft glass panel mirroring
-              // the eventual 3D mount so the layout doesn't shift when
-              // the mesh appears.
-              <div className="glass-panel h-full flex items-center justify-center text-slate-500 text-[12px] font-mono uppercase tracking-[0.14em]">
-                3D mesh loads after measurement…
+              // Placeholder keeps the 2-column grid intact while the
+              // pipeline / SAM3 is in flight. Tinted radial gradient
+              // + animated dot + clear copy beats the previous "dead
+              // black panel" look. Also hides itself entirely on
+              // mobile so we don't reserve a full-height column of
+              // empty space below the satellite map on phones.
+              <div
+                className="hidden lg:flex glass-panel h-full flex-col items-center justify-center gap-3 relative overflow-hidden"
+                role="status"
+                aria-live="polite"
+              >
+                <div
+                  aria-hidden
+                  className="absolute inset-0 pointer-events-none"
+                  style={{
+                    background:
+                      "radial-gradient(closest-side at 50% 50%, rgba(56,197,238,0.06), transparent 70%)",
+                  }}
+                />
+                <div className="relative flex items-center gap-2">
+                  <span className="inline-flex w-2 h-2 rounded-full bg-cy-300 animate-pulse" />
+                  <span className="text-[10.5px] font-mono uppercase tracking-[0.18em] text-cy-300/85">
+                    3D mesh
+                  </span>
+                </div>
+                <div className="relative text-[12.5px] text-slate-300 max-w-[18rem] text-center leading-relaxed">
+                  Loads after measurement — Google Map Tiles 3D + LiDAR-derived
+                  roof drape.
+                </div>
               </div>
             )}
           </section>
@@ -1285,23 +1506,32 @@ function HomePageInner() {
           />
 
           {/* ─── Two-col grid for everything else ─────────────────────── */}
-          <div className="grid lg:grid-cols-3 gap-6 float-in">
-            <div className="lg:col-span-2 space-y-6">
+          <div className="grid lg:grid-cols-3 gap-5 lg:gap-7 float-in">
+            <div className="lg:col-span-2 space-y-5">
               {/* Tier C unified-pipeline panels. Driven entirely from
                   RoofData (single canonical feed). */}
               {roofData && roofData.source !== "none" && (
                 <>
+                  <MeasurementVerification data={roofData} variant="rep" />
                   <RoofTotalsCard data={roofData} />
                   <DetectedFeaturesPanel data={roofData} variant="rep" />
                   {priced && <FacetList data={roofData} priced={priced} />}
                 </>
               )}
               {roofData?.source === "none" && (
-                <div className="rounded-lg border bg-amber-50 p-4 text-sm text-amber-900">
-                  We couldn&rsquo;t analyze this address. Attempts:{" "}
-                  {roofData.diagnostics.attempts
-                    .map((a) => `${a.source}=${a.outcome}`)
-                    .join(", ")}
+                <div
+                  className="rounded-xl border border-amber/30 bg-amber/[0.05] p-4 text-[13px] text-amber"
+                  role="status"
+                >
+                  <div className="font-semibold mb-1">
+                    We couldn&rsquo;t analyze this address.
+                  </div>
+                  <div className="text-[11.5px] font-mono text-amber/70 tracking-wide">
+                    Attempts:{" "}
+                    {roofData.diagnostics.attempts
+                      .map((a) => `${a.source}=${a.outcome}`)
+                      .join(", ")}
+                  </div>
                 </div>
               )}
               {/* Tier C drops the legacy VisionPanel — DetectedFeaturesPanel
@@ -1327,7 +1557,12 @@ function HomePageInner() {
                 <AddOnsPanel addOns={addOns} onChange={setAddOns} />
               </div>
             </div>
-            <div className="space-y-6">
+            {/* Right rail — context + delivery. Sticks to the top while
+                the left column scrolls so the rep can always see the
+                storm card, customer fields, and Output buttons without
+                hunting. The lg:max-h + overflow-y-auto means a long
+                StormHistoryCard expansion stays scoped to the rail. */}
+            <aside className="space-y-5 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
               <PropertyContextPanel address={address} />
               <StormHistoryCard lat={address?.lat} lng={address?.lng} />
               <PhotoUploadPanel photos={photos} onChange={setPhotos} />
@@ -1412,7 +1647,7 @@ function HomePageInner() {
                 />
               </div>
               <InsightsPanel estimate={estimate} />
-            </div>
+            </aside>
           </div>
           {/* Floating estimate summary — fades in once the rep scrolls past
               the headline price card so the live total + sqft + source
@@ -1464,6 +1699,68 @@ export default function HomePage() {
     <Suspense fallback={null}>
       <HomePageInner />
     </Suspense>
+  );
+}
+
+/** Hero progress stepper. State-driven (vs. the old static "deliver
+ *  always cyan" version). On lg+ shows label + connector dots, on
+ *  narrow widths collapses to four dots with the active one filled. */
+function HeroStepper({
+  current,
+}: {
+  current: "address" | "analyze" | "review" | "deliver";
+}) {
+  const steps = [
+    { key: "address", label: "Address" },
+    { key: "analyze", label: "Analyze" },
+    { key: "review", label: "Review" },
+    { key: "deliver", label: "Deliver" },
+  ] as const;
+  const currentIdx = steps.findIndex((s) => s.key === current);
+  return (
+    <div
+      className="flex items-center gap-2.5 sm:gap-3 text-[10.5px] font-mono uppercase tracking-[0.16em]"
+      role="status"
+      aria-label={`Workflow: ${steps[currentIdx]?.label ?? "—"}`}
+    >
+      {steps.map((s, i) => {
+        const active = i === currentIdx;
+        const done = i < currentIdx;
+        return (
+          <span key={s.key} className="flex items-center gap-2.5 sm:gap-3">
+            <span
+              className={`flex items-center gap-1.5 transition-colors ${
+                active
+                  ? "text-cy-300"
+                  : done
+                    ? "text-slate-300"
+                    : "text-slate-500"
+              }`}
+            >
+              <span
+                className={`inline-block w-1.5 h-1.5 rounded-full transition-all ${
+                  active
+                    ? "bg-cy-300 shadow-[0_0_8px_rgba(56,197,238,0.6)]"
+                    : done
+                      ? "bg-slate-300"
+                      : "bg-slate-600"
+                }`}
+                aria-hidden
+              />
+              <span className={active ? "font-semibold" : ""}>{s.label}</span>
+            </span>
+            {i < steps.length - 1 && (
+              <span
+                className={`hidden sm:inline-block w-4 h-px ${
+                  i < currentIdx ? "bg-slate-300/60" : "bg-slate-600/50"
+                }`}
+                aria-hidden
+              />
+            )}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 

@@ -24,6 +24,14 @@ interface Props {
    *  click-pick. Disables both buttons and shows a spinner so the
    *  customer doesn't tap repeatedly. */
   pickingLoading?: boolean;
+  /** Read-only facet-by-facet outlines from RoofData.facets[].polygon.
+   *  When provided AND the editable polygon is unedited, these render
+   *  underneath the editable polygon at low opacity so the customer
+   *  sees the per-facet structure (ridges, hip lines, dormers) rather
+   *  than a single flat outline. Hidden during picking/drawing modes
+   *  and once the customer starts editing. Strictly visual — no
+   *  interaction, no impact on sqft / pricing. */
+  facetOverlay?: Array<Array<{ lat: number; lng: number }>> | null;
 }
 
 /**
@@ -54,10 +62,14 @@ export default function EditableRoofMap({
   onPolygonChanged,
   onClickPick,
   pickingLoading = false,
+  facetOverlay = null,
 }: Props) {
   const mapEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
   const polyRef = useRef<google.maps.Polygon | null>(null);
+  // Read-only facet polygons rendered beneath the editable polygon.
+  // Cleared and recreated whenever facetOverlay changes.
+  const facetPolysRef = useRef<google.maps.Polygon[]>([]);
   const drawingManagerRef = useRef<google.maps.drawing.DrawingManager | null>(null);
   const clickListenerRef = useRef<google.maps.MapsEventListener | null>(null);
   const callbackRef = useRef(onPolygonChanged);
@@ -122,10 +134,47 @@ export default function EditableRoofMap({
         polyRef.current.setMap(null);
         polyRef.current = null;
       }
+      for (const fp of facetPolysRef.current) fp.setMap(null);
+      facetPolysRef.current = [];
       mapRef.current = null;
       setReady(false);
     };
   }, [lat, lng]);
+
+  // Read-only facet overlay (per-facet polygons under the editable
+  // outline). Renders only in idle mode — hidden during picking/drawing
+  // so the customer focuses on the single overlay they're editing.
+  useEffect(() => {
+    if (!ready) return;
+    const map = mapRef.current;
+    if (!map) return;
+    // Always clear prior facet polygons before re-rendering.
+    for (const fp of facetPolysRef.current) fp.setMap(null);
+    facetPolysRef.current = [];
+    if (mode !== "idle") return;
+    if (!facetOverlay || facetOverlay.length === 0) return;
+    void loadGoogle().then((g) => {
+      if (!map) return;
+      for (const facet of facetOverlay) {
+        if (!facet || facet.length < 3) continue;
+        const fp = new g.maps.Polygon({
+          paths: facet,
+          // Slightly darker stroke than the editable polygon so facet
+          // lines read as "structure" rather than competing edits.
+          strokeColor: "#1aa3d6",
+          strokeOpacity: 0.85,
+          strokeWeight: 1.5,
+          fillColor: "#38c5ee",
+          fillOpacity: 0.08,
+          editable: false,
+          clickable: false,
+          zIndex: 2,
+          map,
+        });
+        facetPolysRef.current.push(fp);
+      }
+    });
+  }, [ready, facetOverlay, mode]);
 
   // Render / re-render the polygon when initialPolygon changes.
   useEffect(() => {

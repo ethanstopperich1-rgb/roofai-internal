@@ -6,6 +6,7 @@ import {
 } from "@/lib/roof-engine";
 import { getMemoizedVision, type VisionFetcher } from "@/lib/cache/vision-request";
 import { mapVisionMaterial, visionPenetrationsToObjects } from "./vision-mappers";
+import { resolveBaseUrl } from "@/lib/base-url";
 
 /**
  * Tier C vision-only fallback. Single-facet whole-roof RoofData when
@@ -21,6 +22,10 @@ export async function tierCVisionSource(opts: {
    *  has a Microsoft Buildings or geocoded estimate, pass it; otherwise
    *  defaults to 2000 sqft. */
   estimatedFootprintSqft?: number;
+  /** Unused at vision tier — accepted so the orchestrator can pass
+   *  uniform args to every source. */
+  parcelPolygon?: Array<{ lat: number; lng: number }>;
+  imageryDate?: string | null;
 }): Promise<RoofData | null> {
   const visionFetcher = opts.visionFetcher ?? defaultVisionFetcher;
   const vision = await getMemoizedVision({
@@ -49,6 +54,10 @@ export async function tierCVisionSource(opts: {
     ageYearsEstimate: vision.estimatedAgeYears,
     ageBucket: vision.estimatedAge !== "unknown" ? vision.estimatedAge : null,
     facets, edges, objects, flashing, totals,
+    // Vision-only has no pixel-accurate outline — Claude returns a single
+    // generic facet, so the facet polygon IS the outline. Consumers fall
+    // back to the facet union when outlinePolygon is null.
+    outlinePolygon: null,
     diagnostics: {
       attempts: [],
       warnings: ["Vision-only fallback — no Solar coverage. Pitch and area are approximate."],
@@ -106,8 +115,9 @@ function visionToSingleFacet(
 // TODO(task-19): consumer should inject fetchers that avoid the HTTP self-call
 // (call /api/vision route handler directly server-side).
 async function defaultVisionFetcher(lat: number, lng: number): Promise<RoofVision | null> {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
-  const res = await fetch(`${baseUrl}/api/vision?lat=${lat}&lng=${lng}`, { cache: "no-store" });
+  const res = await fetch(`${resolveBaseUrl()}/api/vision?lat=${lat}&lng=${lng}`, {
+    cache: "no-store",
+  });
   if (!res.ok) return null;
   return res.json();
 }

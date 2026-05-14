@@ -1,29 +1,38 @@
 # services/roof-lidar/requirements.txt
-# Pinned to compatible versions for Modal's Python 3.12 container.
-# PDAL needs native libs installed via image.apt_install (see modal_app.py).
+# Versions are unpinned (or upper-bounded only where strictly necessary)
+# so the pdal/pdal:latest image's Python version (currently 3.13)
+# resolves to compatible wheels. PDAL itself comes from the base image
+# native libs + the `pdal` pip binding installed alongside.
 
-fastapi==0.115.5
-uvicorn==0.32.1
-pydantic==2.10.3
+fastapi
+uvicorn
+pydantic
 
 # Geospatial / point cloud
-numpy==1.26.4
-scipy==1.14.1
-shapely==2.0.6
-pyproj==3.7.0
-laspy[lazrs]==2.5.4
+numpy
+scipy
+shapely
+pyproj
+laspy[lazrs]
 
-# Plane segmentation. Open3D for region-growing + alpha-shape.
-open3d==0.19.0
+# DBSCAN for plane segmentation (was Open3D — replaced with sklearn +
+# vectorized scipy KDTree because Open3D 0.19 doesn't support Python 3.13
+# and the pdal/pdal:latest base image ships 3.13).
+scikit-learn
 
 # YOLO object detection (penetrations on ortho render)
-ultralytics==8.3.39
-torch==2.5.1
-torchvision==0.20.1
-pillow==11.0.0
+ultralytics
+torch
+torchvision
+pillow
 
-# 3DEP S3 access
-boto3==1.35.84
+# 3DEP S3 access (still imported by older code paths — minor)
+boto3
 
 # HTTP
-requests==2.32.3
+requests
+
+# matplotlib for vectorized point-in-polygon (path.Path.contains_points)
+# in isolate_roof — replaces Shapely's O(N) per-point Python loop with
+# a single C call. ~30s saved on 100k-point clouds.
+matplotlib

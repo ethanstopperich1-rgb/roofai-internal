@@ -160,6 +160,8 @@ function HomePageInner() {
   // headline. Mirrors /internal page's pattern with a fetch-generation
   // token to drop out-of-order responses on rapid address switching.
   const [roofData, setRoofData] = useState<RoofData | null>(null);
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
   const fetchGenRef = useRef(0);
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [photos, setPhotos] = useState<PhotoMeta[]>([]);
@@ -1240,10 +1242,18 @@ function HomePageInner() {
     };
   }, [roofData]);
 
-  const waste = useMemo(
-    () => buildWasteTable(assumptions.sqft, assumptions.complexity ?? "moderate"),
-    [assumptions.sqft, assumptions.complexity],
-  );
+  // Prefer RoofData-driven waste when the pipeline returned usable data
+  // (matches /internal). Falls back to assumptions when roofData is null
+  // or degraded (source === "none").
+  const waste = useMemo(() => {
+    if (roofData && roofData.source !== "none") {
+      return buildWasteTable(
+        roofData.totals.totalRoofAreaSqft,
+        roofData.totals.complexity,
+      );
+    }
+    return buildWasteTable(assumptions.sqft, assumptions.complexity ?? "moderate");
+  }, [roofData, assumptions.sqft, assumptions.complexity]);
 
   const runEstimate = async (explicitAddr?: AddressInfo) => {
     // Accept an explicit address from the autocomplete pick so we don't
@@ -1285,16 +1295,29 @@ function HomePageInner() {
     // headline price, line items, and lengths. Out-of-order responses
     // are dropped via fetchGenRef.
     const gen = ++fetchGenRef.current;
-    fetch(`/api/roof-pipeline?lat=${addr.lat}&lng=${addr.lng}`)
-      .then((r) => (r.ok ? r.json() : null))
+    setPipelineLoading(true);
+    setPipelineError(null);
+    fetch(
+      `/api/roof-pipeline?lat=${addr.lat}&lng=${addr.lng}` +
+        `&address=${encodeURIComponent(addr.formatted ?? "")}` +
+        sam3NoCacheSuffix,
+      { cache: "no-store" },
+    )
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`pipeline ${r.status}`);
+        return (await r.json()) as RoofData;
+      })
       .then((data) => {
         if (gen !== fetchGenRef.current) return;
-        if (data && typeof data === "object" && "source" in data) {
-          setRoofData(data as RoofData);
-        }
+        setRoofData(data);
       })
-      .catch(() => {
-        /* pipeline degraded — UI falls back to legacy headline */
+      .catch((err) => {
+        if (gen !== fetchGenRef.current) return;
+        setPipelineError(err instanceof Error ? err.message : String(err));
+        setRoofData(null);
+      })
+      .finally(() => {
+        if (gen === fetchGenRef.current) setPipelineLoading(false);
       });
 
     const solarPromise = fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`)
@@ -1750,6 +1773,15 @@ function HomePageInner() {
            then the real SAM3 polygon flicker in late — making them
            assume SAM3 had failed. Holding the overlay through SAM3's
            full settle window eliminates that flicker. */}
+      {pipelineError && !pipelineLoading && !visionLoading && (
+        <div
+          className="rounded-md border border-red-400/30 bg-red-50/95 px-3 py-2 text-sm text-red-900"
+          role="alert"
+        >
+          Pipeline error: {pipelineError}. Try re-analyzing or reload.
+        </div>
+      )}
+
       {(visionLoading || sam3InFlight || pickingLoading) && (
         <div
           // No backdrop-blur — the filter forces full-page recomposite every

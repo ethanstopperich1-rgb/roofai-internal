@@ -14,9 +14,17 @@ export async function GET(req: Request) {
   if (!apiKey) return NextResponse.json({ error: "Missing key" }, { status: 503 });
   const { searchParams } = new URL(req.url);
   const placeId = searchParams.get("placeId");
+  // Forward sessionToken from autocomplete — when present, this details
+  // call closes out the session and the preceding autocomplete keystrokes
+  // bill as one unit instead of per-request. See /api/places/autocomplete
+  // route header comment for the full rationale.
+  const sessionToken = searchParams.get("sessionToken");
   if (!placeId) return NextResponse.json({ error: "placeId required" }, { status: 400 });
 
-  const res = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
+  const detailsUrl =
+    `https://places.googleapis.com/v1/places/${placeId}` +
+    (sessionToken ? `?sessionToken=${encodeURIComponent(sessionToken)}` : "");
+  const res = await fetch(detailsUrl, {
     headers: {
       "X-Goog-Api-Key": apiKey,
       "X-Goog-FieldMask": "formattedAddress,addressComponents,location",

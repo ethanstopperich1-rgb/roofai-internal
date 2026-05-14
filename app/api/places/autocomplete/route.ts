@@ -15,6 +15,15 @@ export async function GET(req: Request) {
   if (!apiKey) return NextResponse.json({ error: "Missing key" }, { status: 503 });
   const { searchParams } = new URL(req.url);
   const input = searchParams.get("q");
+  // sessionToken — caller-supplied UUID groups autocomplete keystrokes with
+  // the downstream Place Details call into a single billing session. With
+  // a session token, autocomplete is FREE as long as the user follows
+  // through to a details call within the session; without it each
+  // keystroke is billed per-request. The /api/places/details route
+  // forwards the same token through. Caller is responsible for generating
+  // a fresh token per "address picker open" and reusing it across all
+  // keystrokes until the user selects or clears.
+  const sessionToken = searchParams.get("sessionToken") ?? undefined;
   if (!input || input.trim().length < 3) {
     return NextResponse.json({ suggestions: [] });
   }
@@ -30,6 +39,7 @@ export async function GET(req: Request) {
       input,
       includedRegionCodes: ["us"],
       includedPrimaryTypes: ["street_address", "premise", "subpremise", "route"],
+      ...(sessionToken ? { sessionToken } : {}),
     }),
     signal: AbortSignal.timeout(8_000),
   });
