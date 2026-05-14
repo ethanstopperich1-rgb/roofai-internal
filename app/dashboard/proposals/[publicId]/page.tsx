@@ -15,6 +15,9 @@ import { getDemoProposals, getDemoLeads } from "@/lib/dashboard-demo-rows";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
 import { summarizeProposalSnapshot, fmtMaterial } from "@/lib/proposal-snapshot";
 import RecentStormCard from "@/components/RecentStormCard";
+import { tagEstimate } from "@/lib/storage";
+import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
+import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import type {
   Estimate,
   LineItem,
@@ -22,6 +25,7 @@ import type {
   RoofLengths,
   WasteTable,
 } from "@/types/estimate";
+import type { EstimateV2 } from "@/types/roof";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -71,14 +75,10 @@ async function load(publicId: string): Promise<LoadResult> {
 }
 
 /* ─── Snapshot adapters (defensive — snapshot is JSONB) ──────────────── */
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-function readEstimate(snapshot: unknown): Estimate | null {
-  return isRecord(snapshot) ? (snapshot as unknown as Estimate) : null;
-}
+// The snapshot is tagged via tagEstimate (in lib/storage) which handles
+// both v1 (legacy Estimate) and v2 (EstimateV2) shapes. The previous
+// readEstimate/isRecord helpers were retired when the v1/v2 branching
+// moved into the main page body.
 
 /* ─── Page ───────────────────────────────────────────────────────────── */
 
@@ -92,8 +92,26 @@ export default async function RepProposalPage({
   if (result.kind === "not_found") notFound();
 
   const { proposal, lead, isDemo } = result;
-  const estimate = readEstimate(proposal.snapshot);
+  // Tier C: branch v1 vs v2 on the snapshot. v2 snapshots have
+  // version: 2 and a roofData object; v1 is the legacy Estimate shape.
+  // The old code cast unconditionally to Estimate, which made v2
+  // snapshots render with "—" everywhere (no .assumptions, no .total).
+  const tagged = tagEstimate(proposal.snapshot);
+  const estimateV2: EstimateV2 | null =
+    tagged?.kind === "v2" ? tagged.estimate : null;
+  const estimate: Estimate | null =
+    tagged?.kind === "v1" ? tagged.estimate : null;
   const summary = summarizeProposalSnapshot(proposal.snapshot);
+
+  // Headline total — for v2 derive from priced; for v1 use estimate.total
+  // (matches the legacy behavior). totalRange falls back to summary +
+  // proposals row for both shapes.
+  const headlineTotal =
+    estimateV2
+      ? Math.round(
+          (estimateV2.priced.totalLow + estimateV2.priced.totalHigh) / 2,
+        )
+      : estimate?.total ?? null;
 
   const totalRange =
     summary.totalLow != null && summary.totalHigh != null
@@ -124,12 +142,18 @@ export default async function RepProposalPage({
             <div className="glass-eyebrow mb-2 inline-flex">Rep view · Proposal detail</div>
             <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
               <span className="iridescent-text">
-                {lead?.name ?? estimate?.customerName ?? "Customer proposal"}
+                {lead?.name ??
+                  estimateV2?.customerName ??
+                  estimate?.customerName ??
+                  "Customer proposal"}
               </span>
             </h1>
             <p className="text-sm text-white/55 mt-1.5 flex items-center gap-1.5">
               <MapPin size={12} className="text-white/40" />
-              {lead?.address ?? estimate?.address?.formatted ?? "—"}
+              {lead?.address ??
+                estimateV2?.address?.formatted ??
+                estimate?.address?.formatted ??
+                "—"}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -165,7 +189,7 @@ export default async function RepProposalPage({
                 Project Total
               </div>
               <div className="font-display tabular text-[56px] md:text-[72px] leading-[0.92] font-semibold tracking-[-0.04em] text-white">
-                {estimate?.total != null ? fmt(estimate.total) : "—"}
+                {headlineTotal != null ? fmt(headlineTotal) : "—"}
               </div>
               <div className="font-mono text-[11px] text-white/55 tabular mt-1">
                 range {totalRange}
@@ -187,15 +211,268 @@ export default async function RepProposalPage({
         </div>
       </section>
 
-      {/* ───── Rep workbench (extra data) ───── */}
-      <RepWorkbench estimate={estimate} proposal={proposal} />
+      {/* ───── Rep workbench (extra data) ─────
+          v2 and v1 snapshots have entirely different shapes, so we render
+          two parallel workbenches. The v1 path is unchanged (legacy).
+          The v2 path reads from roofData/priced/pricingInputs and mounts
+          the new RoofTotalsCard + DetectedFeaturesPanel components. */}
+      {estimateV2 ? (
+        <RepWorkbenchV2 estimate={estimateV2} proposal={proposal} />
+      ) : (
+        <RepWorkbenchLegacy estimate={estimate} proposal={proposal} />
+      )}
     </div>
   );
 }
 
-/* ─── Rep workbench ──────────────────────────────────────────────────── */
+/* ─── Rep workbench (v2) ─────────────────────────────────────────────── */
 
-function RepWorkbench({
+function RepWorkbenchV2({
+  estimate,
+  proposal,
+}: {
+  estimate: EstimateV2;
+  proposal: Proposal;
+}) {
+  const { roofData, priced, pricingInputs } = estimate;
+  const enabledAddOns = pricingInputs.addOns.filter((a) => a.enabled);
+  const matKey = pricingInputs.material as Material | undefined;
+  const matLabel = matKey
+    ? (MATERIAL_RATES[matKey]?.label ?? String(matKey))
+    : "—";
+  // Derive a degree → "rise/12" string for the rep header so the v2 view
+  // matches the v1 pitch chip presentation. Tier C carries average pitch
+  // in degrees on RoofData.totals.
+  const avgDeg = roofData.totals.averagePitchDegrees;
+  const pitchLabel =
+    Number.isFinite(avgDeg) && avgDeg > 0
+      ? `${(Math.tan((avgDeg * Math.PI) / 180) * 12).toFixed(0)}/12`
+      : "—";
+  const addrLat = estimate.address?.lat;
+  const addrLng = estimate.address?.lng;
+  const cityLabel = (() => {
+    const f = estimate.address?.formatted ?? "";
+    const parts = f.split(",").map((s) => s.trim()).filter(Boolean);
+    if (parts.length === 0) return undefined;
+    const stateZip = /^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$/;
+    const country = /^(USA|US|United States)$/i;
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i];
+      if (stateZip.test(p) || country.test(p)) continue;
+      if (i === 0 && parts.length > 1) return undefined;
+      return p;
+    }
+    return undefined;
+  })();
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Assumptions strip — v2 pulls from pricingInputs + roofData.totals. */}
+      <section className="glass-panel p-5">
+        <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-3">
+          Assumptions <span className="text-white/30 normal-case">· internal · v2</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <Stat
+            label="Sqft"
+            value={roofData.totals.totalRoofAreaSqft.toLocaleString()}
+          />
+          <Stat label="Pitch" value={pitchLabel} />
+          <Stat label="Material" value={matLabel} />
+          <Stat
+            label="Service"
+            value={(pricingInputs.serviceType ?? "reroof-tearoff").replace(/-/g, " ")}
+          />
+          <Stat label="Complexity" value={roofData.totals.complexity} />
+          <Stat label="Facets" value={String(roofData.totals.facetsCount)} mono />
+          <Stat
+            label="Labor ×"
+            value={(pricingInputs.laborMultiplier ?? 1).toFixed(2)}
+            mono
+          />
+          <Stat
+            label="Material ×"
+            value={(pricingInputs.materialMultiplier ?? 1).toFixed(2)}
+            mono
+          />
+          <Stat
+            label="Insurance"
+            value={estimate.isInsuranceClaim ? "Yes" : "No"}
+            mono
+          />
+          <Stat
+            label="Prepared by"
+            value={estimate.staff || "—"}
+          />
+          <Stat
+            label="Saved"
+            value={fmtDateTime(proposal.created_at)}
+          />
+          <Stat
+            label="Public ID"
+            value={proposal.public_id.slice(0, 12) + "…"}
+            mono
+          />
+        </div>
+      </section>
+
+      {/* Recent storm activity — same component used elsewhere. */}
+      <RecentStormCard
+        lat={addrLat}
+        lng={addrLng}
+        cityLabel={cityLabel}
+        defaultWindow={7}
+        defaultRadius={10}
+      />
+
+      {/* Tier C canonical roof panels — same components mounted on /internal
+          and /p/[id]. The dashboard's rep view sees the rep variant of the
+          detected-features panel (more diagnostic detail). */}
+      {roofData.source !== "none" && (
+        <>
+          <RoofTotalsCard data={roofData} />
+          <DetectedFeaturesPanel data={roofData} variant="rep" />
+        </>
+      )}
+
+      {/* Line items (Xactimate-style) — v2 priced.lineItems shape. */}
+      {priced.lineItems.length > 0 && (
+        <section className="glass-panel p-0 overflow-hidden">
+          <div className="px-5 pt-5 pb-3 flex items-center justify-between flex-wrap gap-2">
+            <div className="text-[10.5px] uppercase tracking-wider text-white/45">
+              Line items <span className="text-white/30 normal-case">· Xactimate-style · v2</span>
+            </div>
+            <div className="text-[11px] font-mono tabular text-white/55">
+              {priced.lineItems.length} items · {priced.squares?.toFixed(1)} sq
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[12.5px]">
+              <thead>
+                <tr className="text-[10.5px] uppercase tracking-wider text-white/45 border-b border-white/[0.06]">
+                  <th className="text-left font-medium px-4 py-2.5">Code</th>
+                  <th className="text-left font-medium px-4 py-2.5">Description</th>
+                  <th className="text-right font-medium px-4 py-2.5">Qty</th>
+                  <th className="text-right font-medium px-4 py-2.5 hidden md:table-cell">Unit</th>
+                  <th className="text-right font-medium px-4 py-2.5 hidden lg:table-cell">
+                    Unit price
+                  </th>
+                  <th className="text-right font-medium px-4 py-2.5">Range</th>
+                </tr>
+              </thead>
+              <tbody>
+                {priced.lineItems.map((li, i: number) => (
+                  <tr
+                    key={`${li.code}-${i}`}
+                    className="border-b border-white/[0.04] last:border-b-0"
+                  >
+                    <td className="px-4 py-2 font-mono tabular text-white/65 whitespace-nowrap">
+                      {li.code}
+                    </td>
+                    <td className="px-4 py-2 text-white/90">{li.description}</td>
+                    <td className="px-4 py-2 text-right font-mono tabular text-white/85">
+                      {Number.isFinite(li.quantity) ? li.quantity.toFixed(2) : "—"}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono tabular text-white/55 hidden md:table-cell">
+                      {li.unit}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono tabular text-white/65 hidden lg:table-cell">
+                      {fmtUSD((li.unitCostLow + li.unitCostHigh) / 2, 2)}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono tabular text-white/95 whitespace-nowrap">
+                      {fmtUSD(li.extendedLow, 0)} – {fmtUSD(li.extendedHigh, 0)}
+                    </td>
+                  </tr>
+                ))}
+                <tr className="border-t border-white/[0.08] bg-white/[0.02]">
+                  <td colSpan={5} className="px-4 py-2.5 text-right text-[11px] uppercase tracking-wider text-white/55">
+                    Subtotal
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono tabular text-white/95">
+                    {fmtUSD(priced.subtotalLow, 0)} – {fmtUSD(priced.subtotalHigh, 0)}
+                  </td>
+                </tr>
+                <tr>
+                  <td colSpan={5} className="px-4 py-2 text-right text-[11px] uppercase tracking-wider text-white/55">
+                    O&amp;P
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono tabular text-white/85">
+                    {fmtUSD(priced.overheadProfit.low, 0)} – {fmtUSD(priced.overheadProfit.high, 0)}
+                  </td>
+                </tr>
+                <tr className="border-t border-white/[0.08]">
+                  <td colSpan={5} className="px-4 py-3 text-right text-[12px] uppercase tracking-wider text-white">
+                    Total
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono tabular text-white text-[13px]">
+                    {fmtUSD(priced.totalLow, 0)} – {fmtUSD(priced.totalHigh, 0)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* Add-ons */}
+      {enabledAddOns.length > 0 && (
+        <section className="glass-panel p-5">
+          <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-3">
+            Enabled add-ons
+          </div>
+          <ul className="flex flex-col divide-y divide-white/[0.05]">
+            {enabledAddOns.map((ao) => (
+              <li key={ao.id} className="flex items-center justify-between py-2 text-[13px]">
+                <span className="text-white/90">{ao.label}</span>
+                <span className="font-mono tabular text-white/75">
+                  {fmtUSD(ao.price, 0)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Insurance claim metadata */}
+      {estimate.isInsuranceClaim && estimate.claim && (
+        <section className="glass-panel p-5">
+          <details className="group">
+            <summary className="cursor-pointer flex items-center justify-between gap-3 list-none">
+              <div className="text-[10.5px] uppercase tracking-wider text-amber">
+                Insurance claim · internal
+              </div>
+              <span className="text-[10.5px] text-white/45 font-mono group-open:hidden">
+                Show
+              </span>
+              <span className="text-[10.5px] text-white/45 font-mono hidden group-open:inline">
+                Hide
+              </span>
+            </summary>
+            <pre className="text-[11.5px] font-mono text-white/70 whitespace-pre-wrap break-all max-h-[280px] overflow-y-auto mt-3">
+              {JSON.stringify(estimate.claim, null, 2)}
+            </pre>
+          </details>
+        </section>
+      )}
+
+      {/* Notes */}
+      {estimate.notes && (
+        <section className="glass-panel p-5">
+          <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-3">
+            Notes
+          </div>
+          <p className="text-[13px] text-white/85 leading-relaxed whitespace-pre-wrap">
+            {estimate.notes}
+          </p>
+        </section>
+      )}
+    </div>
+  );
+}
+
+/* ─── Rep workbench (legacy v1) ──────────────────────────────────────── */
+
+function RepWorkbenchLegacy({
   estimate,
   proposal,
 }: {
