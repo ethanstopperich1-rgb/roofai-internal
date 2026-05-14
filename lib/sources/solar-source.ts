@@ -137,6 +137,11 @@ function mapVisionMaterial(m: RoofVision["currentMaterial"]): Material | null {
   return null;
 }
 
+// TODO(task-19): consumer should inject fetchers that avoid the HTTP self-call
+// (call route handlers / engine functions directly server-side). The
+// NEXT_PUBLIC_BASE_URL fallback to localhost is fine for the debug route
+// + local dev but fragile in Vercel SSR where the container's loopback
+// may not resolve.
 async function defaultSolarFetcher(lat: number, lng: number): Promise<SolarSummary | null> {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
   const res = await fetch(`${baseUrl}/api/solar?lat=${lat}&lng=${lng}`, { cache: "no-store" });
