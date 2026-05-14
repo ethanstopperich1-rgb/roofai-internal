@@ -1977,9 +1977,9 @@ function HomePageInner() {
                   address={address.formatted}
                   polygons={activePolygons}
                   polygonSource={polygonSource}
-                  imageryDate={solar?.imageryDate}
+                  imageryDate={roofData?.imageryDate ?? null}
                   expectedFootprintSqft={
-                    solar?.buildingFootprintSqft ?? null
+                    roofData?.totals.totalFootprintSqft ?? null
                   }
                   interactive
                 />
@@ -1995,35 +1995,13 @@ function HomePageInner() {
             )}
           </section>
 
-          {/* "Pick the right building" affordance — rendered OUTSIDE the
-              2-column grid so it sits below the MapView+3D row at full
-              width. Previously this lived inside the grid as a third
-              child, which shoved the 3D viewer onto row 2 and made the
-              fixed-height grid section overflow. */}
-          {polygonReady && polygonSource !== "none" && (
-            <div className="mt-3 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  console.log("[pin]", "pin_fallback_button_used", {});
-                  setPickingBuilding((p) => !p);
-                }}
-                className="glass-button-secondary text-[12px] font-mono uppercase tracking-[0.14em]"
-                disabled={pickingLoading}
-              >
-                {pickingLoading
-                  ? "Re-tracing…"
-                  : pickingBuilding
-                    ? "Tap the right building (Esc to cancel)"
-                    : "Wrong building? Click to pick"}
-              </button>
-              {pickingBuilding && (
-                <span className="font-mono text-[11px] text-cy-300/70">
-                  Click anywhere on the actual house in the satellite tile.
-                </span>
-              )}
-            </div>
-          )}
+          {/* Tier C drops the "Wrong building? Click to pick" affordance —
+              it depended on /api/sam3-roof's pin-override path which isn't
+              wired into the new unified pipeline yet.
+              TODO(Tier B): re-introduce pin-override via /api/roof-pipeline
+              once the pipeline supports a clickLat/clickLng query. Pin
+              confirmation (ConfirmHomePin) still catches initial geocode
+              mistakes. */}
 
           {/* The "Roof geometry" section (parametric 3D + architectural
               blueprint card) was removed — same reason as above. The
@@ -2082,65 +2060,23 @@ function HomePageInner() {
 
           {/* ─── Imagery × storm correlation (multi-temporal) ──────────── */}
           <ImageryStormBanner
-            imageryDate={solar?.imageryDate ?? null}
+            imageryDate={roofData?.imageryDate ?? null}
             lat={address?.lat}
             lng={address?.lng}
           />
 
-          {/* ─── Outline accuracy warning — surfaces low / moderate
-                confidence + Claude's specific issues to the rep so they
-                know what to check. Hidden when high-confidence. */}
-          {polygonReady && polygonSource !== "none" && (
-            <OutlineQualityWarning
-              level={estimateConfidence.level}
-              rationale={estimateConfidence.rationale}
-              issues={
-                polygonSource && claudeVerifications[polygonSource]?.issues
-                  ? (claudeVerifications[polygonSource]!.issues ?? [])
-                  : []
-              }
-              sourceLabel={
-                polygonSource === "solar-mask"
-                  ? "Solar mask"
-                  : polygonSource === "roboflow"
-                    ? "Roof AI"
-                    : polygonSource === "sam"
-                      ? "SAM 2"
-                      : polygonSource === "osm"
-                        ? "OSM"
-                        : polygonSource === "microsoft-buildings"
-                          ? "MS Footprints"
-                          : polygonSource === "ai"
-                            ? "Claude vision"
-                            : polygonSource === "solar"
-                              ? "Solar facets"
-                              : polygonSource === "edited"
-                                ? "Edited"
-                                : undefined
-              }
-              onManualEdit={() => {
-                const map = document.querySelector(".gm-style");
-                map?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
-            />
-          )}
+          {/* OutlineQualityWarning intentionally dropped in Tier C —
+              its source/Claude-verifier model is gone now that RoofData
+              is canonical.
+              TODO(Tier B): surface multiview-derived outline quality
+              concerns from roofData.diagnostics (warnings / needsReview). */}
 
-          {/* ─── Polygon size sanity check ──────────────────────────────── */}
-          <PolygonSizeWarning
-            detectedSqft={assumptions.sqft}
-            solarFootprintSqft={solar?.buildingFootprintSqft ?? null}
-            pitchDegrees={solar?.pitchDegrees ?? null}
-            onAcceptSuggestion={(sqft) =>
-              setAssumptions((a) => ({ ...a, sqft }))
-            }
-            onManualEdit={() => {
-              const el = document.querySelector<HTMLInputElement>(
-                'input[type="number"]',
-              );
-              el?.focus();
-              el?.scrollIntoView({ behavior: "smooth", block: "center" });
-            }}
-          />
+          {/* PolygonSizeWarning intentionally dropped in Tier C — it
+              compared assumptions.sqft against Solar's footprint, but
+              RoofData has only one canonical area (totals.totalRoofAreaSqft)
+              now, so there's no second source to compare against.
+              TODO(Tier B): detect when rep-edited polygon's derived sqft
+              diverges from Solar's expectation. */}
 
           {/* ═══ 04 ESTIMATE — headline price + breakdown ═══════════════ */}
           <SectionHeader
@@ -2189,13 +2125,9 @@ function HomePageInner() {
                     .join(", ")}
                 </div>
               )}
-              <VisionPanel
-                vision={vision}
-                loading={visionLoading}
-                error={visionError}
-                ageYears={assumptions.ageYears}
-                zip={address?.zip}
-              />
+              {/* Tier C drops the legacy VisionPanel — DetectedFeaturesPanel
+                  (mounted above) covers the same surface (counts, age
+                  warnings) with RoofData as the canonical feed. */}
               <TiersPanel assumptions={assumptions} addOns={addOns} onApplyTier={applyTier} />
               {lengths && waste && (
                 <MeasurementsPanel
