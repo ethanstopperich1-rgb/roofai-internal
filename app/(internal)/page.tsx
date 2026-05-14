@@ -1598,6 +1598,11 @@ function HomePageInner() {
     editOriginIsWallFootprintRef.current = false;
   };
 
+  // Step 19b.2 placeholder — `priced` is wired up properly in Step 19b.3
+  // (via priceRoofData). Kept as a typed null so the JSX below typechecks
+  // against PricedEstimate | null until Step 3.
+  const priced: PricedEstimate | null = null;
+
   const mapBadges = (() => {
     const badges: string[] = [];
     // Labelled "Solar imagery" specifically because this date comes from
@@ -2092,6 +2097,23 @@ function HomePageInner() {
           {/* ─── Two-col grid for everything else ─────────────────────── */}
           <div className="grid lg:grid-cols-3 gap-6 float-in">
             <div className="lg:col-span-2 space-y-6">
+              {/* Tier C unified-pipeline panels. Driven entirely from
+                  RoofData (single canonical feed). */}
+              {roofData && roofData.source !== "none" && (
+                <>
+                  <RoofTotalsCard data={roofData} />
+                  <DetectedFeaturesPanel data={roofData} variant="rep" />
+                  {priced && <FacetList data={roofData} priced={priced} />}
+                </>
+              )}
+              {roofData?.source === "none" && (
+                <div className="rounded-lg border bg-amber-50 p-4 text-sm text-amber-900">
+                  We couldn&rsquo;t analyze this address. Attempts:{" "}
+                  {roofData.diagnostics.attempts
+                    .map((a) => `${a.source}=${a.outcome}`)
+                    .join(", ")}
+                </div>
+              )}
               <VisionPanel
                 vision={vision}
                 loading={visionLoading}
