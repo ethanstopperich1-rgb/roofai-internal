@@ -20,23 +20,21 @@ import os
 import modal
 
 # ----------------------------------------------------------------------------
-# Image: Python 3.12 + native deps for PDAL/Open3D/YOLO.
-# pdal-python wheels need the underlying C++ PDAL library + GDAL/PROJ; they
-# aren't in the default debian-slim image, so apt_install them up front.
+# Image: Python 3.12 + native deps for Open3D / YOLO.
+# Originally listed `libpdal-dev` + `pdal`, but Debian Bookworm dropped those
+# from the main repo (would need `bookworm-backports`) AND nothing in this
+# service actually imports `pdal` — point clouds are read by laspy (pure
+# Python + Rust LAZ via lazrs) and processed by open3d. Removed PDAL and
+# stripped GDAL/PROJ system packages too: pyproj and shapely ship with
+# their own vendored PROJ / GEOS in their pip wheels, so the system libs
+# were unused dead weight that slowed the build by ~2 min.
 # ----------------------------------------------------------------------------
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install(
-        # PDAL chain
-        "libpdal-dev",
-        "pdal",
-        # Geospatial deps shared by Shapely / pyproj
-        "libgdal-dev",
-        "gdal-bin",
-        "libproj-dev",
-        "proj-bin",
-        # Open3D viewport deps (headless rendering for ortho passes)
+        # Open3D viewport deps — open3d's C++ binaries link against these
+        # even when we use it headless for plane segmentation only.
         "libgl1",
         "libglib2.0-0",
         "libsm6",
