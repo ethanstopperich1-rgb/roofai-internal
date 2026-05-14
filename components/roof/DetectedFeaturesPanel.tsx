@@ -25,9 +25,24 @@ export function DetectedFeaturesPanel({
     if (counts.dormer) lines.push(`${counts.dormer} dormer${counts.dormer > 1 ? "s" : ""}`);
     const ventCount = counts.vent + counts.stack;
     if (ventCount) lines.push(`${ventCount} roof vent${ventCount > 1 ? "s" : ""}`);
+    // Tier C surfaces per-facet pitch + azimuth — homeowner-friendly
+    // summary uses average pitch (in x/12 + degrees) and the dominant
+    // compass direction so the customer sees "5 roof planes, mostly
+    // 6/12 south-facing" instead of just "blue blob".
+    const facetCount = data.facets.length;
+    const avgDeg = data.totals.averagePitchDegrees;
+    const pitchSummary = formatPitchSummary(avgDeg);
+    const dominantDir = dominantCompass(data.facets);
     return (
       <div className="rounded-lg border bg-white p-4">
         <h3 className="text-sm font-semibold text-slate-900">What we detected</h3>
+        {facetCount > 0 && (
+          <p className="mt-1 text-sm text-slate-700">
+            <strong>{facetCount} roof plane{facetCount === 1 ? "" : "s"}</strong>
+            {pitchSummary && <> · <strong>{pitchSummary}</strong> average pitch</>}
+            {dominantDir && <> · primarily <strong>{dominantDir}-facing</strong></>}.
+          </p>
+        )}
         <p className="mt-1 text-sm text-slate-700">
           {lines.length > 0
             ? lines.join(", ") + " — all factored into your estimate."
@@ -93,6 +108,49 @@ export function DetectedFeaturesPanel({
       )}
     </div>
   );
+}
+
+/** Convert pitch degrees to friendly "x/12" + "(N°)" form used by reps + customers.
+ *  Examples: 26.57° → "6/12 (27°)"; 0° → null (flat); NaN → null. */
+function formatPitchSummary(deg: number | null | undefined): string | null {
+  if (deg == null || !Number.isFinite(deg) || deg <= 0) return null;
+  // x/12 = 12 × tan(deg). Round to nearest half-rise for natural names.
+  const rise = Math.round(12 * Math.tan((deg * Math.PI) / 180));
+  if (rise < 1) return `${Math.round(deg)}°`;
+  return `${rise}/12 (${Math.round(deg)}°)`;
+}
+
+/** Area-weighted dominant compass direction from per-facet azimuths.
+ *  Returns "north" / "south-east" / "west" etc. Returns null for
+ *  flat / unknown / non-residential azimuth distributions. */
+function dominantCompass(
+  facets: Array<{ azimuthDeg?: number | null; areaSqftSloped: number }>,
+): string | null {
+  if (!facets || facets.length === 0) return null;
+  // Sum area-weighted unit vectors per facet azimuth.
+  let x = 0;
+  let y = 0;
+  let weight = 0;
+  for (const f of facets) {
+    const az = f.azimuthDeg;
+    if (az == null || !Number.isFinite(az)) continue;
+    const area = f.areaSqftSloped > 0 ? f.areaSqftSloped : 1;
+    // Azimuth is 0° = north, 90° = east. Project to (x=east, y=north).
+    const rad = (az * Math.PI) / 180;
+    x += Math.sin(rad) * area;
+    y += Math.cos(rad) * area;
+    weight += area;
+  }
+  if (weight === 0) return null;
+  const resultantDeg = (Math.atan2(x, y) * 180) / Math.PI;
+  const normalized = (resultantDeg + 360) % 360;
+  // 8-direction compass.
+  const dirs = [
+    "north", "north-east", "east", "south-east",
+    "south", "south-west", "west", "north-west",
+  ];
+  const idx = Math.round(normalized / 45) % 8;
+  return dirs[idx];
 }
 
 function countObjects(objects: RoofObject[]): Record<string, number> {
