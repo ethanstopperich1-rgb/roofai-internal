@@ -27,6 +27,20 @@ export default function ConfirmHomePin({
   const [pinLatLng, setPinLatLng] = useState(geocodedLatLng);
   const [mapReady, setMapReady] = useState(false);
 
+  if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY) {
+    return (
+      <div className="flex flex-col h-full w-full bg-black/40 backdrop-blur-md items-center justify-center text-slate-400 text-sm gap-4 px-6 text-center">
+        <p>Map unavailable — no API key configured.</p>
+        <button
+          onClick={() => onConfirm(geocodedLatLng)}
+          className="text-cy-300 underline hover:text-cy-100"
+        >
+          Continue with this address →
+        </button>
+      </div>
+    );
+  }
+
   // Build the map + draggable marker on mount.
   useEffect(() => {
     let cancelled = false;
