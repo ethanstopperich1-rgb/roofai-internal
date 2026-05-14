@@ -148,7 +148,7 @@ function HomePageInner() {
   // indicator while the roof-inspector call is in flight. Independent of
   // pipelineLoading because Tier B is additive and runs after Tier C lands.
   const [inspectorStatus, setInspectorStatus] = useState<
-    "idle" | "running" | "done" | "skipped"
+    "idle" | "running" | "done" | "skipped" | "failed"
   >("idle");
   // Per-address guard: only run the inspector once per (address × Tier C
   // RoofData identity) so that minor re-renders don't re-fire the call.
@@ -594,6 +594,11 @@ function HomePageInner() {
       if (inspectorRanForKeyRef.current === key) return;
       inspectorRanForKeyRef.current = key;
       setInspectorStatus("running");
+      console.log("[telemetry] tier_b_attempted", {
+        address: data.address.formatted,
+        source: data.source,
+        facets: data.facets.length,
+      });
       (async () => {
         try {
           const { refined, patch, latencyMs } = await refineRoofDataViaMultiview({
@@ -619,9 +624,18 @@ function HomePageInner() {
               `objects=${patch.objects?.length ?? 0} ` +
               `wallJunctions=${patch.wallJunctions?.length ?? 0}`,
           );
+          console.log(
+            didRefine ? "[telemetry] tier_b_succeeded" : "[telemetry] tier_b_skipped",
+            {
+              address: data.address.formatted,
+              source: data.source,
+              latencyMs,
+              reason: didRefine ? "applied" : "gated_no_op",
+            },
+          );
         } catch (err) {
-          console.warn("[internal] tier-b refinement skipped:", err);
-          setInspectorStatus("skipped");
+          console.warn("[internal] tier-b refinement failed:", err);
+          setInspectorStatus("failed");
           console.log("[telemetry] tier_b_failed", {
             address: data.address.formatted,
             source: data.source,
@@ -629,7 +643,8 @@ function HomePageInner() {
             message: err instanceof Error ? err.message : String(err),
           });
           // Don't clear the ref — failed inspector call shouldn't re-fire
-          // on the same RoofData. Rep can re-analyze to force a fresh try.
+          // on the same RoofData (avoids paid-loop on transient errors).
+          // Rep can re-analyze (resets ref in runEstimate) to force retry.
         }
       })();
     },
@@ -866,8 +881,13 @@ function HomePageInner() {
     if (polygonSource === "edited") badges.push("Edited");
     else if (roofData?.source === "tier-c-solar") badges.push("Solar facets");
     else if (roofData?.source === "tier-c-vision") badges.push("AI traced");
-    else if (roofData?.source === "tier-b-multiview") badges.push("Multi-view");
     else if (roofData?.source === "tier-a-lidar") badges.push("LiDAR");
+    // Tier B is a refinement layer, not a source — mergeRefinement
+    // preserves the original source. Surface it via the refinements
+    // marker so the badge appears whenever obliques have been merged.
+    if (roofData?.refinements.includes("multiview-obliques")) {
+      badges.push("Multi-view");
+    }
     if (roofData && roofData.source !== "none" && roofData.totals.facetsCount > 0) {
       badges.push(`${roofData.totals.facetsCount} facet${roofData.totals.facetsCount === 1 ? "" : "s"}`);
     }
@@ -1006,6 +1026,33 @@ function HomePageInner() {
           Pipeline error: {pipelineError}. Try the &ldquo;re-analyze&rdquo; button or reload.
         </div>
       )}
+
+      {/* Low-confidence / needs-review banner. Fires when the pipeline
+          returned RoofData but Tier C flagged it as low-confidence (e.g.
+          vision-only fallback) OR diagnostics surfaced facets/edges/objects
+          that need rep review. Tier B refinement (when enabled) is the
+          fastest path to clear most of these; Tier A LiDAR is the long-term
+          fix for vision-only addresses. Suppressed once Tier B has applied. */}
+      {roofData &&
+        roofData.source !== "none" &&
+        !pipelineError &&
+        !pipelineLoading &&
+        inspectorStatus !== "running" &&
+        (roofData.confidence < 0.5 || roofData.diagnostics.needsReview.length > 0) && (
+          <div
+            className="rounded-md border border-amber-400/40 bg-amber-50/95 px-3 py-2 text-sm text-amber-900"
+            role="status"
+          >
+            <strong className="font-semibold">Review measurements:</strong>{" "}
+            {roofData.confidence < 0.5
+              ? `Pipeline confidence ${(roofData.confidence * 100).toFixed(0)}% (source: ${roofData.source}).`
+              : `${roofData.diagnostics.needsReview.length} feature${roofData.diagnostics.needsReview.length === 1 ? "" : "s"} flagged for review.`}{" "}
+            {process.env.NEXT_PUBLIC_ENABLE_TIER_B_REFINEMENT === "1" ||
+            roofData.refinements.includes("multiview-obliques")
+              ? "Confirm the polygon on the satellite view; the inspector overlay shows what was flagged."
+              : "Consider enabling Tier B inspector (ENABLE_TIER_B_REFINEMENT=1) or re-analyzing."}
+          </div>
+        )}
 
       {!shown && <EmptyState />}
 
