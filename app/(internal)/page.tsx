@@ -1602,6 +1602,7 @@ function HomePageInner() {
             }}
             onCancel={() => {
               setPendingAddress(null);
+              setAddress(null);
             }}
           />
         </div>
