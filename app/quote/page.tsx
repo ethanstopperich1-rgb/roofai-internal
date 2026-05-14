@@ -53,6 +53,15 @@ import { BRAND_CONFIG } from "@/lib/branding";
 const RoofViewer = dynamic(() => import("@/components/roof/RoofViewer"), {
   ssr: false,
 });
+// Standalone Three.js LiDAR roof renderer. No Google 3D Tiles, no
+// Cesium — just a stylized rendering of the per-facet LiDAR output.
+// Replaces the old Cesium-overlay path when we have Tier A data
+// because a stylized standalone render reads as intentional, while
+// an overlay onto a photorealistic mesh creates visible mismatch
+// when our measurement isn't perfect.
+const RoofRenderer = dynamic(() => import("@/components/roof/RoofRenderer"), {
+  ssr: false,
+});
 const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
   ssr: false,
 });
@@ -1426,12 +1435,15 @@ function RoofStep({
           role="img"
         >
           {roofData?.source === "tier-a-lidar" ? (
-            <RoofViewer
-              key={`lidar-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
+            // Standalone LiDAR roof — no photorealistic mesh under it.
+            // Each facet plotted as a tilted polygon, color-coded by
+            // azimuth. Reads as "we measured your roof" instead of
+            // "wrong overlay on top of your actual roof." Bonus: no
+            // Map Tiles billing for this view.
+            <RoofRenderer
+              key={`renderer-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
               data={roofData}
-              // Customer-facing — disable interaction to bound Map Tiles
-              // spend (same calculus as the Tier B/C path below).
-              interactive={false}
+              className="absolute inset-0"
             />
           ) : (
             <Roof3DViewer
