@@ -13,6 +13,7 @@ function animateMarker(
   marker: google.maps.Marker,
   target: google.maps.LatLng,
   durationMs: number,
+  cancelled: () => boolean,
 ): void {
   const start = marker.getPosition();
   if (!start) {
@@ -25,6 +26,7 @@ function animateMarker(
   const dLng = target.lng() - startLng;
   const t0 = performance.now();
   const tick = () => {
+    if (cancelled()) return;
     const t = Math.min(1, (performance.now() - t0) / durationMs);
     // ease-out cubic
     const eased = 1 - Math.pow(1 - t, 3);
@@ -170,7 +172,7 @@ export default function ConfirmHomePin({
         if (userActedRef.current) return;
         if (data.lat == null || data.lng == null) return;
         if (data.confidence <= 0.85) {
-          console.log(
+          console.warn(
             `[pin-confirm] smart-pin low confidence (${data.confidence.toFixed(2)}); leaving pin at geocode`,
           );
           return;
@@ -181,7 +183,7 @@ export default function ConfirmHomePin({
         const marker = markerRef.current;
         const map = mapInstanceRef.current;
         if (!marker || !map) return;
-        animateMarker(marker, detected, 600);
+        animateMarker(marker, detected, 600, () => userActedRef.current);
         // Don't recenter the map — preserve spatial context. User can
         // pan if needed.
         setPinLatLng({ lat: data.lat, lng: data.lng });
@@ -206,7 +208,7 @@ export default function ConfirmHomePin({
         <p>Map unavailable — no API key configured.</p>
         <button
           onClick={() => onConfirm(geocodedLatLng)}
-          className="text-cy-300 underline hover:text-cy-100"
+          className="text-cy-300 underline hover:text-cy-200"
         >
           Continue with this address →
         </button>
@@ -276,7 +278,7 @@ function SmartPinToast() {
   if (!visible) return null;
   return (
     <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 max-w-[90vw]">
-      <div className="rounded-full bg-cy-300/15 border border-cy-300/40 backdrop-blur-md px-4 py-2 text-sm text-cy-100 shadow-lg">
+      <div className="rounded-full bg-cy-300/15 border border-cy-300/40 backdrop-blur-md px-4 py-2 text-sm text-cy-200 shadow-lg">
         We think this is the right one — drag the pin if we missed.
       </div>
     </div>
