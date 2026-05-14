@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   CloudHail,
   Download,
@@ -67,6 +68,11 @@ export interface CanvassRow {
   phone_source?: string | null;
   phone_match_confidence?: "high" | "medium" | "low" | null;
   phone_checked_at?: string | null;
+  // Outcome capture (migration 0016) — denormalized from canvass_outcomes
+  // by the sync trigger, drives the rep dashboard's funnel sort.
+  latest_outcome?: string | null;
+  latest_outcome_at?: string | null;
+  won_revenue_cents?: number | null;
 }
 
 type SortKey = "score" | "distance" | "address" | "permit";
@@ -740,6 +746,265 @@ function PermitChip({ row }: { row: CanvassRow }) {
   );
 }
 
+/* ─── Outcome logger ──────────────────────────────────────────────── */
+
+function OutcomeLogger({ row }: { row: CanvassRow }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [picked, setPicked] = useState<string | null>(row.latest_outcome ?? null);
+  const [revenue, setRevenue] = useState("");
+  const [lostReason, setLostReason] = useState("");
+  const [notes, setNotes] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  const needsRevenue = picked === "won";
+  const needsLostReason = picked === "lost";
+
+  const submit = (outcome: string) => {
+    setError(null);
+    setPicked(outcome);
+
+    // Multi-step outcomes (won + lost) require additional fields
+    // before the rep clicks Save. Single-step outcomes (contacted /
+    // no_contact / disqualified) submit immediately.
+    if (outcome === "won" || outcome === "lost") return;
+
+    void send({ outcome });
+  };
+
+  const submitFinal = () => {
+    if (!picked) return;
+    setError(null);
+    const body: Record<string, unknown> = { outcome: picked, notes: notes || undefined };
+    if (picked === "won") {
+      const dollars = Number(revenue);
+      if (!Number.isFinite(dollars) || dollars <= 0) {
+        setError("Enter a revenue amount.");
+        return;
+      }
+      body.revenue_cents = Math.round(dollars * 100);
+    }
+    if (picked === "lost" && lostReason) {
+      body.lost_reason_category = lostReason;
+    }
+    void send(body);
+  };
+
+  const send = async (extra: Record<string, unknown>) => {
+    startTransition(async () => {
+      try {
+        const res = await fetch("/api/canvass/outcome", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            canvass_target_id: row.id,
+            ...extra,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || `http_${res.status}`);
+          return;
+        }
+        setSavedAt(new Date().toISOString());
+        // Refresh the server component so the new latest_outcome
+        // lands on this row across all open views.
+        router.refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "network_error");
+      }
+    });
+  };
+
+  return (
+    <section className="glass-panel p-4">
+      <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-3 flex items-center justify-between">
+        <span>Log outcome</span>
+        {row.latest_outcome && (
+          <span className="text-cy-300 normal-case font-medium tracking-normal text-[11px]">
+            {prettifyOutcome(row.latest_outcome)}
+            {row.latest_outcome_at && (
+              <span className="text-white/45 ml-2 font-mono tabular">
+                {fmtDateTime(row.latest_outcome_at)}
+              </span>
+            )}
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <OutcomeButton
+          label="Contacted"
+          outcome="contacted"
+          picked={picked}
+          onClick={submit}
+          pending={pending}
+        />
+        <OutcomeButton
+          label="Quoted"
+          outcome="quoted"
+          picked={picked}
+          onClick={submit}
+          pending={pending}
+        />
+        <OutcomeButton
+          label="No contact"
+          outcome="no_contact"
+          picked={picked}
+          onClick={submit}
+          pending={pending}
+          variant="neutral"
+        />
+        <OutcomeButton
+          label="Disqualified"
+          outcome="disqualified"
+          picked={picked}
+          onClick={submit}
+          pending={pending}
+          variant="neutral"
+        />
+        <OutcomeButton
+          label="Won"
+          outcome="won"
+          picked={picked}
+          onClick={submit}
+          pending={pending}
+          variant="success"
+        />
+        <OutcomeButton
+          label="Lost"
+          outcome="lost"
+          picked={picked}
+          onClick={submit}
+          pending={pending}
+          variant="danger"
+        />
+      </div>
+
+      {(needsRevenue || needsLostReason) && (
+        <div className="flex flex-col gap-2 pt-2 border-t border-white/[0.06]">
+          {needsRevenue && (
+            <label className="flex flex-col gap-1">
+              <span className="text-[10.5px] uppercase tracking-wider text-white/45">
+                Revenue (USD)
+              </span>
+              <input
+                type="number"
+                inputMode="decimal"
+                placeholder="18500"
+                value={revenue}
+                onChange={(e) => setRevenue(e.target.value)}
+                className="glass-input !text-[13px]"
+              />
+            </label>
+          )}
+          {needsLostReason && (
+            <label className="flex flex-col gap-1">
+              <span className="text-[10.5px] uppercase tracking-wider text-white/45">
+                Lost reason
+              </span>
+              <select
+                value={lostReason}
+                onChange={(e) => setLostReason(e.target.value)}
+                className="glass-input !text-[13px]"
+              >
+                <option value="">— pick one —</option>
+                <option value="not_interested">Not interested</option>
+                <option value="competitor_won">Competitor won</option>
+                <option value="no_damage">No damage on inspection</option>
+                <option value="insurance_denied">Insurance denied</option>
+                <option value="price_too_high">Price too high</option>
+                <option value="unreachable">Unreachable</option>
+                <option value="wrong_house">Wrong house / data error</option>
+                <option value="duplicate">Duplicate in pipeline</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+          )}
+          <label className="flex flex-col gap-1">
+            <span className="text-[10.5px] uppercase tracking-wider text-white/45">
+              Notes (optional)
+            </span>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              className="glass-input !text-[13px] resize-none"
+              placeholder="What happened?"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={submitFinal}
+            disabled={pending}
+            className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[12px] font-medium bg-cy-300/10 text-cy-300 border border-cy-300/30 hover:bg-cy-300/15 active:scale-[0.98] transition-all disabled:opacity-50"
+          >
+            {pending ? "Saving…" : `Save ${picked === "won" ? "win" : "loss"}`}
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div className="text-[11.5px] text-rose-400/90 mt-2">{error}</div>
+      )}
+      {savedAt && !error && (
+        <div className="text-[11px] text-mint mt-2 inline-flex items-center gap-1">
+          <CheckSquare size={11} /> Saved
+        </div>
+      )}
+    </section>
+  );
+}
+
+function OutcomeButton({
+  label,
+  outcome,
+  picked,
+  onClick,
+  pending,
+  variant = "default",
+}: {
+  label: string;
+  outcome: string;
+  picked: string | null;
+  onClick: (o: string) => void;
+  pending: boolean;
+  variant?: "default" | "success" | "danger" | "neutral";
+}) {
+  const isPicked = picked === outcome;
+  const palette = {
+    default: isPicked
+      ? "bg-cy-300/15 border-cy-300/40 text-cy-300"
+      : "bg-white/[0.04] border-white/[0.08] text-white/85 hover:border-white/20",
+    success: isPicked
+      ? "bg-mint/15 border-mint/40 text-mint"
+      : "bg-white/[0.04] border-white/[0.08] text-white/85 hover:border-mint/30",
+    danger: isPicked
+      ? "bg-rose-400/15 border-rose-400/40 text-rose-400"
+      : "bg-white/[0.04] border-white/[0.08] text-white/85 hover:border-rose-400/30",
+    neutral: isPicked
+      ? "bg-white/[0.08] border-white/20 text-white"
+      : "bg-white/[0.02] border-white/[0.06] text-white/65 hover:border-white/15",
+  }[variant];
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(outcome)}
+      disabled={pending}
+      className={`inline-flex items-center justify-center gap-1 px-3 py-2 rounded-lg text-[12px] font-medium border transition-all active:scale-[0.98] disabled:opacity-50 ${palette}`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function prettifyOutcome(s: string): string {
+  return s
+    .replace(/_/g, " ")
+    .replace(/^./, (c) => c.toUpperCase());
+}
+
 function ConfidenceBadge({ level }: { level: "high" | "medium" | "low" }) {
   const map = {
     high: {
@@ -904,6 +1169,8 @@ function RowDrawer({
             )}
           </section>
         )}
+
+        <OutcomeLogger row={row} />
 
         <section className="glass-panel p-4">
           <div className="text-[10.5px] uppercase tracking-wider text-white/45 mb-2">

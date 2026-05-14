@@ -68,7 +68,9 @@ async function load(): Promise<{
           "has_recent_roof_permit, last_permit_date, last_permit_type, " +
           "permit_checked_at, lead_id, created_at, " +
           // 0015 — skip-trace columns
-          "phone_number, phone_source, phone_match_confidence, phone_checked_at",
+          "phone_number, phone_source, phone_match_confidence, phone_checked_at, " +
+          // 0016 — outcome cache (denormalized from canvass_outcomes)
+          "latest_outcome, latest_outcome_at, won_revenue_cents",
       )
       .eq("office_id", officeId)
       .order("score", { ascending: false })

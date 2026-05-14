@@ -208,6 +208,11 @@ export async function GET(req: Request) {
           // batch fails (e.g. on a single bad row), we fall back to
           // the OSM placeholder rather than leaving the event without
           // any canvass attached.
+          // Bump this constant whenever scoreHotLead changes shape.
+          // Lets the ML trainer (Phase 4) bucket rows by which rubric
+          // produced them — apples-to-apples comparison across drift.
+          const RUBRIC_VERSION = "2026-05-13.v1";
+          const nowCreated = new Date();
           const rows = top.map((p) => ({
             office_id: seedOfficeId,
             storm_event_id: upserted.id,
@@ -220,8 +225,45 @@ export async function GET(req: Request) {
             score: p.score,
             distance_miles: p.distance_miles,
             status: "new",
+            // FEATURES SNAPSHOT — frozen at score-time. Read once,
+            // never updated. Drives the ML training pairs once
+            // canvass_outcomes accumulates ≥500 closed rows. Schema
+            // is flexible (JSONB); the trainer treats missing fields
+            // as nulls so we can extend without migration churn.
+            features_snapshot: {
+              rubric_version: RUBRIC_VERSION,
+              // Hail / proximity
+              hail_inches: ev.maxInches,
+              hit_count: ev.hitCount,
+              distance_miles: p.distance_miles,
+              // Property
+              year_built: p.year_built ?? null,
+              just_value: p.just_value ?? null,
+              // Permit — at the moment of row creation. Subsequent
+              // permit enrichment updates the canvass_targets columns
+              // but NOT this snapshot, so the model sees what we knew
+              // when we scored.
+              permit_known_at_score_time: false,
+              // Temporal context
+              created_at_iso: nowCreated.toISOString(),
+              created_dow: nowCreated.getUTCDay(),
+              created_hour: nowCreated.getUTCHours(),
+              // Storm metadata
+              region_name: region.name,
+              storm_event_date: eventDateIso,
+              source: "mrms+spc",
+            },
           }));
-          const insertRes = await sb.from("canvass_targets").insert(rows);
+          // Cast through unknown — features_snapshot column post-dates
+          // the generated types/supabase.ts. Regenerate types after
+          // migration 0016 lands.
+          const insertRes = await (sb as unknown as {
+            from: (t: string) => {
+              insert: (rows: unknown[]) => Promise<{ error: { message: string } | null }>;
+            };
+          })
+            .from("canvass_targets")
+            .insert(rows);
           if (!insertRes.error) {
             result.newCanvassTargets += top.length;
             // Continue to next event; PRIMARY path succeeded.
