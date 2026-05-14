@@ -148,61 +148,61 @@ export default function ConfirmHomePin({
         if (cancelled || !mapRef.current) return;
 
         const map = new google.maps.Map(mapRef.current, {
-        center: geocodedLatLng,
-        zoom: 20,
-        mapTypeId: "satellite",
-        disableDefaultUI: true,
-        zoomControl: true,
-        gestureHandling: "greedy", // allow single-finger pan on mobile
-        clickableIcons: false,
-        tilt: 0,
-        disableDoubleClickZoom: true,
-      });
-      mapInstanceRef.current = map;
-
-      const marker = new google.maps.Marker({
-        position: geocodedLatLng,
-        map,
-        draggable: true,
-        // 56×56 SVG with the visible pin centred and a transparent halo
-        // for fat-finger touch targets. The transparent border captures
-        // touch + click events the same as the visible pin.
-        icon: {
-          url:
-            "data:image/svg+xml;utf8," +
-            encodeURIComponent(
-              `<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 56 56">` +
-                `<circle cx="28" cy="28" r="28" fill="rgba(56,197,238,0.001)"/>` +
-                `<path d="M28 12 C22 12 17 17 17 23 C17 31 28 44 28 44 C28 44 39 31 39 23 C39 17 34 12 28 12 Z" fill="#ff3b30" stroke="#ffffff" stroke-width="2.5"/>` +
-                `<circle cx="28" cy="23" r="4.5" fill="#ffffff"/>` +
-                `</svg>`,
-            ),
-          // Anchor at the tip of the pin (pixel y=44 in a 56-tall svg).
-          anchor: new google.maps.Point(28, 44),
-          scaledSize: new google.maps.Size(56, 56),
-        },
-        crossOnDrag: false,
-      });
-      markerRef.current = marker;
-
-      marker.addListener("dragend", () => {
-        const pos = marker.getPosition();
-        if (!pos) return;
-        const to = { lat: pos.lat(), lng: pos.lng() };
-        const from = pinLatLngRef.current;
-        logPinEvent({
-          type: "pin_user_dragged",
-          from,
-          to,
-          distanceM: haversineM(from, to),
+          center: geocodedLatLng,
+          zoom: 20,
+          mapTypeId: "satellite",
+          disableDefaultUI: true,
+          zoomControl: true,
+          gestureHandling: "greedy", // allow single-finger pan on mobile
+          clickableIcons: false,
+          tilt: 0,
+          disableDoubleClickZoom: true,
         });
-        setPinLatLng(to);
-      });
+        mapInstanceRef.current = map;
 
-      marker.addListener("dragstart", () => {
-        userActedRef.current = true;
-        userDraggedRef.current = true;
-      });
+        const marker = new google.maps.Marker({
+          position: geocodedLatLng,
+          map,
+          draggable: true,
+          // 56×56 SVG with the visible pin centred and a transparent halo
+          // for fat-finger touch targets. The transparent border captures
+          // touch + click events the same as the visible pin.
+          icon: {
+            url:
+              "data:image/svg+xml;utf8," +
+              encodeURIComponent(
+                `<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 56 56">` +
+                  `<circle cx="28" cy="28" r="28" fill="rgba(56,197,238,0.001)"/>` +
+                  `<path d="M28 12 C22 12 17 17 17 23 C17 31 28 44 28 44 C28 44 39 31 39 23 C39 17 34 12 28 12 Z" fill="#ff3b30" stroke="#ffffff" stroke-width="2.5"/>` +
+                  `<circle cx="28" cy="23" r="4.5" fill="#ffffff"/>` +
+                  `</svg>`,
+              ),
+            // Anchor at the tip of the pin (pixel y=44 in a 56-tall svg).
+            anchor: new google.maps.Point(28, 44),
+            scaledSize: new google.maps.Size(56, 56),
+          },
+          crossOnDrag: false,
+        });
+        markerRef.current = marker;
+
+        marker.addListener("dragend", () => {
+          const pos = marker.getPosition();
+          if (!pos) return;
+          const to = { lat: pos.lat(), lng: pos.lng() };
+          const from = pinLatLngRef.current;
+          logPinEvent({
+            type: "pin_user_dragged",
+            from,
+            to,
+            distanceM: haversineM(from, to),
+          });
+          setPinLatLng(to);
+        });
+
+        marker.addListener("dragstart", () => {
+          userActedRef.current = true;
+          userDraggedRef.current = true;
+        });
 
         setMapReady(true);
       } catch (err) {
