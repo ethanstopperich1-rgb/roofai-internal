@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   CloudHail,
   Download,
@@ -10,8 +10,15 @@ import {
   MapPin,
   Calendar,
   X,
+  Map as MapIcon,
+  List,
+  CheckSquare,
+  Square,
+  PhoneOutgoing,
+  CircleCheck,
 } from "lucide-react";
-import { fmtUSD, fmtDateTime } from "@/lib/dashboard";
+import { fmtDateTime } from "@/lib/dashboard";
+import CanvassMap from "./CanvassMap";
 
 /**
  * Storm Canvass — primary rep working surface.
@@ -103,6 +110,18 @@ export default function CanvassView({
     dir: "desc",
   });
   const [drawerRow, setDrawerRow] = useState<CanvassRow | null>(null);
+  const [view, setView] = useState<"table" | "map">("table");
+  // Row selection — Set of canvass_target ids. Drives the bulk-action
+  // bar that slides up from the bottom when ≥1 row is selected.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const toggleRow = useCallback((id: string) => {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const eventsById = useMemo(() => {
     const m = new Map<string, CanvassStormEvent>();
@@ -323,13 +342,14 @@ export default function CanvassView({
               label="Already contacted"
             />
             <div className="flex-1" />
+            <ViewToggle view={view} onChange={setView} />
             <button
               type="button"
               onClick={downloadCsv}
               disabled={filtered.length === 0}
-              className="glass-button-secondary inline-flex items-center gap-1.5 !py-1.5"
+              className="glass-button-secondary inline-flex items-center gap-1.5 !py-1.5 active:translate-y-[1px] transition-transform"
             >
-              <Download size={13} /> Export {filtered.length} as CSV
+              <Download size={13} /> Export {filtered.length}
             </button>
           </div>
 
@@ -384,105 +404,167 @@ export default function CanvassView({
           </div>
         </div>
 
-        {/* Table */}
-        <div className="glass-panel p-0 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-[11px] uppercase tracking-wider text-white/45 border-b border-white/[0.06]">
-                  <th className="text-right font-medium px-3 py-2.5 w-12">#</th>
-                  <ThSortable
-                    label="Address"
-                    sortKey="address"
-                    sort={sort}
-                    onSort={setSort}
-                  />
-                  <th className="text-left font-medium px-3 py-2.5 hidden md:table-cell">
-                    Hail
-                  </th>
-                  <ThSortable
-                    label="Distance"
-                    sortKey="distance"
-                    sort={sort}
-                    onSort={setSort}
-                    align="right"
-                  />
-                  <ThSortable
-                    label="Permit"
-                    sortKey="permit"
-                    sort={sort}
-                    onSort={setSort}
-                  />
-                  <ThSortable
-                    label="Score"
-                    sortKey="score"
-                    sort={sort}
-                    onSort={setSort}
-                    align="right"
-                  />
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={6}
-                      className="px-4 py-10 text-center text-white/55 text-sm"
-                    >
-                      No targets match these filters. Loosen the hail floor or
-                      switch presets.
-                    </td>
+        {view === "map" ? (
+          <CanvassMap
+            rows={filtered}
+            events={events.filter(
+              (e) => filters.eventIds.size === 0 || filters.eventIds.has(e.id),
+            )}
+            onSelectRow={(r) => setDrawerRow(r)}
+            selectedRowId={drawerRow?.id ?? null}
+          />
+        ) : (
+          /* Table */
+          <div className="glass-panel p-0 overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-[11px] uppercase tracking-wider text-white/45 border-b border-white/[0.06]">
+                    <th className="px-3 py-2.5 w-10">
+                      <BulkSelectHeader
+                        rowIds={filtered.slice(0, 500).map((r) => r.id)}
+                        selected={selected}
+                        setSelected={setSelected}
+                      />
+                    </th>
+                    <th className="text-right font-medium px-3 py-2.5 w-12">#</th>
+                    <ThSortable
+                      label="Address"
+                      sortKey="address"
+                      sort={sort}
+                      onSort={setSort}
+                    />
+                    <th className="text-left font-medium px-3 py-2.5 hidden md:table-cell">
+                      Hail
+                    </th>
+                    <ThSortable
+                      label="Distance"
+                      sortKey="distance"
+                      sort={sort}
+                      onSort={setSort}
+                      align="right"
+                    />
+                    <ThSortable
+                      label="Permit"
+                      sortKey="permit"
+                      sort={sort}
+                      onSort={setSort}
+                    />
+                    <ThSortable
+                      label="Score"
+                      sortKey="score"
+                      sort={sort}
+                      onSort={setSort}
+                      align="right"
+                    />
                   </tr>
-                )}
-                {filtered.slice(0, 500).map((r, i) => {
-                  const ev = eventsById.get(r.storm_event_id);
-                  return (
-                    <tr
-                      key={r.id}
-                      onClick={() => setDrawerRow(r)}
-                      className="border-b border-white/[0.04] last:border-b-0 cursor-pointer hover:bg-white/[0.03] transition-colors"
-                    >
-                      <td className="px-3 py-2.5 text-right font-mono tabular text-[12px] text-white/55">
-                        {i + 1}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <div className="text-[13px] text-white/95 font-medium">
-                          {r.address_line ?? "—"}
-                        </div>
-                        <div className="text-[10.5px] text-white/45 font-mono tabular">
-                          {r.city ?? "—"} · {r.zip ?? "—"}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5 hidden md:table-cell font-mono tabular text-[12.5px]">
-                        {ev ? `${ev.peak_inches.toFixed(2)}"` : "—"}
-                        {ev && (
-                          <div className="text-[10px] text-white/45">
-                            {ev.event_date}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-right font-mono tabular text-[12.5px] text-white/85">
-                        {r.distance_miles?.toFixed(2) ?? "—"}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <PermitChip row={r} />
-                      </td>
-                      <td className="px-3 py-2.5 text-right font-mono tabular text-[13px] font-medium">
-                        <ScorePill score={r.score} />
+                </thead>
+                <tbody>
+                  {filtered.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={7}
+                        className="px-4 py-10 text-center text-white/55 text-sm"
+                      >
+                        No targets match these filters. Loosen the hail floor
+                        or switch presets.
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {filtered.length > 500 && (
-            <div className="text-[11px] text-white/45 font-mono tabular text-center py-2">
-              Showing top 500 of {filtered.length.toLocaleString()}. Tighten
-              filters or export CSV for the full list.
+                  )}
+                  {filtered.slice(0, 500).map((r, i) => {
+                    const ev = eventsById.get(r.storm_event_id);
+                    const isSelected = selected.has(r.id);
+                    return (
+                      <tr
+                        key={r.id}
+                        className={[
+                          "border-b border-white/[0.04] last:border-b-0 transition-colors",
+                          isSelected
+                            ? "bg-cy-300/[0.04]"
+                            : "hover:bg-white/[0.03]",
+                        ].join(" ")}
+                      >
+                        <td
+                          className="px-3 py-2.5 cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleRow(r.id);
+                          }}
+                        >
+                          {isSelected ? (
+                            <CheckSquare
+                              size={14}
+                              className="text-cy-300"
+                              aria-label="Selected"
+                            />
+                          ) : (
+                            <Square
+                              size={14}
+                              className="text-white/35 hover:text-white/85 transition-colors"
+                              aria-label="Select row"
+                            />
+                          )}
+                        </td>
+                        <td
+                          className="px-3 py-2.5 text-right font-mono tabular text-[12px] text-white/55 cursor-pointer"
+                          onClick={() => setDrawerRow(r)}
+                        >
+                          {i + 1}
+                        </td>
+                        <td
+                          className="px-3 py-2.5 cursor-pointer"
+                          onClick={() => setDrawerRow(r)}
+                        >
+                          <div className="text-[13px] text-white/95 font-medium">
+                            {r.address_line ?? "—"}
+                          </div>
+                          <div className="text-[10.5px] text-white/45 font-mono tabular">
+                            {r.city ?? "—"} · {r.zip ?? "—"}
+                          </div>
+                        </td>
+                        <td
+                          className="px-3 py-2.5 hidden md:table-cell font-mono tabular text-[12.5px] cursor-pointer"
+                          onClick={() => setDrawerRow(r)}
+                        >
+                          {ev ? `${ev.peak_inches.toFixed(2)}"` : "—"}
+                          {ev && (
+                            <div className="text-[10px] text-white/45">
+                              {ev.event_date}
+                            </div>
+                          )}
+                        </td>
+                        <td
+                          className="px-3 py-2.5 text-right font-mono tabular text-[12.5px] text-white/85 cursor-pointer"
+                          onClick={() => setDrawerRow(r)}
+                        >
+                          {r.distance_miles?.toFixed(2) ?? "—"}
+                        </td>
+                        <td
+                          className="px-3 py-2.5 cursor-pointer"
+                          onClick={() => setDrawerRow(r)}
+                        >
+                          <PermitChip row={r} />
+                        </td>
+                        <td
+                          className="px-3 py-2.5 text-right font-mono tabular text-[13px] font-medium cursor-pointer"
+                          onClick={() => setDrawerRow(r)}
+                        >
+                          <ScorePill score={r.score} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          )}
-        </div>
+            {filtered.length > 500 && (
+              <div className="text-[11px] text-white/45 font-mono tabular text-center py-2">
+                Showing top 500 of {filtered.length.toLocaleString()}. Tighten
+                filters or export CSV for the full list.
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {drawerRow && (
@@ -492,8 +574,69 @@ export default function CanvassView({
           onClose={() => setDrawerRow(null)}
         />
       )}
+
+      {selected.size > 0 && (
+        <BulkActionBar
+          count={selected.size}
+          onClear={() => setSelected(new Set())}
+          onExport={() => {
+            // Export only the selected rows
+            const selectedRows = filtered.filter((r) => selected.has(r.id));
+            exportRowsAsCsv(selectedRows, eventsById);
+          }}
+        />
+      )}
     </div>
   );
+}
+
+function exportRowsAsCsv(
+  rows: CanvassRow[],
+  eventsById: Map<string, CanvassStormEvent>,
+) {
+  const headers = [
+    "rank",
+    "address",
+    "city",
+    "zip",
+    "score",
+    "distance_miles",
+    "hail_inches",
+    "event_date",
+    "has_recent_roof_permit",
+    "last_permit_date",
+    "last_permit_type",
+    "status",
+  ];
+  const lines: string[] = [headers.join(",")];
+  rows.forEach((r, i) => {
+    const ev = eventsById.get(r.storm_event_id);
+    lines.push(
+      [
+        i + 1,
+        csvCell(r.address_line),
+        csvCell(r.city),
+        csvCell(r.zip),
+        r.score.toFixed(2),
+        r.distance_miles?.toFixed(2) ?? "",
+        ev?.peak_inches?.toFixed(2) ?? "",
+        ev?.event_date ?? "",
+        r.has_recent_roof_permit == null ? "" : r.has_recent_roof_permit ? "true" : "false",
+        r.last_permit_date ?? "",
+        csvCell(r.last_permit_type),
+        r.status,
+      ].join(","),
+    );
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `canvass-selected-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /* ─── Subcomponents ───────────────────────────────────────────────── */
@@ -516,9 +659,9 @@ function PresetChip({
       type="button"
       onClick={onClick}
       className={[
-        "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium border transition-colors",
+        "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium border transition-all active:scale-[0.97]",
         active
-          ? "bg-cy-300/15 text-cy-300 border-cy-300/40"
+          ? "bg-cy-300/15 text-cy-300 border-cy-300/40 shadow-[inset_0_1px_0_rgba(103,220,255,0.15)]"
           : "bg-white/[0.04] text-white/70 border-white/[0.08] hover:border-white/20 hover:text-white",
       ].join(" ")}
       title={hint}
@@ -753,4 +896,163 @@ function csvCell(v: string | null | undefined): string {
   const s = String(v);
   if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
+}
+
+function ViewToggle({
+  view,
+  onChange,
+}: {
+  view: "table" | "map";
+  onChange: (v: "table" | "map") => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Canvass view"
+      className="inline-flex items-center gap-0.5 p-0.5 rounded-full bg-white/[0.04] border border-white/[0.06]"
+    >
+      <button
+        role="tab"
+        aria-selected={view === "table"}
+        onClick={() => onChange("table")}
+        className={[
+          "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11.5px] font-medium transition-all active:scale-[0.97]",
+          view === "table"
+            ? "bg-white/[0.08] text-white border border-white/15"
+            : "text-white/55 hover:text-white border border-transparent",
+        ].join(" ")}
+      >
+        <List size={11} aria-hidden /> Table
+      </button>
+      <button
+        role="tab"
+        aria-selected={view === "map"}
+        onClick={() => onChange("map")}
+        className={[
+          "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11.5px] font-medium transition-all active:scale-[0.97]",
+          view === "map"
+            ? "bg-white/[0.08] text-white border border-white/15"
+            : "text-white/55 hover:text-white border border-transparent",
+        ].join(" ")}
+      >
+        <MapIcon size={11} aria-hidden /> Map
+      </button>
+    </div>
+  );
+}
+
+function BulkSelectHeader({
+  rowIds,
+  selected,
+  setSelected,
+}: {
+  rowIds: string[];
+  selected: Set<string>;
+  setSelected: (s: Set<string>) => void;
+}) {
+  const allSelected =
+    rowIds.length > 0 && rowIds.every((id) => selected.has(id));
+  const someSelected = !allSelected && rowIds.some((id) => selected.has(id));
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        const next = new Set(selected);
+        if (allSelected) {
+          rowIds.forEach((id) => next.delete(id));
+        } else {
+          rowIds.forEach((id) => next.add(id));
+        }
+        setSelected(next);
+      }}
+      aria-label={allSelected ? "Deselect all" : "Select all visible"}
+      className="inline-flex items-center justify-center"
+    >
+      {allSelected ? (
+        <CheckSquare size={14} className="text-cy-300" aria-hidden />
+      ) : someSelected ? (
+        <Square size={14} className="text-cy-300/60" aria-hidden />
+      ) : (
+        <Square
+          size={14}
+          className="text-white/35 hover:text-white/85 transition-colors"
+          aria-hidden
+        />
+      )}
+    </button>
+  );
+}
+
+function BulkActionBar({
+  count,
+  onClear,
+  onExport,
+}: {
+  count: number;
+  onClear: () => void;
+  onExport: () => void;
+}) {
+  return (
+    <div
+      role="region"
+      aria-label="Bulk actions"
+      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-2xl"
+      style={{
+        animation: "slideUpFade 220ms cubic-bezier(0.16, 1, 0.3, 1) both",
+      }}
+    >
+      <div className="rounded-2xl border border-cy-300/30 bg-[rgba(8,11,17,0.92)] backdrop-blur-2xl shadow-[0_20px_60px_-10px_rgba(0,0,0,0.7),inset_0_1px_0_rgba(255,255,255,0.08)] p-3 flex items-center gap-2 flex-wrap">
+        <span className="inline-flex items-center gap-2 text-[12.5px] text-white">
+          <span className="font-mono tabular text-cy-300 font-medium">
+            {count}
+          </span>
+          selected
+        </span>
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={onExport}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium bg-cy-300/10 text-cy-300 border border-cy-300/30 hover:bg-cy-300/15 active:scale-[0.97] transition-all"
+        >
+          <Download size={12} /> Export
+        </button>
+        <button
+          type="button"
+          disabled
+          title="Phase 3 — queue outbound calls"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium bg-white/[0.04] text-white/40 border border-white/[0.06] cursor-not-allowed"
+        >
+          <PhoneOutgoing size={12} /> Send to Sydney
+        </button>
+        <button
+          type="button"
+          disabled
+          title="Phase 3 — mark all contacted"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium bg-white/[0.04] text-white/40 border border-white/[0.06] cursor-not-allowed"
+        >
+          <CircleCheck size={12} /> Mark contacted
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          aria-label="Clear selection"
+          className="inline-flex items-center justify-center w-7 h-7 rounded-full text-white/55 hover:text-white hover:bg-white/[0.06] active:scale-[0.95] transition-all"
+        >
+          <X size={13} />
+        </button>
+      </div>
+      <style jsx>{`
+        @keyframes slideUpFade {
+          from {
+            opacity: 0;
+            transform: translate(-50%, 16px);
+          }
+          to {
+            opacity: 1;
+            transform: translate(-50%, 0);
+          }
+        }
+      `}</style>
+    </div>
+  );
 }
