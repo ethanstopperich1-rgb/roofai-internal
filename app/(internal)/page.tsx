@@ -183,6 +183,12 @@ function HomePageInner() {
   const [sam3Polygon, setSam3Polygon] = useState<
     Array<{ lat: number; lng: number }> | null
   >(null);
+  // SAM3 server-side source label. When "footprint-only" or
+  // "footprint-occluded" the polygon is actually OSM/GIS data dressed
+  // up as SAM3 — quality gate treats those as automatically-suspect.
+  // Without this signal the gate's area + vertex checks miss the case
+  // where SAM3 silently fell through to GIS footprint × 1.06.
+  const [sam3Source, setSam3Source] = useState<string | null>(null);
   // Tracked via ref so late-arriving SAM doesn't stomp in-progress edits
   // (the sam-refine fetch resolves ~5-10s after OSM, by which point the rep
   // may have already moved vertices on the OSM polygon).
@@ -298,7 +304,9 @@ function HomePageInner() {
       const sam3Suspect =
         (solarFootprint > 0 &&
           Math.abs(sam3Area - solarFootprint) / solarFootprint > 0.3) ||
-        (sam3Polygon.length <= 5 && solarFacets >= 3);
+        (sam3Polygon.length <= 5 && solarFacets >= 3) ||
+        sam3Source === "footprint-only" ||
+        sam3Source === "footprint-occluded";
       if (!sam3Suspect) return "sam3";
       if (hasMask) return "solar"; // mask wins
       return "sam3"; // no mask alt, keep SAM3
@@ -307,7 +315,7 @@ function HomePageInner() {
     if (hasMask || roofData.source === "tier-c-solar") return "solar";
     if (roofData.source === "tier-c-vision") return "ai";
     return "sam3";
-  }, [livePolygons, sam3Polygon, roofData]);
+  }, [livePolygons, sam3Polygon, sam3Source, roofData]);
 
   // sourcePolygons / activePolygons feed MapView + Roof3DViewer + the
   // legacy Estimate.polygons field. Mirrors /quote's tier ladder so the
@@ -330,9 +338,13 @@ function HomePageInner() {
       roofData?.outlinePolygon && roofData.outlinePolygon.length >= 3;
 
     if (hasSam3) {
-      // Quality gate: compare SAM3 area + vertex count against the Tier C
-      // signals already in roofData. Same logic /quote's tier ladder runs
-      // server-side; ports here so both pages show the same polygon.
+      // Quality gate: SAM3 is suspect when ANY of:
+      //   - area >30% off from Solar findClosest footprint
+      //   - ≤5 vertices on a ≥3-facet Solar building (over-simplified)
+      //   - server-side source flag says it silently fell through to
+      //     GIS footprint (these polygons aren't actually SAM3 at all —
+      //     they're OSM/Microsoft Buildings × 1.06 overhang, dressed
+      //     up as SAM3. Always prefer mask when available.)
       let sam3Suspect = false;
       const sam3Area = polygonAreaSqft(sam3Polygon);
       const solarFootprint = roofData?.totals?.totalFootprintSqft ?? 0;
@@ -346,6 +358,12 @@ function HomePageInner() {
       if (!sam3Suspect && sam3Polygon.length <= 5 && solarFacets >= 3) {
         sam3Suspect = true;
       }
+      if (
+        !sam3Suspect &&
+        (sam3Source === "footprint-only" || sam3Source === "footprint-occluded")
+      ) {
+        sam3Suspect = true;
+      }
       if (!sam3Suspect) {
         return [sam3Polygon];
       }
@@ -357,7 +375,7 @@ function HomePageInner() {
     if (!roofData || roofData.source === "none") return undefined;
     if (hasMask) return [roofData.outlinePolygon!];
     return roofData.facets.map((f) => f.polygon);
-  }, [sam3Polygon, roofData]);
+  }, [sam3Polygon, sam3Source, roofData]);
   const activePolygons = livePolygons ?? sourcePolygons;
   const polygonReady = roofData != null && roofData.source !== "none";
   const renderedSourcePolygons = polygonReady ? sourcePolygons : undefined;
@@ -624,6 +642,7 @@ function HomePageInner() {
       if (!poly) return;
       if (fetchGenRef.current !== myGen) return; // stale — newer fetch won
       setSam3Polygon(poly);
+      setSam3Source(typeof data?.source === "string" ? data.source : null);
     } catch {
       /* soft-fail — display falls back to roofData */
     }
@@ -769,6 +788,7 @@ function HomePageInner() {
     // Reset pipeline state on every address change.
     setRoofData(null);
     setSam3Polygon(null);
+    setSam3Source(null);
     setPipelineError(null);
     setInspectorStatus("idle");
     inspectorRanForKeyRef.current = null;
