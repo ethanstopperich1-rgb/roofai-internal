@@ -546,16 +546,31 @@ def summarize_permits(permits: list[dict]) -> PermitFinding:
 
 
 # ─── Hot-lead scoring (port of lib/parcel-canvass.ts::scoreHotLead) ───────
+# Kept BIT-FOR-BIT identical with the canonical TS implementation. Three
+# things must stay in sync across:
+#   * lib/parcel-canvass.ts::scoreHotLead
+#   * scripts/enrich_permits.py::score_hot_lead
+#   * THIS function
+# If you change one, change all three. The score column drives the rep
+# UI sort order; drift = misranked canvass lists.
 
 
-def score_hot_lead(distance_miles: float, last_permit_date: dt.date | None) -> float:
-    base = HAIL_INCHES * 10 * (1 / (1 + distance_miles))
+def score_hot_lead(
+    distance_miles: float,
+    last_permit_date: dt.date | None,
+    year_built: int | None = None,
+) -> float:
+    base = HAIL_INCHES * 10 * (1 / (1 + max(0.0, distance_miles)))
     score = base
     today = dt.date.today()
 
+    # Post-storm activity penalty — competitor already moved on the
+    # property. Returns early; the recency bonus shouldn't also fire
+    # for a permit pulled in response to this storm.
     if last_permit_date and last_permit_date > STORM_DATE:
         return round(max(-200, min(200, score - 100)), 2)
 
+    # Roof permit recency tier
     if last_permit_date is None:
         years_since = float("inf")
     else:
@@ -567,6 +582,18 @@ def score_hot_lead(distance_miles: float, last_permit_date: dt.date | None) -> f
         score += 50
     elif years_since >= 10:
         score += 30
+    # 5-10 years = neutral (no bonus, no penalty)
+
+    # Estimated roof age bonus — Overpass doesn't return year_built, so
+    # in this test script the bonus only fires when caller passes it in
+    # explicitly. In production (lib/parcel-canvass.ts) year_built comes
+    # from the parcels table and the bonus is always evaluated.
+    if year_built is not None:
+        home_age = today.year - year_built
+        no_recent_permit = years_since >= 10
+        if home_age > 20 and no_recent_permit:
+            score += 25
+
     return round(max(-200, min(200, score)), 2)
 
 

@@ -89,25 +89,41 @@ async function load(): Promise<{
 function buildDemoTargets(slug: Parameters<typeof getDemoLeads>[0]): CanvassRow[] {
   const leads = getDemoLeads(slug);
   const today = new Date();
-  return leads.slice(0, 12).map((l: Lead, i: number) => ({
-    id: `demo-${i}`,
-    storm_event_id: "demo-storm",
-    address_line: l.address ?? "—",
-    city: "OVIEDO",
-    zip: l.zip ?? "32765",
-    lat: l.lat ?? 28.67,
-    lng: l.lng ?? -81.21,
-    score: 60 - i * 2,
-    distance_miles: 0.1 + i * 0.05,
-    status: "new",
-    contacted_at: null,
-    has_recent_roof_permit: i % 4 === 0 ? true : false,
-    last_permit_date: i % 4 === 0 ? "2019-04-12" : null,
-    last_permit_type: i % 4 === 0 ? "REROOF" : null,
-    permit_checked_at: today.toISOString(),
-    lead_id: l.id,
-    created_at: today.toISOString(),
-  }));
+  // Demo scoring follows the hot-lead rubric so the demo rows read as
+  // plausible canvass output:
+  //   base = 1.00" hail × 10 × proximity_decay(0.1 + i*0.05 mi)
+  //   + 50 for no-permit rows (3 of every 4)
+  //   - 40 for the 4th row (recent permit on file)
+  //   + 25 if we tag the row as 20yr+ (every other no-permit row)
+  // This produces a believable score curve from ~60 down to ~−30
+  // rather than a flat 60-2i ramp that didn't match the real rubric.
+  return leads.slice(0, 12).map((l: Lead, i: number) => {
+    const distanceMiles = 0.1 + i * 0.05;
+    const base = 1.0 * 10 * (1 / (1 + distanceMiles));
+    const hasRecentPermit = i % 4 === 0;
+    const recencyBonus = hasRecentPermit ? -40 : 50;
+    const ageBonus = !hasRecentPermit && i % 2 === 0 ? 25 : 0;
+    const score = Math.round((base + recencyBonus + ageBonus) * 100) / 100;
+    return {
+      id: `demo-${i}`,
+      storm_event_id: "demo-storm",
+      address_line: l.address ?? "—",
+      city: "OVIEDO",
+      zip: l.zip ?? "32765",
+      lat: l.lat ?? 28.67,
+      lng: l.lng ?? -81.21,
+      score,
+      distance_miles: Math.round(distanceMiles * 1000) / 1000,
+      status: "new",
+      contacted_at: null,
+      has_recent_roof_permit: hasRecentPermit,
+      last_permit_date: hasRecentPermit ? "2019-04-12" : null,
+      last_permit_type: hasRecentPermit ? "REROOF" : null,
+      permit_checked_at: today.toISOString(),
+      lead_id: l.id,
+      created_at: today.toISOString(),
+    };
+  });
 }
 
 export default async function CanvassPage({
