@@ -125,11 +125,18 @@ def _alpha_shape_boundary(points_2d: Any) -> list[tuple[float, float]]:
     if len(pts) < 3:
         return []
     try:
-        # Shapely 2.x: `concave_hull` is the standard alpha-shape; supports
-        # the ratio param. Tunable for tighter / looser boundaries.
+        # Shapely 2.x concave_hull. `ratio` controls tightness:
+        #   0.0 = tightest possible concave-hull (true alpha-shape)
+        #   0.25 = moderately loose (previous setting — overshoots
+        #          into yard on residential roofs by ~30-50%)
+        #   1.0 = convex hull
+        # 0.05 follows the actual eave / hip silhouette closely
+        # without spurious thin tendrils to outlier points. Tuned
+        # against Oak Park: sqft drops from ~8400 to ~5500 (Solar's
+        # 5487 footprint × pitch multiplier ≈ 5950 sloped — within 5%).
         multipoint = MultiPoint([(float(p[0]), float(p[1])) for p in pts])
         if hasattr(multipoint, "concave_hull"):
-            hull = multipoint.concave_hull(ratio=0.25, allow_holes=False)
+            hull = multipoint.concave_hull(ratio=0.05, allow_holes=False)
             if hull.geom_type == "Polygon":
                 return [(x, y) for x, y in hull.exterior.coords]
         # Fallback to convex hull
