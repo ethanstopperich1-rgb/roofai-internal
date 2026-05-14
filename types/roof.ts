@@ -19,6 +19,9 @@ export interface Facet {
   azimuthDeg: number;
   areaSqftSloped: number;
   areaSqftFootprint: number;
+  /** What this facet looks like — diagnostic, not pricing input.
+   *  Pricing uses PricingInputs.material (rep-picked, vision-seeded default).
+   *  In Tier C, all facets carry the same vision-derived value. */
   material: Material | null;
   isLowSlope: boolean;
 }
@@ -28,9 +31,11 @@ export type EdgeType = "ridge" | "hip" | "valley" | "eave" | "rake" | "step-wall
 export interface Edge {
   id: string;
   type: EdgeType;
+  /** Real lat/lng polyline. heightM = 0 in Tier C (no 3D info). */
   polyline: Array<{ lat: number; lng: number; heightM: number }>;
   lengthFt: number;
   facetIds: string[];
+  /** 0.4 in Tier C heuristic classification (so Tier B/A always wins). */
   confidence: number;
 }
 
@@ -42,8 +47,10 @@ export type ObjectKind =
 export interface RoofObject {
   id: string;
   kind: ObjectKind;
+  /** Center position. heightM = 0 in Tier C (no 3D info). */
   position: { lat: number; lng: number; heightM: number };
   dimensionsFt: { width: number; length: number };
+  /** Which facet this object sits on. null in Tier C (no facet attribution yet). */
   facetId: string | null;
 }
 
@@ -51,8 +58,11 @@ export interface FlashingBreakdown {
   chimneyLf: number;
   skylightLf: number;
   dormerStepLf: number;
+  /** Non-dormer wall-to-roof step flashing. Always 0 in Tier C (Tier B+ signal). */
   wallStepLf: number;
+  /** Headwall flashing (top of wall-to-roof junction). Always 0 in Tier C. */
   headwallLf: number;
+  /** Apron flashing (bottom of wall-to-roof junction). Always 0 in Tier C. */
   apronLf: number;
   valleyLf: number;
   dripEdgeLf: number;
@@ -68,9 +78,16 @@ export interface RoofTotals {
   objectsCount: number;
   totalRoofAreaSqft: number;
   totalFootprintSqft: number;
+  /** Squares (1 square = 100 sqft, rounded up to nearest 1/3). */
   totalSquares: number;
   averagePitchDegrees: number;
+  /** 7 | 11 | 14 in Tier C (simple/moderate/complex). */
   wastePct: number;
+  /** Inferred complexity tier — intentional schema extension beyond the
+   *  kickoff doc (kickoff had wastePct but not complexity). Kept on
+   *  totals so the rep-side waste-table UI can highlight the suggested row
+   *  without re-deriving complexity from facets[]. Tier B/A may demote
+   *  this field if continuous waste lands. */
   complexity: ComplexityTier;
   predominantMaterial: Material | null;
 }
@@ -85,11 +102,17 @@ export interface RoofDiagnostics {
   needsReview: Array<{ kind: "facet" | "edge" | "object"; id: string; reason: string }>;
 }
 
+/** Refinement tags applied on top of a primary source's RoofData.
+ *  Tier B adds "multiview-obliques"; Tier A may add LiDAR-derived
+ *  refinement tags. A named type so widening doesn't require touching
+ *  the RoofData interface. */
+export type Refinement = "multiview-obliques";
+
 export interface RoofData {
   address: { formatted: string; lat: number; lng: number; zip?: string };
   /** "none" = all sources failed; see lib/roof-pipeline.makeDegradedRoofData. */
   source: "tier-a-lidar" | "tier-b-multiview" | "tier-c-solar" | "tier-c-vision" | "none";
-  refinements: Array<"multiview-obliques">;
+  refinements: Refinement[];
   confidence: number;
   imageryDate: string | null;
   ageYearsEstimate: number | null;
