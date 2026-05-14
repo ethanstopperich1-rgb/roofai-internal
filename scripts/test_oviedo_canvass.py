@@ -137,6 +137,8 @@ class CanvassRow:
     distance_miles: float
     hail_inches: float
     storm_date: str
+    year_built: int | None
+    home_age: int | None
     has_recent_roof_permit: bool | None
     last_permit_date: str | None
     last_permit_type: str | None
@@ -255,6 +257,111 @@ out center 400;
 # Two candidates; primary is the BuildingPermitWebInquiry portal.
 SEMINOLE_PERMIT_SEARCH = "https://scccap01.seminolecountyfl.gov/BuildingPermitWebInquiry/"
 SEMINOLE_PERMIT_FALLBACK = "https://scwebapp2.seminolecountyfl.gov:6443/contractorpermitinquiry/"
+
+# Seminole County Property Appraiser — different system from the permit
+# portal. Public parcel records including YEAR_BUILT, OWNER_NAME,
+# JUST_VALUE, etc. We hit this in the same CloakBrowser session as the
+# permit search, separately for each address, to get year_built before
+# applying the hot-lead scoring rubric.
+#
+# scpafl.org publishes a "Parcel Search" page that accepts address
+# queries. Until we apply the parcels migration + run the full ingest,
+# this is the per-address year_built source for the test script.
+SCPA_PARCEL_SEARCH = "https://www.scpafl.org/ParcelDetails"
+
+
+def query_scpa_year_built(page, addr: Address, debug_dir: Path | None) -> int | None:
+    """Query Seminole County Property Appraiser for year_built. Hits
+    the public Parcel Search page, fills the address, parses the
+    resulting parcel-details page for the "Year Built" / "Actual Year
+    Built" field.
+
+    Returns None on any failure — the caller still scores the address
+    using base + recency, just without the new-construction short-
+    circuit. That biases scores slightly hot on misses, which is the
+    safer failure mode (over-canvass a few houses vs. miss a real one).
+
+    NOTE: this is a stop-gap until the parcels migration + full FGIO
+    ingest land. At that point year_built comes from the parcels
+    table in O(1), no portal query needed.
+    """
+    try:
+        # SCPA's main search portal — the front-end is JS-rendered, so
+        # we use CloakBrowser to navigate. The search form lives at
+        # scpafl.org and submits to a parcel-details page.
+        page.goto("https://www.scpafl.org/", wait_until="domcontentloaded", timeout=20_000)
+    except Exception as e:
+        log_dbg(f"scpa goto failed: {e}")
+        return None
+
+    # SCPA's search input changes across portal versions. Try a few
+    # selector patterns, fall back to the search box we can find.
+    search_selectors = [
+        "input[id*='ParcelSearch']",
+        "input[name*='ParcelSearch']",
+        "input[placeholder*='earch']",
+        "input[type='search']",
+        "input.search",
+        "#searchBox",
+    ]
+
+    filled = False
+    full_addr = f"{addr.address_line} {addr.city} {addr.zip}".strip()
+    for s in search_selectors:
+        try:
+            if page.locator(s).count() > 0:
+                page.fill(s, full_addr, timeout=3_000)
+                page.press(s, "Enter")
+                filled = True
+                break
+        except Exception:
+            continue
+    if not filled:
+        log_dbg("scpa: no search input found")
+        return None
+
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        # Brief settle for JS-rendered result page
+        page.wait_for_timeout(2000)
+    except Exception:
+        pass
+
+    if debug_dir:
+        try:
+            page.screenshot(
+                path=str(debug_dir / f"{addr.address_line[:25]}_scpa.png")
+            )
+            (debug_dir / f"{addr.address_line[:25]}_scpa.html").write_text(
+                page.content(), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    # Parse year built from the rendered text. SCPA labels it as
+    # "Year Built", "Actual Year Built", or "ACT YR BLT" depending on
+    # the page section. Regex out the first reasonable year.
+    try:
+        body_text = page.locator("body").inner_text()[:20_000]
+    except Exception:
+        return None
+
+    # Be picky — "Year Built 2020" or "Actual Year Built: 1992" patterns.
+    # Avoid matching random 4-digit numbers elsewhere on the page.
+    m = re.search(
+        r"(?:actual\s+)?year\s*built\s*[:\-]?\s*(\d{4})",
+        body_text,
+        re.IGNORECASE,
+    )
+    if m:
+        year = int(m.group(1))
+        if 1900 <= year <= dt.date.today().year:
+            return year
+    return None
+
+
+def log_dbg(msg: str) -> None:
+    print(f"    [scpa] {msg}", file=sys.stderr)
 
 
 def query_seminole_permit(page, addr: Address, debug_dir: Path | None) -> PermitFinding:
@@ -570,6 +677,14 @@ def score_hot_lead(
     if last_permit_date and last_permit_date > STORM_DATE:
         return round(max(-200, min(200, score - 100)), 2)
 
+    # New-construction short-circuit — see lib/parcel-canvass.ts.
+    # <10 yr home = original roof, under warranty, "no permit" expected,
+    # not a hot-lead signal. Return base only.
+    if year_built is not None:
+        home_age = today.year - year_built
+        if home_age < 10:
+            return round(max(-200, min(200, score)), 2)
+
     # Roof permit recency tier
     if last_permit_date is None:
         years_since = float("inf")
@@ -584,10 +699,8 @@ def score_hot_lead(
         score += 30
     # 5-10 years = neutral (no bonus, no penalty)
 
-    # Estimated roof age bonus — Overpass doesn't return year_built, so
-    # in this test script the bonus only fires when caller passes it in
-    # explicitly. In production (lib/parcel-canvass.ts) year_built comes
-    # from the parcels table and the bonus is always evaluated.
+    # Estimated roof age bonus (only fires for 20+ yr homes — already
+    # past the <10 yr short-circuit above).
     if year_built is not None:
         home_age = today.year - year_built
         no_recent_permit = years_since >= 10
@@ -632,6 +745,7 @@ def main() -> None:
                 rank=i, address_line=a.address_line, city=a.city, zip=a.zip,
                 lat=a.lat, lng=a.lng, distance_miles=round(a.distance_miles, 3),
                 hail_inches=HAIL_INCHES, storm_date=STORM_DATE.isoformat(),
+                year_built=None, home_age=None,
                 has_recent_roof_permit=None, last_permit_date=None,
                 last_permit_type=None, score=score,
                 notes="permit lookup skipped",
@@ -652,12 +766,37 @@ def main() -> None:
             for i, a in enumerate(addrs, 1):
                 print(f"  [{i}/{len(addrs)}] {a.address_line} ({a.distance_miles:.2f} mi)…",
                       file=sys.stderr)
+                # Step 1 — permit lookup (Seminole BuildingPermitWebInquiry)
                 try:
                     finding = query_seminole_permit(page, a, debug_dir)
                 except Exception as e:
                     finding = PermitFinding(None, None, None, None, "",
                                             portal_error=f"exception: {e}")
-                score = score_hot_lead(a.distance_miles, finding.last_permit_date)
+                # Polite-scrape pause BETWEEN the two portals so we
+                # don't double-hit Seminole back-to-back.
+                time.sleep(random.uniform(2.0, 3.0))
+                # Step 2 — year_built lookup (Seminole Property Appraiser).
+                # This is critical for accurate scoring: a 4yr-old home
+                # with "no permit" is NOT hot (warranty roof), it's a
+                # cold lead. Without year_built the scoring biases hot.
+                try:
+                    year_built = query_scpa_year_built(page, a, debug_dir)
+                except Exception as e:
+                    print(f"    scpa exception: {e}", file=sys.stderr)
+                    year_built = None
+                if year_built:
+                    home_age = dt.date.today().year - year_built
+                    print(f"    year_built={year_built} (age {home_age}yr)", file=sys.stderr)
+                else:
+                    print("    year_built=unknown (scoring without age signal)",
+                          file=sys.stderr)
+                score = score_hot_lead(
+                    a.distance_miles, finding.last_permit_date, year_built,
+                )
+                # Compose a notes string that surfaces year_built when
+                # known so the CSV reader doesn't have to guess.
+                base_note = finding.portal_error or finding.raw_summary[:80]
+                year_note = f" · built {year_built}" if year_built else ""
                 rows.append(CanvassRow(
                     rank=i,
                     address_line=a.address_line,
@@ -668,14 +807,16 @@ def main() -> None:
                     distance_miles=round(a.distance_miles, 3),
                     hail_inches=HAIL_INCHES,
                     storm_date=STORM_DATE.isoformat(),
+                    year_built=year_built,
+                    home_age=(dt.date.today().year - year_built) if year_built else None,
                     has_recent_roof_permit=finding.has_recent_roof_permit,
                     last_permit_date=(finding.last_permit_date.isoformat()
                                         if finding.last_permit_date else None),
                     last_permit_type=finding.last_permit_type,
                     score=score,
-                    notes=(finding.portal_error or finding.raw_summary[:120]),
+                    notes=(base_note + year_note).strip(),
                 ))
-                # Polite-scrape rate limit
+                # Polite-scrape rate limit between addresses
                 time.sleep(random.uniform(3.0, 5.0))
 
     # Re-sort by final score for the output

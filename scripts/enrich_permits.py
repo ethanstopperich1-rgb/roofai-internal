@@ -393,7 +393,16 @@ def score_hot_lead(
     if last_roof_permit_date and last_roof_permit_date > storm_date:
         return max(-200.0, min(200.0, round((score - 100) * 100) / 100))
 
-    # Recency tier
+    # New-construction short-circuit: <10 yr homes are on warranty roofs;
+    # "no permit on file" is expected, not a hot-lead signal. Return
+    # base score only without applying the permit-recency bonus. See
+    # lib/parcel-canvass.ts::scoreHotLead for the full rationale.
+    if year_built is not None:
+        home_age = today.year - year_built
+        if home_age < 10:
+            return max(-200.0, min(200.0, round(score * 100) / 100))
+
+    # Recency tier (10+ yr homes only past this point)
     if last_roof_permit_date is None:
         years_since = float("inf")
     else:
@@ -407,7 +416,7 @@ def score_hot_lead(
         score += 30
     # 5-10 yr = neutral
 
-    # Roof age bonus
+    # Roof age bonus (only fires for 20+yr homes past the short-circuit)
     if year_built:
         home_age = today.year - year_built
         no_recent_permit = years_since >= 10

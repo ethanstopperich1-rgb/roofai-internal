@@ -155,6 +155,25 @@ export function scoreHotLead(baseScore: number, ctx: PermitContext): number {
     return roundScore(score);
   }
 
+  // ─── New-construction short-circuit ──────────────────────────────────
+  // Homes under 10 years old are on their ORIGINAL roof, which is still
+  // inside manufacturer warranty (25-30yr typical for asphalt shingles).
+  // "No permit on file" for a new home means the original roof —
+  // expected, not a hot lead signal. Skip the recency bonus entirely
+  // so we don't mis-rank new construction as hot.
+  //
+  // Florida law also gates wind-mitigation discounts on roofs ≥10yr,
+  // and most insurance damage-claim windows on warranty-period roofs
+  // route through the BUILDER, not a private roofer. New construction
+  // = cold lead, almost always.
+  if (ctx.yearBuilt != null) {
+    const homeAge = now.getUTCFullYear() - ctx.yearBuilt;
+    if (homeAge < 10) {
+      // Base score (hail × proximity) only; no permit-recency add.
+      return roundScore(score);
+    }
+  }
+
   // ─── Roof Permit Recency (additive) ──────────────────────────────────
   const yearsSinceLastPermit = lastPermit
     ? (now.getTime() - lastPermit.getTime()) / (365.25 * 24 * 60 * 60 * 1000)
@@ -172,9 +191,10 @@ export function scoreHotLead(baseScore: number, ctx: PermitContext): number {
   score += recencyBonus;
 
   // ─── Estimated Roof Age bonus (+25) ──────────────────────────────────
-  // Year built > 20 yrs ago AND no recent permit. We treat "no recent
-  // permit" as ≥10 years since last permit (matches the warm/hot
-  // recency tiers). Older homes in FL = bigger insurance claims.
+  // Year built > 20 yrs ago AND no recent permit. Older homes in FL =
+  // bigger insurance claims, more wear, worse warranties. The 10-yr
+  // short-circuit above already excluded new construction, so here
+  // we're only evaluating 10+yr homes.
   if (ctx.yearBuilt) {
     const homeAge = now.getUTCFullYear() - ctx.yearBuilt;
     const noRecentPermit = yearsSinceLastPermit >= 10;
