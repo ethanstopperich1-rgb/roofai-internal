@@ -32,13 +32,10 @@ import ConfirmHomePin from "@/components/ConfirmHomePin";
 import InsightsPanel from "@/components/InsightsPanel";
 import PropertyContextPanel from "@/components/PropertyContextPanel";
 import StormHistoryCard from "@/components/StormHistoryCard";
-import VisionPanel from "@/components/VisionPanel";
 import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
-import PolygonSizeWarning from "@/components/PolygonSizeWarning";
 import SectionHeader from "@/components/SectionHeader";
-import OutlineQualityWarning from "@/components/OutlineQualityWarning";
 import PhotoUploadPanel from "@/components/PhotoUploadPanel";
 import ImageryStormBanner from "@/components/ImageryStormBanner";
 import VoiceNoteRecorder, { type VoiceNoteResult } from "@/components/VoiceNoteRecorder";
@@ -57,35 +54,19 @@ import type {
   AddressInfo,
   Assumptions,
   Estimate,
-  RoofVision,
-  SolarSummary,
   DetailedEstimate,
 } from "@/types/estimate";
 import type {
   RoofData,
   PricingInputs,
   PricedEstimate,
-  EstimateV2,
 } from "@/types/roof";
 import { priceRoofData } from "@/lib/roof-engine";
 import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import { FacetList } from "@/components/roof/FacetList";
-import { saveEstimateV2 } from "@/lib/storage";
 import { DEFAULT_ADDONS } from "@/lib/pricing";
-import {
-  buildWasteTable,
-  inferComplexityFromPolygons,
-} from "@/lib/roof-geometry";
-import {
-  orthogonalizePolygon,
-  mergeNearbyVertices,
-  polygonIsNearAddress,
-  polygonCoversFootprint,
-  polygonsCoverFootprint,
-  polygonAreaSqft,
-  polygonIoU,
-} from "@/lib/polygon";
+import { buildWasteTable } from "@/lib/roof-geometry";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
@@ -100,15 +81,6 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   materialMultiplier: 1.0,
   serviceType: "reroof-tearoff",
   complexity: "moderate",
-};
-
-const VISION_MATERIAL_TO_ASSUMPTION: Partial<
-  Record<RoofVision["currentMaterial"], Assumptions["material"]>
-> = {
-  "asphalt-3tab": "asphalt-3tab",
-  "asphalt-architectural": "asphalt-architectural",
-  "metal-standing-seam": "metal-standing-seam",
-  "tile-concrete": "tile-concrete",
 };
 
 /**
@@ -154,13 +126,9 @@ function HomePageInner() {
   const [estimateId, setEstimateId] = useState<string>(newId());
   const [shown, setShown] = useState(false);
 
-  const [solar, setSolar] = useState<SolarSummary | null>(null);
-  const [vision, setVision] = useState<RoofVision | null>(null);
-  const [visionLoading, setVisionLoading] = useState(false);
-  const [visionError, setVisionError] = useState<string>("");
   // Tier C unified pipeline result. Replaces the parallel solar/vision/
-  // OSM/SAM3 orchestration with a single canonical RoofData feed. See
-  // lib/roof-pipeline.ts + /api/roof-pipeline.
+  // OSM/MSBuildings/SAM3 orchestration with a single canonical RoofData
+  // feed. See lib/roof-pipeline.ts + /api/roof-pipeline.
   const [roofData, setRoofData] = useState<RoofData | null>(null);
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
@@ -170,94 +138,6 @@ function HomePageInner() {
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [photos, setPhotos] = useState<PhotoMeta[]>([]);
   const [claim, setClaim] = useState<ClaimContext>({ carrier: "state-farm" });
-  const [osmBuildingPolygon, setOsmBuildingPolygon] = useState<
-    Array<{ lat: number; lng: number }> | null
-  >(null);
-  // Compound-pipeline result — OSM building × SAM 2 "roof" mask.
-  // Tighter than OSM (it removes porches/decks/garages from the polygon)
-  // and tighter than Claude (pixel-precise mask, not LLM-traced vertices).
-  const [samRefinedPolygon, setSamRefinedPolygon] = useState<
-    Array<{ lat: number; lng: number }> | null
-  >(null);
-  // `samRefining` flag removed — the legacy SAM2 (sam-refine) refining
-  // step was deprecated in favor of custom SAM3. The state slot
-  // `samRefinedPolygon` above is kept as a passive emergency-rollback
-  // hook (see Phase 1 cleanup notes below).
-  // Google Solar dataLayers:get binary roof mask — Project Sunroof's own
-  // ground-truth segmentation. Beats SAM/OSM/AI for any property in Solar
-  // coverage. Falls back through the chain when not available.
-  const [solarMaskPolygon, setSolarMaskPolygon] = useState<
-    Array<{ lat: number; lng: number }> | null
-  >(null);
-  // Polygon extracted client-side from the loaded 3D Tiles photogrammetric
-  // mesh (Roof3DViewer samples elevations on a grid, thresholds above
-  // tiles3d (mesh height extraction) was removed — produced inconsistent
-  // results across rural properties (locked onto tree blobs, sheds, or
-  // partial roofs depending on mesh quality). The 3D viewer now serves
-  // purely as a visual renderer + multi-view capture surface for Claude
-  // verification (separate route).
-  // Roboflow Hosted Inference — roof-specific instance segmentation on the
-  // same satellite tile the rest of the pipeline uses. Bake-off in
-  // scripts/eval-roboflow.ts picked Satellite Rooftop Map (v3) — nailed a
-  // hip-roof house at 92% confidence where tiles3d-vision had been
-  // returning a wrong-angle rectangle.
-  const [roboflowPolygon, setRoboflowPolygon] = useState<
-    Array<{ lat: number; lng: number }> | null
-  >(null);
-  // Microsoft Building Footprints — open-data ML-extracted building polygons
-  // covering rural areas where OSM has no coverage. ODbL license. Currently
-  // scoped to the Nashville metro bbox (see lib/microsoft-buildings.ts).
-  // Slotted below OSM (OSM is hand-traced, more accurate where present) and
-  // above the Claude-vision last-resort.
-  const [msBuildingPolygon, setMsBuildingPolygon] = useState<
-    Array<{ lat: number; lng: number }> | null
-  >(null);
-  // Custom SAM3 (Roboflow Workflow) with server-side GIS-footprint
-  // reconciliation. Sits at the top of the priority chain when available —
-  // trained on our service-area imagery, so it consistently outperforms
-  // the off-the-shelf Roboflow Satellite Rooftop Map and Solar mask on
-  // properties where Solar's photogrammetry has gaps. The route handles
-  // tree occlusion / wrong-building substitution before returning.
-  const [sam3Polygon, setSam3Polygon] = useState<
-    Array<{ lat: number; lng: number }> | null
-  >(null);
-  // SAM3 in-flight gate. While `sam3InFlight === true`, the polygon
-  // priority chain returns "none" regardless of what MS Buildings, OSM,
-  // or Solar mask have returned. This eliminates the visual flicker
-  // where a fast-resolving fallback (MS Buildings ~100ms, OSM ~1.5s)
-  // renders a polygon over the satellite tile, only to get replaced
-  // 5-30 seconds later when SAM3 finishes. Reps were seeing the wrong
-  // polygon during the cold-start window and assuming SAM3 had failed.
-  //
-  // The "Generating measurement…" overlay stays visible until SAM3
-  // settles — either succeeds (its polygon wins the priority chain)
-  // or fails (404 / kill switch / network error → fallback chain runs).
-  // Set true at the start of every loadAddress fetch, set false in the
-  // .then() of the sam3Promise regardless of outcome.
-  const [sam3InFlight, setSam3InFlight] = useState<boolean>(false);
-  // Reconciler source from /api/sam3-roof. When SAM3's raw output gets
-  // substituted with the GIS wall footprint (occluded by tree canopy,
-  // catastrophic centroid drift, area-ratio gate fail), the returned
-  // polygon traces walls, not eaves — so it needs the 1.06 overhang
-  // multiplier applied to roof-material sqft. "sam3" / "sam3-no-footprint"
-  // mean the polygon traces eaves directly and no multiplier applies.
-  const [sam3Source, setSam3Source] = useState<
-    "sam3" | "footprint-only" | "footprint-occluded" | "sam3-no-footprint" | null
-  >(null);
-  // "Pick the right building" mode — when the auto-detection picks the
-  // wrong building on a multi-structure rural parcel, the rep toggles
-  // this on and clicks the actual house on the satellite tile. We then
-  // re-call SAM3 with ?clickLat=&clickLng= override and update the
-  // polygon with the result.
-  const [pickingBuilding, setPickingBuilding] = useState(false);
-  const [pickingLoading, setPickingLoading] = useState(false);
-  // Claude verification of the rendered polygon. Catches polygons traced
-  // on the wrong building, neighbour's roof, covered patio over-traces.
-  // When Claude flags an issue with high confidence (ok=false, conf>0.7),
-  // we treat the source as failed and fall through. Otherwise informational.
-  const [claudeVerifications, setClaudeVerifications] = useState<
-    Partial<Record<string, { ok: boolean; confidence: number; reason: string; issues?: string[] }>>
-  >({});
   // Live polygons after the rep edits a vertex. When set, overrides the
   // auto-detected source polygons everywhere (lengths, sqft, blueprint, PDF).
   // Reset to null on every new estimate so we always start from auto-detect.
@@ -350,560 +230,45 @@ function HomePageInner() {
   // Kept here as a marker so search-and-replace tools find the legacy
   // call-sites if they ever appear in this region again.
 
-  // Polygon priority: Solar API per-facet > Claude single-polygon fallback.
-  // Claude's polygon is in pixel coords on the 640x640 zoom-20 satellite tile;
-  // we project back to lat/lng using the same meters-per-pixel formula MapView
-  // uses, so the polygon lines up with the satellite imagery underneath.
-  const claudePolygonLatLng = useMemo(() => {
-    if (!address?.lat || !address?.lng) return null;
-    const rawPoly = vision?.roofPolygon;
-    if (!rawPoly || rawPoly.length < 3) return null;
-    // Soft orthogonalize Claude's pixel-space trace before projection.
-    // We DON'T force an oriented bounding rectangle here — bounding boxes
-    // CIRCUMSCRIBE the input, so when Claude over-traces (covers the yard
-    // too), the rect ends up even bigger. The size guard in cleanRoofPolygon
-    // (lib/anthropic.ts) is what protects against over-trace; this pass
-    // just smooths jaggies on traces that ARE roughly correct.
-    // Orthogonalize, then drop near-duplicate vertices (orthogonalization
-    // can collapse two adjacent vertices onto the same intersection point).
-    const poly = mergeNearbyVertices(orthogonalizePolygon(rawPoly, 18), 4);
-    const lat = address.lat;
-    const lng = address.lng;
-    const mPerPx =
-      (156_543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, 20);
-    const cosLat = Math.cos((lat * Math.PI) / 180);
-    return poly.map(([x, y]) => {
-      const dx = x - 320;
-      const dy = y - 320;
-      return {
-        lat: lat + (-dy * mPerPx) / 111_320,
-        lng: lng + (dx * mPerPx) / (111_320 * cosLat),
-      };
-    });
-  }, [vision?.roofPolygon, address?.lat, address?.lng]);
-
-  // Wrong-house guard. Every auto-detected polygon must contain (or be
-  // within tolerance of) an anchor on the actual building. Catches the
-  // failure mode where AI traces the brightest neighbouring roof rather
-  // than the actual target. Returns the polygon when valid, null when
-  // it should be rejected.
-  //
-  // Polygon passes if it satisfies EITHER anchor:
-  //   1. Solar's `buildingCenter` — Solar API's photogrammetric centroid
-  //      for the closest building. On the actual roof when present.
-  //   2. The user's geocoded address — Google's address point. Sits on
-  //      the building footprint for tightly-platted suburban lots, but
-  //      may be 10-20m off on large lots / set-back houses / parcels
-  //      where the address geocodes to the lot center / driveway / pool.
-  //
-  // Tolerance tuned to 18m: the eval surfaced two FL addresses where
-  // Roboflow returned an IoU=0 polygon on a neighbour's roof but within
-  // 15m of the geocoded address — that's the upper bound we need to
-  // reject. But early production testing showed 8m was too tight on
-  // large lots where the geocoded point lands on the patio/lawn rather
-  // than the building. 18m keeps the wrong-house failures we measured
-  // out while letting through correct polygons whose anchor sits on
-  // hardscape adjacent to the building.
-  const PROXIMITY_M = 18;
-  const buildingCenter = solar?.buildingCenter ?? null;
-  const validateAtAddress = (
-    poly: Array<{ lat: number; lng: number }> | null,
-  ): Array<{ lat: number; lng: number }> | null => {
-    if (!poly || poly.length < 3) return null;
-    // Either anchor passes — buildingCenter is a BONUS signal, not a gate.
-    // When Solar finds a building close to the user's geocoded address it
-    // confirms which lot is the target; when it finds a neighbour's
-    // building (Solar's `findClosest` is "closest to the input lat/lng",
-    // which can be off when the address is rural or on a corner lot),
-    // we don't want it to invalidate polygons that ARE on the user's
-    // actual building.
-    if (
-      buildingCenter &&
-      polygonIsNearAddress(poly, buildingCenter.lat, buildingCenter.lng, PROXIMITY_M)
-    ) {
-      return poly;
-    }
-    if (address?.lat == null || address?.lng == null) {
-      return buildingCenter ? null : poly;
-    }
-    return polygonIsNearAddress(poly, address.lat, address.lng, PROXIMITY_M) ? poly : null;
-  };
-
-  const validSam3 = useMemo(() => validateAtAddress(sam3Polygon), [sam3Polygon, address?.lat, address?.lng, buildingCenter]);
-  const validSolarMask = useMemo(() => validateAtAddress(solarMaskPolygon), [solarMaskPolygon, address?.lat, address?.lng, buildingCenter]);
-  const validRoboflow = useMemo(() => validateAtAddress(roboflowPolygon), [roboflowPolygon, address?.lat, address?.lng, buildingCenter]);
-  const validSam = useMemo(() => validateAtAddress(samRefinedPolygon), [samRefinedPolygon, address?.lat, address?.lng, buildingCenter]);
-  const validOsm = useMemo(() => validateAtAddress(osmBuildingPolygon), [osmBuildingPolygon, address?.lat, address?.lng, buildingCenter]);
-  const validMsBuilding = useMemo(() => validateAtAddress(msBuildingPolygon), [msBuildingPolygon, address?.lat, address?.lng, buildingCenter]);
-  const validClaude = useMemo(() => validateAtAddress(claudePolygonLatLng), [claudePolygonLatLng, address?.lat, address?.lng, buildingCenter]);
-
-  // Pattern A: only consider a source if its 3D-mesh validation score is
-  // above MIN_VALIDATION_SCORE (or no score yet — we don't penalize sources
-  // that haven't been validated). 0.4 = at least 40% of polygon samples at
-  // roof height. Tighter bars over-reject good polygons; looser bars let
-  // through polygons traced on driveways. Tune up if false positives
-  // continue to ship; tune down if good polygons get demoted.
-  // Claude flagged the polygon as wrong with high confidence?  Demote it.
-  // Low-confidence flags are informational (rep may notice a small edge
-  // issue but the polygon is mostly right).
-  const passesClaude = (source: string) => {
-    const v = claudeVerifications[source];
-    if (!v) return true;
-    if (v.ok) return true;
-    return v.confidence < 0.7; // ok=false but Claude isn't sure → keep
-  };
-
-  // MS Buildings hallucination cross-check. When BOTH Roboflow and MS
-  // Buildings have polygons for the same address, compare areas + centroid
-  // distance. If they disagree wildly (Roboflow's polygon is 3× the size
-  // of MS's footprint, OR centroid is > 25m away), Roboflow has likely
-  // hallucinated — traced a paved area or the neighbour's roof. Demote.
-  // MS Buildings serves as a sanity-check authority for Roboflow because
-  // it's pre-traced from satellite imagery (different model, different
-  // training data) and contains the geocoded address point.
-  const passesMsHallucinationCheck = (
-    candidate: Array<{ lat: number; lng: number }> | null,
-  ): boolean => {
-    if (!candidate || candidate.length < 3) return true;
-    if (!msBuildingPolygon || msBuildingPolygon.length < 3) return true; // no MS reference
-    const cosLat = Math.cos(((candidate[0].lat) * Math.PI) / 180);
-    const M_PER_DEG_LAT = 111_320;
-    const polygonAreaSqM = (poly: Array<{ lat: number; lng: number }>): number => {
-      let sum = 0;
-      for (let i = 0; i < poly.length; i++) {
-        const a = poly[i];
-        const b = poly[(i + 1) % poly.length];
-        sum += a.lng * b.lat - b.lng * a.lat;
-      }
-      // Convert from deg² to m² via local linear approximation
-      const degSq = Math.abs(sum) / 2;
-      return degSq * (M_PER_DEG_LAT * M_PER_DEG_LAT) * cosLat;
-    };
-    const centroid = (poly: Array<{ lat: number; lng: number }>) => {
-      let lat = 0, lng = 0;
-      for (const p of poly) { lat += p.lat; lng += p.lng; }
-      return { lat: lat / poly.length, lng: lng / poly.length };
-    };
-    const aArea = polygonAreaSqM(candidate);
-    const bArea = polygonAreaSqM(msBuildingPolygon);
-    const ratio = aArea / Math.max(bArea, 1);
-    const ac = centroid(candidate);
-    const bc = centroid(msBuildingPolygon);
-    const dxM = (ac.lng - bc.lng) * M_PER_DEG_LAT * cosLat;
-    const dyM = (ac.lat - bc.lat) * M_PER_DEG_LAT;
-    const centroidDistM = Math.hypot(dxM, dyM);
-    // Reject when:
-    //   - candidate is > 3× larger than MS footprint (over-trace into yard)
-    //   - candidate is < 0.3× MS footprint (only tracing a portion of the building)
-    //   - centroid is > 25m from MS footprint centroid (wrong building)
-    if (ratio > 3.0 || ratio < 0.3 || centroidDistM > 25) {
-      console.warn(
-        `[hallucination] candidate vs MS Footprint: area ratio=${ratio.toFixed(2)}, centroid dist=${centroidDistM.toFixed(1)}m — flagging as hallucination`,
-      );
-      return false;
-    }
-    return true;
-  };
-
-  // Roof-type prior gate. Originally rejected polygons whose vertex
-  // count wildly disagreed with vision.complexity (simple+>12 verts or
-  // complex+≤4 verts). Production testing showed Vision's complexity
-  // classification was less reliable than its confidence score
-  // suggested, particularly on complex-segment roofs that Vision tagged
-  // as "simple" — the gate then rejected good Solar/Roboflow polygons.
-  // Currently a no-op pending more eval data; vertex-count vs Solar's
-  // segmentCount may be a better signal than vision.complexity.
-  const passesComplexityPrior = (
-    _candidate: Array<{ lat: number; lng: number }> | null,
-  ): boolean => true;
-
-  // Footprint-coverage gate. Two failure modes:
-  //   • UNDER-trace: segmenter caught one center section, missed wings.
-  //     Polygon is < 55% of expected building footprint.
-  //   • OVER-trace: segmenter followed fence / yard / driveway. Polygon
-  //     is > 2.2× expected footprint (eave overhang + attached lanais /
-  //     covered porches / multi-section roofs in FL routinely add 50-
-  //     100% to the Solar-reported footprint; tightened to 1.6 was
-  //     rejecting legitimate polygons on complex Doctor-Phillips-style
-  //     properties).
-  //
-  // Reference: prefer Solar's `buildingFootprintSqft` (DSM-derived,
-  // closest to ground truth). When Solar has no footprint signal, fall
-  // back to MS Buildings polygon area, then OSM polygon area — both are
-  // pre-curated building footprints. Only when ALL three are missing
-  // do we ship without coverage gating (rural last-resort).
-  //
-  // The reference source is excluded from being gated against itself
-  // (otherwise it's circular). Other sources still get gated against it.
-  const solarFootprintSqft = solar?.buildingFootprintSqft ?? null;
-  const msFootprintSqft =
-    validMsBuilding ? polygonAreaSqft(validMsBuilding) : null;
-  const osmFootprintSqft = validOsm ? polygonAreaSqft(validOsm) : null;
-  const referenceFootprintSqft =
-    (solarFootprintSqft && solarFootprintSqft >= 100 ? solarFootprintSqft : null) ??
-    (msFootprintSqft && msFootprintSqft >= 100 ? msFootprintSqft : null) ??
-    (osmFootprintSqft && osmFootprintSqft >= 100 ? osmFootprintSqft : null);
-  // Which source (if any) IS the reference — that source skips the gate
-  // because comparing it to itself always passes (and is meaningless).
-  const referenceSource: "solar" | "ms" | "osm" | null =
-    solarFootprintSqft && solarFootprintSqft >= 100
-      ? "solar"
-      : msFootprintSqft && msFootprintSqft >= 100
-        ? "ms"
-        : osmFootprintSqft && osmFootprintSqft >= 100
-          ? "osm"
-          : null;
-  // Solar-anchored coverage gate. Tier-aware upper bound — Solar's
-  // `segmentCount` is our independent complexity signal (independent of
-  // whichever polygon is being checked, so no circularity):
-  //   • ≤2 segments → simple gable / single-pitch  → cap at 1.3× footprint
-  //   • 3–5 segments → moderate (typical hip)       → cap at 1.6×
-  //   • ≥6 segments → complex (multi-section, FL)  → cap at 2.0×
-  //   • 0 segments  → no Solar findClosest signal  → cap at 1.20×
-  //
-  // The 0-segment case is the *strictest* because the only reference left
-  // is MS Buildings / OSM footprint. Those are top-down satellite-derived
-  // footprints with no eave / overhang information — a candidate polygon
-  // with light eaves should land within ~10-20% of them. Anything above
-  // 1.20× is almost certainly an over-trace into shadow / driveway / yard.
-  //
-  // History: was 1.6 → loosened to 2.2 (Doctor Phillips Orlando complex
-  // FL home) → 5385 Henley Rd Mt Juliet shipped over-traced Solar mask at
-  // 1.235× MS Buildings footprint. Tightening the no-Solar case to 1.20
-  // rejects Mt Juliet's over-trace, falls through to Roboflow (~0.98× of
-  // MS Buildings, clean), which becomes the displayed polygon.
-  const overTraceUpperRatio = (() => {
-    const sc = solar?.segmentCount ?? 0;
-    if (sc >= 6) return 2.0;
-    if (sc >= 3) return 1.6;
-    if (sc >= 1) return 1.3;
-    return 1.20;
-  })();
-  const passesCoverage = (
-    poly: Array<{ lat: number; lng: number }> | null | undefined,
-  ) => polygonCoversFootprint(poly, referenceFootprintSqft, 0.55, overTraceUpperRatio);
-  const passesCoverageMulti = (
-    polys: Array<Array<{ lat: number; lng: number }>> | null | undefined,
-  ) => polygonsCoverFootprint(polys, referenceFootprintSqft, 0.55, overTraceUpperRatio);
-  // Skip self-comparison when the source IS the reference (OSM gated
-  // against an OSM-derived footprint = circular, trivially passes).
-  const passesCoverageNonRef = (
-    poly: Array<{ lat: number; lng: number }> | null | undefined,
-    source: "ms" | "osm",
-  ): boolean => {
-    if (referenceSource === source) return true;
-    return passesCoverage(poly);
-  };
-  // Absolute size sanity. ~93 m² ≈ 1000 sqft minimum (smaller than that
-  // is almost always a noise blob or a shed, not a residential roof);
-  // ~1860 m² ≈ 20,000 sqft maximum (larger than that is almost always
-  // tracing the entire parcel or the neighbour's house too).
-  const passesAbsoluteSize = (
-    poly: Array<{ lat: number; lng: number }> | null | undefined,
-  ): boolean => {
-    if (!poly || poly.length < 3) return false;
-    const sqft = polygonAreaSqft(poly);
-    return sqft >= 200 && sqft <= 20_000;
-  };
-
-  /** TIGHTER size gate for Claude vision specifically. Claude over-traces
-   *  routinely on rural / multi-building lots — it'll draw a single big
-   *  rectangle around the house + driveway + outbuildings rather than
-   *  isolate just the roof. Cap at 6,000 sqft to force fall-through to
-   *  "none" when Claude returns a clearly oversized rectangle. The rep
-   *  then gets the "Draw fresh" CTA instead of a bad auto-trace silently
-   *  driving a $200k estimate. Lower bound stays 200 (catches sheds). */
-  const passesClaudeSize = (
-    poly: Array<{ lat: number; lng: number }> | null | undefined,
-  ): boolean => {
-    if (!poly || poly.length < 3) return false;
-    const sqft = polygonAreaSqft(poly);
-    return sqft >= 200 && sqft <= 6_000;
-  };
-
-  // Polygon source priority — best-quality first.
-  //
-  // tiles3d (3D mesh height extraction) was originally at #1 but DEMOTED
-  // below Roboflow because mesh quality varies wildly between properties.
-  // On properties with sparse/noisy photogrammetric mesh, tiles3d
-  // reproducibly extracts a tiny polygon on a shed near the geocode while
-  // missing the actual main house. Roboflow is more CONSISTENT (~85-90%
-  // accurate across all property types) even when not pixel-perfect.
-  // Pattern A validation gates Roboflow on the mesh, so when the mesh IS
-  // clean it improves Roboflow's score; when it's noisy, Roboflow still
-  // wins.
-  //
-  //   1. Solar mask       — Project Sunroof's roof segmentation
-  //                         (photogrammetric, ground truth where covered)
-  //   2. Roboflow         — roof-trained instance segmenter on satellite
-  //                         (Satellite Rooftop Map v3); consistent winner
-  //   3. 3D Tiles mesh    — height-thresholded from Google's photogrammetry.
-  //                         Demoted from #1 — only trusted when Roboflow
-  //                         doesn't fire. Now requires ≥150 cells (was 80).
-  //   4. Solar facets     — multi-facet bboxes from findClosest
-  //   5. SAM 2 + OSM clip — point-prompted SAM with OSM building intersect
-  //   6. OSM              — hand-traced building outline (~50-60% US, urban)
-  //   7. MS Buildings     — open-data ML-extracted building footprints; fills
-  //                         OSM coverage gap on rural addresses (Nashville)
-  //   8. Claude vision    — Claude on the 2D satellite tile. Last resort.
-  //
-  // tiles3d-vision (Claude on multi-angle 3D mesh renders) was REMOVED —
-  // it consistently produced over-traced rectangles. Claude's general vision
-  // can't reliably pixel-trace eaves; roof-specific segmenters are needed.
-  //
-  // Each source goes through the wrong-house guard above before being
-  // considered — a polygon that doesn't contain (or live very near to) the
-  // geocoded address is dropped on the floor regardless of source.
+  // ─── Tier C polygon state — derived from RoofData ────────────────────
+  // `polygonSource` collapses to: "edited" when the rep has touched the
+  // polygon, otherwise the RoofData source name (mapped to the legacy
+  // Estimate.polygonSource union so downstream Roof3DViewer / Estimate
+  // type still typechecks). "none" when no RoofData or RoofData failed.
   const polygonSource = useMemo<
     | "edited"
-    | "tiles3d"
     | "sam3"
-    | "solar-mask"
-    | "roboflow"
     | "solar"
-    | "sam"
-    | "osm"
-    | "microsoft-buildings"
     | "ai"
     | "none"
   >(() => {
-    // Rep edits always win — they're the final authority and shouldn't
-    // be replaced by anything else, including a still-in-flight SAM3.
     if (livePolygons && livePolygons.length) return "edited";
-    // SAM3 in-flight gate. Block the priority chain from rendering ANY
-    // fallback polygon (MS Buildings, OSM, Solar mask, Solar facets,
-    // Claude vision) while SAM3 is still working. Without this gate,
-    // MS Buildings resolves in ~100ms and renders immediately, then
-    // SAM3 replaces it 5-30s later — reps were seeing the wrong
-    // polygon and assuming SAM3 had failed.
-    //
-    // Returning "none" here keeps the priority chain in its initial
-    // (no-polygon) state, which the UI renders as the "Generating
-    // measurement…" overlay. The gate clears in the sam3Promise.then
-    // (after SAM3 succeeds OR its Solar-mask fallback completes),
-    // at which point this useMemo recomputes and picks the best
-    // polygon from whatever has resolved.
-    if (sam3InFlight) return "none";
-    // SAM3 (custom Roboflow Workflow) — top priority when it produces a
-    // polygon. The route already runs GIS reconciliation server-side, so
-    // a polygon coming back here has passed wrong-building / occlusion /
-    // over-trace checks. Still gate against absolute size + coverage as
-    // a belt-and-suspenders defence (cheap to compute, catches anything
-    // the server-side reconciler missed).
-    if (validSam3 && passesClaude("sam3") && passesAbsoluteSize(validSam3) && passesCoverage(validSam3) && passesComplexityPrior(validSam3)) return "sam3";
-    // Coverage gating policy (revised 2026-05-06):
-    //
-    // • Solar mask: still gated against Solar's reported footprint via
-    //   `passesCoverage`. Catches the failure mode where Solar's mask
-    //   only traced a sub-section of its own segment-detected building
-    //   (under-trace by ≥45%); without this gate, Solar mask polygons
-    //   like Benwick Aly's 700 sqft fragment vs Solar's own 2202 sqft
-    //   footprint would ship as the displayed polygon.
-    //
-    // • Other sources (Roboflow, SAM, OSM, MS Buildings, Claude vision)
-    //   only need an absolute size sanity check. Solar's footprint
-    //   isn't a reliable upper bound — Solar misses segments routinely,
-    //   and complex FL homes with wide eaves / lanais / multi-section
-    //   roofs trace 1.5-2× Solar's partial number. Gating those
-    //   polygons against Solar's incomplete reference was hiding
-    //   accurate traces. We trust the rep to visually verify the
-    //   polygon overlay against the satellite tile and click "Draw
-    //   fresh" if it's wrong.
-    // Gate composition (revised 2026-05-06, regression-fix pass):
-    //   • passesAbsoluteSize: 200–20,000 sf hard band (sheds & whole-parcel guard)
-    //   • passesCoverage: tier-aware ratio vs Solar/MS/OSM reference footprint
-    //     (lower 0.55, upper 1.3–2.0 by Solar segmentCount)
-    //   • passesClaude: multi-view verifier (advisory, demotes on strong reject)
-    //   • passesComplexityPrior: vertex count vs vision-detected complexity
-    //   • passesMsHallucinationCheck: catches MS-derived hallucinations
-    //
-    // Coverage was previously skipped on Roboflow/SAM/OSM/MS — that bypass
-    // let the Mt. Juliet over-trace ship. Now applied to every source,
-    // with self-comparison skipped via passesCoverageNonRef where applicable.
-    if (validSolarMask && passesClaude("solar-mask") && passesCoverage(validSolarMask) && passesComplexityPrior(validSolarMask)) return "solar-mask";
-    if (validRoboflow && passesClaude("roboflow") && passesAbsoluteSize(validRoboflow) && passesCoverage(validRoboflow) && passesMsHallucinationCheck(validRoboflow) && passesComplexityPrior(validRoboflow)) return "roboflow";
-    if (validSam && passesClaude("sam") && passesAbsoluteSize(validSam) && passesCoverage(validSam) && passesComplexityPrior(validSam)) return "sam";
-    if (validOsm && passesClaude("osm") && passesAbsoluteSize(validOsm) && passesCoverageNonRef(validOsm, "osm") && passesComplexityPrior(validOsm)) return "osm";
-    if (validMsBuilding && passesClaude("microsoft-buildings") && passesAbsoluteSize(validMsBuilding) && passesCoverageNonRef(validMsBuilding, "ms") && passesComplexityPrior(validMsBuilding)) return "microsoft-buildings";
-    // Solar facets — rotated bboxes from findClosest. Multi-polygon, so
-    // we sum the absolute area against the size band instead of using
-    // single-polygon `passesAbsoluteSize`.
-    if (solar?.segmentPolygonsLatLng?.length && solar.segmentCount > 1) {
-      const totalSqft = solar.segmentPolygonsLatLng.reduce(
-        (sum, p) => sum + polygonAreaSqft(p),
-        0,
-      );
-      if (totalSqft >= 200 && totalSqft <= 20_000) return "solar";
-    }
-    // Claude vision is the LAST RESORT — gated tighter than other sources.
-    // Uses passesClaudeSize (6,000 sqft ceiling, vs 20,000 for others) to
-    // reject Claude's classic over-trace failure mode where it draws a big
-    // rectangle around the whole compound on rural / multi-building lots.
-    // When this gate fails, polygon source falls to "none" and the rep
-    // sees the "Draw fresh" CTA instead of a bad auto-trace.
-    if (validClaude && passesClaude("ai") && passesClaudeSize(validClaude) && passesCoverage(validClaude) && passesMsHallucinationCheck(validClaude)) return "ai";
-    return "none";
-  }, [
-    livePolygons,
-    sam3InFlight,
-    validSam3,
-    validSolarMask,
-    validRoboflow,
-    solar?.segmentPolygonsLatLng,
-    solar?.segmentCount,
-    referenceFootprintSqft,
-    validSam,
-    validOsm,
-    validMsBuilding,
-    validClaude,
-    claudeVerifications,
-    msBuildingPolygon,
-  ]);
+    if (!roofData || roofData.source === "none" || roofData.facets.length === 0) return "none";
+    // Map RoofData.source → legacy union for Roof3DViewer / Estimate types:
+    //   tier-c-solar  → "solar"   (Solar API photogrammetric facets)
+    //   tier-c-vision → "ai"      (Claude vision fallback)
+    //   tier-a/b      → "sam3"    (placeholder; lab-quality multiview/LiDAR)
+    if (roofData.source === "tier-c-solar") return "solar";
+    if (roofData.source === "tier-c-vision") return "ai";
+    return "sam3";
+  }, [livePolygons, roofData]);
 
-  // Keep refs in sync for the active-learning edit-capture closure.
-  useEffect(() => { addressRef.current = address; }, [address]);
-  useEffect(() => { polygonSourceRef.current = polygonSource; }, [polygonSource]);
-
-  // Source polygons — what MapView draws initially. Edited polygons don't
-  // come back through this prop (would cause a redraw loop / cancel the
-  // user's drag). They flow back via onPolygonsChanged → livePolygons.
-  //
-  // Derived DIRECTLY from `polygonSource` so it can't diverge — previous
-  // version applied only `passesCoverage` here, missing `passesAbsoluteSize`
-  // / `passesClaude` / `passesComplexityPrior` / `passesMsHallucinationCheck`
-  // / `passesClaudeSize`. That gap let the displayed/priced polygon be one
-  // that the source-priority logic had REJECTED — a real correctness bug
-  // (wrong roof sqft → wrong PDF → wrong estimate). One source of truth now.
+  // sourcePolygons / activePolygons feed MapView + Roof3DViewer + the
+  // legacy Estimate.polygons field. RoofData.facets[].polygon is the
+  // canonical source-of-truth shape; livePolygons override after edit.
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
-    switch (polygonSource) {
-      case "edited":
-        return livePolygons ?? undefined;
-      case "sam3":
-        return validSam3 ? [validSam3] : undefined;
-      case "solar-mask":
-        return validSolarMask ? [validSolarMask] : undefined;
-      case "roboflow":
-        return validRoboflow ? [validRoboflow] : undefined;
-      case "sam":
-        return validSam ? [validSam] : undefined;
-      case "osm":
-        return validOsm ? [validOsm] : undefined;
-      case "microsoft-buildings":
-        return validMsBuilding ? [validMsBuilding] : undefined;
-      case "solar":
-        return solar?.segmentPolygonsLatLng ?? undefined;
-      case "ai":
-        return validClaude ? [validClaude] : undefined;
-      case "tiles3d":
-      case "none":
-      default:
-        return undefined;
-    }
-  }, [
-    polygonSource,
-    validSam3,
-    validSolarMask,
-    validRoboflow,
-    validSam,
-    validOsm,
-    validMsBuilding,
-    validClaude,
-    solar?.segmentPolygonsLatLng,
-    livePolygons,
-  ]);
-
-  // Active polygons — what we use for sqft, lengths, blueprint, PDF.
-  // Live edits override source.
+    if (!roofData || roofData.source === "none") return undefined;
+    return roofData.facets.map((f) => f.polygon);
+  }, [roofData]);
   const activePolygons = livePolygons ?? sourcePolygons;
-
-  // Polygon visibility gate.
-  //
-  // Previous behaviour: polygon was hidden until Claude multi-view verify
-  // completed, on the theory that an unverified polygon might be wrong.
-  // Failure mode in production: Claude verify can hang (network, slow
-  // 3D-tile load, Replicate cold start, capture timing) — and when it
-  // does, the rep stares at a blank map indefinitely with no way to
-  // proceed. The polygon IS computed (priority chain settled) but
-  // hidden behind a "Generating…" overlay that never clears.
-  //
-  // New policy: show the polygon as soon as the priority chain picks
-  // one. Claude verify still runs in the background; if it rejects
-  // strongly (ok=false, confidence ≥ 0.7), `passesClaude` demotes the
-  // source out of the priority chain on the next render → the polygon
-  // either swaps to the next-best source or disappears (with the chain
-  // settling on "none"). The confidence chip in mapBadges reflects
-  // verify status as it lands. Rep is in the loop and can visually
-  // verify the outline against the satellite tile; clicking "Draw
-  // fresh" lets them re-trace if it's wrong.
-  const polygonReady = useMemo(
-    () => polygonSource !== "none",
-    [polygonSource],
-  );
-
-  // Polygons passed to the viewers. With the verify-gate removal above,
-  // `polygonReady` is true iff we have any priority-chain source — so
-  // these mirror activePolygons / sourcePolygons whenever a source is
-  // available. Kept the gate condition as a no-op safeguard against
-  // future refactors that might re-introduce a "ready" state.
-  const renderedPolygons = polygonReady ? activePolygons : undefined;
+  const polygonReady = roofData != null && roofData.source !== "none";
   const renderedSourcePolygons = polygonReady ? sourcePolygons : undefined;
 
-  // Cross-source consensus. Compute IoU between the active polygon and
-  // every OTHER valid source's polygon — when multiple independent
-  // detectors converge on the same shape, that's the strongest signal
-  // we have that the polygon is correct. Also cheap insurance against
-  // a single source being misled by fence lines / yard perimeters,
-  // since unrelated detectors are unlikely to make the same mistake.
-  const consensusInfo = useMemo<{
-    agreeingSources: number;
-    bestIoU: number;
-    sources: Array<{ name: string; iou: number }>;
-  }>(() => {
-    const empty = { agreeingSources: 0, bestIoU: 0, sources: [] };
-    if (!activePolygons || activePolygons.length === 0) return empty;
-    const primary = activePolygons[0];
-    if (!primary || primary.length < 3) return empty;
-    const candidates: Array<{ name: string; poly: Array<{ lat: number; lng: number }> | null }> = [
-      { name: "solar-mask", poly: validSolarMask },
-      { name: "roboflow", poly: validRoboflow },
-      { name: "sam", poly: validSam },
-      { name: "osm", poly: validOsm },
-      { name: "microsoft-buildings", poly: validMsBuilding },
-      { name: "ai", poly: validClaude },
-    ];
-    const sources: Array<{ name: string; iou: number }> = [];
-    let bestIoU = 0;
-    for (const c of candidates) {
-      if (!c.poly) continue;
-      // Skip self — comparing the active polygon against itself is 1.0
-      // and adds no information.
-      if (c.poly === primary) continue;
-      const iou = polygonIoU(primary, c.poly);
-      sources.push({ name: c.name, iou });
-      if (iou > bestIoU) bestIoU = iou;
-    }
-    const AGREE_THRESHOLD = 0.7;
-    const agreeingSources = sources.filter((s) => s.iou >= AGREE_THRESHOLD).length;
-    return { agreeingSources, bestIoU, sources };
-  }, [
-    activePolygons,
-    validSolarMask,
-    validRoboflow,
-    validSam,
-    validOsm,
-    validMsBuilding,
-    validClaude,
-  ]);
-
-  // Composite confidence for the rep. "high" / "moderate" / "low".
-  // Inputs:
-  //   • Cross-source consensus (3+ agreeing sources is strong; 2 is OK)
-  //   • Multi-view Claude verdict (ok=true conf>0.85 is strong; ok=false
-  //     high-conf collapses to low — that polygon is bad)
-  //   • Source identity (rep edits = high; "ai" last-resort = low)
-  //   • Reference footprint signal (Solar provided = better calibration)
+  // Tier C uses RoofData.confidence directly. The legacy 3-tier
+  // (high/moderate/low) label is derived from a single number rather
+  // than cross-source consensus.
   const estimateConfidence = useMemo<{
     level: "high" | "moderate" | "low";
     rationale: string;
@@ -911,253 +276,29 @@ function HomePageInner() {
     if (polygonSource === "edited") {
       return { level: "high", rationale: "Rep verified by hand" };
     }
-    if (polygonSource === "none") {
-      return { level: "low", rationale: "No polygon detected" };
+    if (!roofData || roofData.source === "none") {
+      return { level: "low", rationale: "No analysis available" };
     }
-    const claudeV =
-      polygonSource && claudeVerifications[polygonSource];
-    // Hard fail on a high-confidence rejection from Claude.
-    if (claudeV && !claudeV.ok && claudeV.confidence >= 0.7) {
-      return { level: "low", rationale: `Verifier rejected: ${claudeV.reason || "polygon does not match roof"}` };
+    const c = roofData.confidence;
+    if (c >= 0.85) {
+      return { level: "high", rationale: `Pipeline confidence ${c.toFixed(2)}` };
     }
-    const claudeStrong = !!(claudeV && claudeV.ok && claudeV.confidence >= 0.85);
-    const claudeMod = !!(claudeV && claudeV.ok && claudeV.confidence >= 0.6);
+    if (c >= 0.6) {
+      return { level: "moderate", rationale: `Pipeline confidence ${c.toFixed(2)}` };
+    }
+    return { level: "low", rationale: `Pipeline confidence ${c.toFixed(2)}` };
+  }, [polygonSource, roofData]);
 
-    // Imagery-age penalty. Solar / Google Static Maps imagery for any given
-    // property dates 2017-2024. Older imagery means the rep may be looking
-    // at a roof that's since been replaced, extended, or torn off — even
-    // a perfect AI trace describes a stale state. STALE_YEARS=5 is the
-    // point where roof material/condition divergence starts dominating;
-    // 3 is when "noticeably aged" matters for sales accuracy.
-    const STALE_YEARS = 5;
-    const AGED_YEARS = 3;
-    const imageryDateString = solar?.imageryDate ?? null;
-    const imageryAgeYears = imageryDateString
-      ? (Date.now() - new Date(imageryDateString).getTime()) /
-        (365.25 * 24 * 3600 * 1000)
-      : null;
-    const isStaleImagery =
-      imageryAgeYears != null &&
-      isFinite(imageryAgeYears) &&
-      imageryAgeYears > STALE_YEARS;
-    const isAgedImagery =
-      imageryAgeYears != null &&
-      isFinite(imageryAgeYears) &&
-      imageryAgeYears > AGED_YEARS;
-    // Solar's `imageryQuality === "LOW"` also indicates a less reliable
-    // mask — same effect on confidence.
-    const lowQualityImagery = solar?.imageryQuality === "LOW";
+  // claudePolygonLatLng was the pixel-space Claude trace projected to
+  // lat/lng. RoofData now carries facet polygons in lat/lng directly,
+  // so this is no longer needed.
 
-    const ageNote = isStaleImagery
-      ? ` · imagery ${Math.round(imageryAgeYears!)}y old`
-      : isAgedImagery
-        ? ` · imagery ${Math.round(imageryAgeYears!)}y old`
-        : lowQualityImagery
-          ? " · imagery LOW quality"
-          : "";
-
-    // Imagery age caps the achievable confidence level. Stale imagery (>5y)
-    // can't be high-confidence even with perfect cross-source agreement —
-    // the underlying ground truth might not be the current roof.
-    if (consensusInfo.agreeingSources >= 3 || (claudeStrong && consensusInfo.agreeingSources >= 1)) {
-      const cappedToModerate = isStaleImagery || lowQualityImagery;
-      return {
-        level: cappedToModerate ? "moderate" : "high",
-        rationale: `${consensusInfo.agreeingSources + 1} sources agree${claudeStrong ? " · verifier passed" : ""}${ageNote}`,
-      };
-    }
-    if (consensusInfo.agreeingSources >= 2 || claudeStrong || (claudeMod && consensusInfo.agreeingSources >= 1)) {
-      const cappedToLow = isStaleImagery && !claudeStrong;
-      return {
-        level: cappedToLow ? "low" : "moderate",
-        rationale: `${consensusInfo.agreeingSources + 1} sources agree${claudeMod ? " · verifier passed" : ""}${ageNote}`,
-      };
-    }
-    if (polygonSource === "ai") {
-      return { level: "low", rationale: `AI fallback (other sources unavailable)${ageNote}` };
-    }
-    if (consensusInfo.agreeingSources === 0 && consensusInfo.sources.length > 0) {
-      return {
-        level: "low",
-        rationale: `Sources disagree (best IoU ${consensusInfo.bestIoU.toFixed(2)})${ageNote}`,
-      };
-    }
-    return {
-      level: isStaleImagery || lowQualityImagery ? "low" : "moderate",
-      rationale: `Single-source polygon${ageNote}`,
-    };
-  }, [polygonSource, claudeVerifications, consensusInfo, solar?.imageryDate, solar?.imageryQuality]);
-
-  // Single-image Claude verification was previously triggered here from
-  // /api/verify-polygon. That endpoint still exists as a fallback but the
-  // 3D viewer now drives multi-view verification via Roof3DViewer's
-  // onMultiViewVerified callback (see /api/verify-polygon-multiview).
-  // Multi-view is strictly more informative — it has top-down + 4 oblique
-  // views with the polygon overlaid, lets Claude check cross-view
-  // consistency. The single-image route remains for callers without 3D
-  // (e.g. ssr / scripts).
-
-  // Drop penetration markers that fall outside our active roof polygon —
-  // Vision occasionally tags vents/skylights on neighboring houses since the
-  // satellite tile spans more than just the target property. Anything we
-  // can't clearly attribute to OUR roof shouldn't drive line-item counts or
-  // confuse the rep on the satellite map.
-  const filteredPenetrations = useMemo(() => {
-    const pens = vision?.penetrations;
-    if (!pens || pens.length === 0) return undefined;
-    if (!activePolygons || activePolygons.length === 0 || address?.lat == null || address?.lng == null) {
-      return pens;
-    }
-    const lat = address.lat;
-    const lng = address.lng;
-    const mPerPx = (156_543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, 20);
-    const cosLat = Math.cos((lat * Math.PI) / 180);
-    const inAny = (penLat: number, penLng: number) => {
-      for (const poly of activePolygons) {
-        let inside = false;
-        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-          const xi = poly[i].lng, yi = poly[i].lat;
-          const xj = poly[j].lng, yj = poly[j].lat;
-          if (
-            yi > penLat !== yj > penLat &&
-            penLng < ((xj - xi) * (penLat - yi)) / (yj - yi) + xi
-          ) {
-            inside = !inside;
-          }
-        }
-        if (inside) return true;
-      }
-      return false;
-    };
-    return pens.filter((p) => {
-      const dx = p.x - 320;
-      const dy = p.y - 320;
-      const penLat = lat + (-dy * mPerPx) / 111_320;
-      const penLng = lng + (dx * mPerPx) / (111_320 * cosLat);
-      return inAny(penLat, penLng);
-    });
-  }, [vision?.penetrations, activePolygons, address?.lat, address?.lng]);
-
-  // Sqft source priority — Solar's photogrammetric measurement wins on
-  // initial load, polygon-derived area takes over only after rep edits.
-  //
-  // Solar API's `roofSegmentStats[].areaMeters2` is the actual 3D surface
-  // area Google computed from stereo aerial imagery — it's measurement,
-  // not tracing. When Solar has segment coverage, that's the truth;
-  // any polygon-shoelace-times-pitch number is a degraded approximation.
-  //
-  // The earlier "always use polygon" approach (commit aa5f5cc) tried to
-  // solve a real problem: Solar undercounts on complex / multi-section
-  // roofs, and a 4,500 sf polygon paired with 1,898 sf line items felt
-  // wrong to the rep. But the cure was worse than the disease: when the
-  // polygon over-traces (catches shadow / driveway / yard), the inflated
-  // sqft now shows directly to the customer. See 5385 Henley Rd Mt Juliet:
-  // polygon caught driveway shadow → 3,960 sf, ~40% above truth.
-  //
-  // Resolution: Solar wins on initial load (handled by the early-return
-  // guard below + the assignment in runEstimate). Once the rep edits the
-  // polygon (livePolygons set), the edit is the truth — recompute from it.
-  // For addresses where Solar has no segments at all, polygon × pitch is
-  // the fallback (handled by `solar?.sqft` being null → guard skipped).
-  // Polygon sources that trace WALL footprint, not roof eaves. These
-  // need a 1.06 overhang multiplier to approximate the roof-material
-  // outline (typical residential eaves project 6-18in past the wall).
-  // The reconciler at /api/sam3-roof already applies this internally
-  // to its returned footprintSqft, but the page recomputes from the
-  // polygon shape (so it stays right after rep edits) — meaning we
-  // must apply the multiplier here whenever the underlying source
-  // traces walls. Mirrors lib/reconcile-roof-polygon.ts EAVE_OVERHANG_FACTOR.
-  //
-  // Eave-traced sources (Solar facets, Solar mask, raw SAM3, Roboflow,
-  // SAM 2, Claude) trace roof material directly → no multiplier.
-  // Once the rep edits (polygonSource === "edited"), we use the frozen
-  // pre-edit value captured by handlePolygonsChanged so the multiplier
-  // persists through edits of MS/OSM polygons.
-  const EAVE_OVERHANG = 1.06;
-  const isWallFootprintSource = useMemo(() => {
-    if (polygonSource === "edited") return editOriginIsWallFootprintRef.current;
-    if (polygonSource === "microsoft-buildings") return true;
-    if (polygonSource === "osm") return true;
-    if (
-      polygonSource === "sam3" &&
-      (sam3Source === "footprint-only" || sam3Source === "footprint-occluded")
-    ) {
-      return true;
-    }
-    return false;
-  }, [polygonSource, sam3Source]);
-
-  // Mirror into a ref so the (forward-declared) handlePolygonsChanged
-  // callback can capture the pre-edit value at the moment of first edit.
-  useEffect(() => {
-    isWallFootprintSourceRef.current = isWallFootprintSource;
-  }, [isWallFootprintSource]);
-
-  useEffect(() => {
-    // Solar's segment-summed sqft is canonical when available + no rep edit.
-    // assumptions.sqft is set from solar.sqft in runEstimate; this guard
-    // prevents a fresh polygon (Solar mask / Roboflow / etc) from stomping
-    // it with a polygon-shoelace estimate. Once the rep edits, livePolygons
-    // is set and the guard releases.
-    if (solar?.sqft && !livePolygons) return;
-    if (!activePolygons || activePolygons.length === 0) return;
-    // Shoelace area in m² (lat/lng → meters via cosLat scale)
-    const M = 111_320;
-    let totalM2 = 0;
-    for (const poly of activePolygons) {
-      if (poly.length < 3) continue;
-      const cLat = poly.reduce((s, v) => s + v.lat, 0) / poly.length;
-      const cosLat = Math.cos((cLat * Math.PI) / 180);
-      let sum = 0;
-      for (let i = 0; i < poly.length; i++) {
-        const a = poly[i];
-        const b = poly[(i + 1) % poly.length];
-        const ax = a.lng * M * cosLat;
-        const ay = a.lat * M;
-        const bx = b.lng * M * cosLat;
-        const by = b.lat * M;
-        sum += ax * by - bx * ay;
-      }
-      totalM2 += Math.abs(sum) / 2;
-    }
-    // Project footprint → roof surface area using the real pitch when
-    // we have it (Solar `pitchDegrees`); fall back to the rep's selected
-    // assumptions.pitch; final fallback is 6/12 (26.57°). Surface =
-    // footprint / cos(pitch).
-    const PITCH_MAP: Record<string, number> = {
-      "4/12": 18.43, "5/12": 22.62, "6/12": 26.57, "7/12": 30.26, "8/12+": 35.0,
-    };
-    const pitchDeg =
-      solar?.pitchDegrees ??
-      PITCH_MAP[assumptions.pitch] ??
-      26.57;
-    const slopeMult = 1 / Math.cos((pitchDeg * Math.PI) / 180);
-    const overhang = isWallFootprintSource ? EAVE_OVERHANG : 1;
-    const sqft = Math.round(totalM2 * 10.7639 * overhang * slopeMult);
-    if (sqft >= 200 && sqft <= 30_000) {
-      setAssumptions((a) => ({ ...a, sqft }));
-    }
-  }, [
-    activePolygons,
-    solar?.sqft,
-    solar?.pitchDegrees,
-    livePolygons,
-    assumptions.pitch,
-    isWallFootprintSource,
-  ]);
-
-  // Auto-derive complexity from polygon shape — strictly geometric, beats
-  // Vision's noisy-thumbnail guess. Vision still wins when it returns
-  // confidence >= 0.8 (set in the Solar+Vision merge below); this fires
-  // for the moderate-confidence cases where the polygon is the better signal.
-  useEffect(() => {
-    if (!activePolygons || activePolygons.length === 0) return;
-    if (vision && vision.confidence >= 0.8) return; // trust strong vision
-    const inferred = inferComplexityFromPolygons(activePolygons);
-    if (inferred && inferred !== assumptions.complexity) {
-      setAssumptions((a) => ({ ...a, complexity: inferred }));
-    }
-  }, [activePolygons, vision, assumptions.complexity]);
+  // ─── Legacy validators / polygon-priority chain — REMOVED ──────────
+  // The wrong-house guard, source-priority useMemo, hallucination check,
+  // coverage gate, absolute-size gate, IoU consensus, etc. all moved
+  // server-side into lib/sources/* + lib/roof-pipeline.ts. RoofData
+  // arrives with a single canonical polygon set and is the source of
+  // truth for everything downstream.
 
   // ─── Tier C unified pricing — priceRoofData ─────────────────────────
   // Replaces buildDetailedEstimate. Driven by the canonical RoofData feed
@@ -1183,16 +324,11 @@ function HomePageInner() {
     return priceRoofData(roofData, pricingInputs);
   }, [roofData, pricingInputs]);
 
-  // Headline totals — derived directly from `priced`. `enabledAddOnsSum`
-  // is intentionally kept separate from `priced` because priceRoofData
-  // already includes add-on contributions in subtotal/total; the legacy
-  // computeBase / computeTotal split treated add-ons as a separate post-
-  // sum on top of the base. We mirror the legacy semantics for the
-  // sticky / output panels by adding add-ons into `total` once.
-  const enabledAddOnsSum = useMemo(
-    () => addOns.filter((a) => a.enabled).reduce((s, x) => s + x.price, 0),
-    [addOns],
-  );
+  // Headline totals — derived directly from `priced`. priceRoofData
+  // already includes add-on contributions in subtotal/total, so we don't
+  // double-add them here. The legacy `enabledAddOns` local (used by the
+  // Estimate object below) still computes the add-on sum separately for
+  // the v1 Estimate.baseLow / baseHigh fields.
   const low = priced ? Math.round(priced.totalLow) : 0;
   const high = priced ? Math.round(priced.totalHigh) : 0;
   const total = priced
@@ -1334,15 +470,6 @@ function HomePageInner() {
     if (!addr.formatted?.trim()) return;
     setAddress(addr);
     setShown(true);
-    setSolar(null);
-    setVision(null);
-    setVisionError("");
-    setOsmBuildingPolygon(null);
-    setSamRefinedPolygon(null);
-    setSolarMaskPolygon(null);
-    setSam3Polygon(null);
-    setSam3Source(null);
-    setSam3InFlight(false); // reset gate on address change / clear
     setLivePolygons(null);
     hasUserEditedRef.current = false;
     editOriginIsWallFootprintRef.current = false;
@@ -1360,184 +487,10 @@ function HomePageInner() {
       return;
     }
 
-    // Fire the unified Tier C pipeline. It serially tries Solar → Vision
-    // sources and returns a single RoofData. Cached for 1h server-side.
-    void runRoofPipelineFetch(addr);
-
-    setVisionLoading(true);
-    const solarPromise = fetch(`/api/solar?lat=${addr.lat}&lng=${addr.lng}`)
-      .then(async (r) => (r.ok ? ((await r.json()) as SolarSummary) : null))
-      .catch(() => null);
-
-    const visionPromise = fetch(`/api/vision?lat=${addr.lat}&lng=${addr.lng}`)
-      .then(async (r) => {
-        if (!r.ok) {
-          const data = await r.json().catch(() => ({}));
-          throw new Error(data.error || `vision_${r.status}`);
-        }
-        return (await r.json()) as RoofVision;
-      })
-      .catch((err) => {
-        setVisionError(err instanceof Error ? err.message : "failed");
-        return null;
-      });
-
-    // OSM building footprint — ground truth from human-traced data when
-    // available. Runs in parallel with solar + vision. Cheap (free public
-    // API) and short-circuits the need to trust an AI polygon for the
-    // ~50-60% of US residential properties OSM has data on.
-    const osmPromise = fetch(`/api/building?lat=${addr.lat}&lng=${addr.lng}`)
-      .then(async (r) => {
-        if (!r.ok) return null;
-        const data = (await r.json()) as {
-          latLng?: Array<{ lat: number; lng: number }>;
-        };
-        return data.latLng && data.latLng.length >= 3 ? data.latLng : null;
-      })
-      .catch(() => null);
-
-    // [Lazy 2026-05-07] Solar mask (Project Sunroof) is now fired only as a
-    // fallback after SAM3 returns null — see the sam3Promise.then block
-    // below. Saves the $0.075 dataLayers cost on the common path where
-    // SAM3 succeeds, and eliminates the "Solar mask renders first then
-    // SAM3 swaps in" flicker.
-
-    // [Phase 1 cleanup 2026-05-07] Off-the-shelf Roboflow Satellite Rooftop
-    // Map call removed — custom SAM3 supersedes it. Route still exists for
-    // emergency rollback (re-add the fetch here if needed). State slot
-    // (`roboflowPolygon`) and priority chain entry kept passive; they'll
-    // never receive data from the page so the chain skips that tier.
-
-    // Microsoft Building Footprints — open-data ML-extracted building outlines,
-    // pre-extracted for the Nashville metro bbox (see lib/microsoft-buildings.ts).
-    // Fills the OSM coverage gap on rural addresses. Returns null outside the
-    // pre-extracted bbox (so this is a noop for non-TN addresses for now).
-    const msBuildingPromise = fetch(`/api/microsoft-building?lat=${addr.lat}&lng=${addr.lng}`)
-      .then(async (r) => {
-        if (!r.ok) return null;
-        const data = (await r.json()) as {
-          polygon?: Array<{ lat: number; lng: number }>;
-        };
-        return data.polygon && data.polygon.length >= 3 ? data.polygon : null;
-      })
-      .catch(() => null);
-
-    // Custom SAM3 (Roboflow Workflow) with server-side GIS reconciliation.
-    // Top-priority polygon source — trained on our service-area imagery.
-    // ~5-10s latency (Roboflow inference + reconciliation), so we fire it
-    // in parallel with everything else and let the priority chain pick it
-    // up when it lands. Falls through silently when the kill switch is
-    // tripped or the route 404s.
-    //
-    // Set the in-flight gate BEFORE the fetch starts. This is what keeps
-    // the polygon priority chain from rendering MS Buildings or OSM
-    // polygons in the 100ms-5s window while SAM3 is still working. The
-    // .then() at the end of the file (sam3Promise.then) clears the flag
-    // regardless of outcome (success or null), unblocking the chain.
-    setSam3InFlight(true);
-    const sam3Promise = fetch(
-      `/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}` +
-        `&address=${encodeURIComponent(addr.formatted)}` +
-        sam3NoCacheSuffix,
-    )
-      .then(async (r) => {
-        if (!r.ok) return null;
-        const data = (await r.json()) as {
-          polygon?: Array<{ lat: number; lng: number }>;
-          source?:
-            | "sam3"
-            | "footprint-only"
-            | "footprint-occluded"
-            | "sam3-no-footprint";
-        };
-        if (!data.polygon || data.polygon.length < 3) return null;
-        return { polygon: data.polygon, source: data.source ?? "sam3" };
-      })
-      .catch(() => null);
-
-    // [Phase 1 cleanup 2026-05-07] Replicate SAM2 (sam-refine) call removed
-    // — custom SAM3 supersedes it. Route + lib/grounded-sam.ts still exist
-    // for emergency rollback. State slot (`samRefinedPolygon`) and
-    // `samRefining` flag stay passive; the "Refining…" badge will never
-    // light up because we no longer toggle it on.
-
-    const [solarData, visionData, osmData] = await Promise.all([
-      solarPromise,
-      visionPromise,
-      osmPromise,
-    ]);
-
-    if (solarData) setSolar(solarData);
-    if (visionData) setVision(visionData);
-    if (osmData) setOsmBuildingPolygon(osmData);
-    setVisionLoading(false);
-
-    // [Phase 1 cleanup] sam-refine and off-the-shelf roboflow result handlers
-    // removed — those promises are no longer fired. Custom SAM3 below
-    // covers the same role with better accuracy and lower latency.
-
-    // MS Building Footprints — same edit-stomp guard.
-    msBuildingPromise.then((msPoly) => {
-      if (msPoly && !hasUserEditedRef.current) setMsBuildingPolygon(msPoly);
-    });
-
-    // SAM3 (custom) primary + lazy Solar mask fallback.
-    // When SAM3 returns null, fire /api/solar-mask in serial as a fallback.
-    // This avoids paying for Solar dataLayers on the common path where
-    // SAM3 succeeds AND eliminates the visual flicker where Solar mask
-    // would render first and then SAM3 would override it.
-    //
-    // The `sam3InFlight` gate clears AS LATE AS POSSIBLE so the
-    // "Generating measurement…" overlay stays up through the entire
-    // chain. Specifically:
-    //   - SAM3 succeeds → clear immediately (we have the winning polygon)
-    //   - SAM3 fails → wait for Solar mask fallback to land before
-    //     clearing, so we don't briefly render "no polygon" between
-    //     SAM3's failure and mask's arrival.
-    sam3Promise.then((sam3Result) => {
-      if (sam3Result) {
-        if (!hasUserEditedRef.current) {
-          setSam3Polygon(sam3Result.polygon);
-          setSam3Source(sam3Result.source);
-        }
-        setSam3InFlight(false);
-        return;
-      }
-      // SAM3 returned nothing — fall back to Solar mask. No need to fire
-      // it earlier since the priority chain would have used SAM3 anyway.
-      fetch(`/api/solar-mask?lat=${addr.lat}&lng=${addr.lng}`)
-        .then(async (r) => {
-          if (!r.ok) return null;
-          const data = (await r.json()) as {
-            latLng?: Array<{ lat: number; lng: number }>;
-          };
-          return data.latLng && data.latLng.length >= 3 ? data.latLng : null;
-        })
-        .catch(() => null)
-        .then((maskPoly) => {
-          if (maskPoly && !hasUserEditedRef.current) setSolarMaskPolygon(maskPoly);
-          // Clear the gate whether mask succeeded or not. If both SAM3
-          // and the mask fallback fail, the priority chain falls through
-          // to MS Buildings / OSM (which by now are already resolved in
-          // state). Clearing here unblocks that final fallback render.
-          setSam3InFlight(false);
-        });
-    });
-
-    setAssumptions((a) => {
-      const next: Assumptions = { ...a };
-      if (solarData?.sqft) next.sqft = solarData.sqft;
-      if (solarData?.pitch) next.pitch = solarData.pitch;
-      if (visionData && visionData.confidence >= 0.5) {
-        const matMap = VISION_MATERIAL_TO_ASSUMPTION[visionData.currentMaterial];
-        if (matMap) next.material = matMap;
-        if (visionData.estimatedAgeYears) next.ageYears = visionData.estimatedAgeYears;
-        next.complexity = visionData.complexity;
-      }
-      if (!next.sqft) next.sqft = estimateRoofSize();
-      if (!next.ageYears) next.ageYears = estimateAge();
-      return next;
-    });
+    // Single unified Tier C pipeline call. Cached for 1h server-side.
+    // RoofData populates sqft / complexity / pitch via the one-shot
+    // seeding effect below; no other client-side orchestration needed.
+    await runRoofPipelineFetch(addr);
   };
 
   /** Merge structured fields from a voice-note into the estimate state.
@@ -1614,8 +567,8 @@ function HomePageInner() {
     baseLow: Math.round(low + enabledAddOns),
     baseHigh: Math.round(high + enabledAddOns),
     isInsuranceClaim,
-    vision: vision ?? undefined,
-    solar: solar ?? undefined,
+    // vision / solar fields intentionally omitted in Tier C — the new
+    // RoofData feed is the single source of truth and lives in EstimateV2.
     detailed: detailed ?? undefined,
     lengths: lengths ?? undefined,
     waste: waste ?? undefined,
@@ -1656,21 +609,10 @@ function HomePageInner() {
     setNotes("");
     setEstimateId(newId());
     setShown(false);
-    setSolar(null);
-    setVision(null);
-    setVisionError("");
     setIsInsuranceClaim(false);
     setPhotos([]);
     setClaim({ carrier: "state-farm" });
     setLivePolygons(null);
-    setOsmBuildingPolygon(null);
-    setSamRefinedPolygon(null);
-    setSolarMaskPolygon(null);
-    setSam3Polygon(null);
-    setSam3Source(null);
-    setRoboflowPolygon(null);
-    setMsBuildingPolygon(null);
-    setClaudeVerifications({});
     setRoofData(null);
     setPipelineError(null);
     roofDataAppliedForAddressRef.current = null;
@@ -1680,30 +622,16 @@ function HomePageInner() {
 
   const mapBadges = (() => {
     const badges: string[] = [];
-    // Labelled "Solar imagery" specifically because this date comes from
-    // Google Solar API's dataset capture, NOT the Static Maps / Maps JS
-    // tile actually rendered on screen. Reps saw the bare "Imagery 2015"
-    // chip next to a 2026-attributed satellite tile and assumed the
-    // image they were looking at was old. The Solar dataset can be
-    // 5-12 years old; the displayed Maps tile is usually current. Both
-    // datapoints matter (Solar age informs analysis confidence), but
-    // the chip needs to say which it's about.
-    if (solar?.imageryDate) badges.push(`Solar imagery ${solar.imageryDate}`);
-    if (solar && solar.imageryQuality !== "UNKNOWN") badges.push(`Quality ${solar.imageryQuality}`);
+    // Tier C: imagery date + source + confidence chip — all from RoofData.
+    if (roofData?.imageryDate) badges.push(`Imagery ${roofData.imageryDate}`);
     if (polygonSource === "edited") badges.push("Edited");
-    else if (polygonSource === "tiles3d") badges.push("3D mesh");
-    else if (polygonSource === "sam3") badges.push("SAM3 (custom)");
-    else if (polygonSource === "solar-mask") badges.push("Solar mask");
-    else if (polygonSource === "roboflow") badges.push("Roof AI");
-    else if (polygonSource === "sam") badges.push("SAM 2 refined");
-    else if (polygonSource === "osm") badges.push("OSM traced");
-    else if (polygonSource === "microsoft-buildings") badges.push("MS Footprints");
-    else if (polygonSource === "ai") badges.push("AI traced");
-    else if (solar?.segmentCount && solar.segmentCount > 0) badges.push(`${solar.segmentCount} segments`);
-    if (solar?.pitch) badges.push(`Pitch ${solar.pitch}`);
-    // Confidence indicator — lets the rep tell at a glance whether the
-    // outline is well-supported (multiple sources agreed + Claude
-    // verified) or whether they should manually double-check it.
+    else if (roofData?.source === "tier-c-solar") badges.push("Solar facets");
+    else if (roofData?.source === "tier-c-vision") badges.push("AI traced");
+    else if (roofData?.source === "tier-b-multiview") badges.push("Multi-view");
+    else if (roofData?.source === "tier-a-lidar") badges.push("LiDAR");
+    if (roofData && roofData.source !== "none" && roofData.totals.facetsCount > 0) {
+      badges.push(`${roofData.totals.facetsCount} facet${roofData.totals.facetsCount === 1 ? "" : "s"}`);
+    }
     if (polygonReady && polygonSource !== "none") {
       const lvl = estimateConfidence.level;
       const marker = lvl === "high" ? "✓" : lvl === "moderate" ? "△" : "⚠";
@@ -1846,7 +774,7 @@ function HomePageInner() {
            then the real SAM3 polygon flicker in late — making them
            assume SAM3 had failed. Holding the overlay through SAM3's
            full settle window eliminates that flicker. */}
-      {(visionLoading || sam3InFlight || pickingLoading) && (
+      {pipelineLoading && (
         <div
           // No backdrop-blur — the filter forces full-page recomposite every
           // frame, which thrashes against Cesium's WebGL canvas underneath
@@ -1856,15 +784,7 @@ function HomePageInner() {
           style={{ background: "rgba(7,9,13,0.88)" }}
           aria-live="polite"
         >
-          <QuantumPulseLoader
-            text={
-              pickingLoading
-                ? "Re-tracing roof"
-                : sam3InFlight && !visionLoading
-                  ? "Tracing roof"
-                  : "Generating"
-            }
-          />
+          <QuantumPulseLoader text="Analyzing roof" />
         </div>
       )}
 
@@ -1876,12 +796,12 @@ function HomePageInner() {
             title="Property"
             caption={address?.formatted}
             trailing={
-              solar?.imageryDate && (
+              roofData?.imageryDate && (
                 <span
                   className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-slate-500"
-                  title="Date of Google Solar API's roof dataset for this location — NOT the date of the satellite tile shown below (that's served by Google Static Maps / Maps JS and is usually current)."
+                  title="Imagery capture date from the pipeline source (Solar API / vision tile)."
                 >
-                  Solar imagery {solar.imageryDate}
+                  Imagery {roofData.imageryDate}
                 </span>
               )
             }
@@ -1911,44 +831,16 @@ function HomePageInner() {
               metaBadges={mapBadges}
               editable={polygonReady && polygonSource !== "none"}
               onPolygonsChanged={handlePolygonsChanged}
-              pitchDegrees={solar?.pitchDegrees ?? null}
-              pickingBuilding={pickingBuilding}
-              onPickBuilding={(clickLat, clickLng) => {
-                if (!address?.lat || !address?.lng) return;
-                setPickingBuilding(false);
-                setPickingLoading(true);
-                fetch(
-                  `/api/sam3-roof?lat=${address.lat}&lng=${address.lng}` +
-                    `&clickLat=${clickLat}&clickLng=${clickLng}` +
-                    `&address=${encodeURIComponent(address.formatted)}`,
-                )
-                  .then(async (r) => {
-                    if (!r.ok) return null;
-                    const data = (await r.json()) as {
-                      polygon?: Array<{ lat: number; lng: number }>;
-                      source?:
-                        | "sam3"
-                        | "footprint-only"
-                        | "footprint-occluded"
-                        | "sam3-no-footprint";
-                    };
-                    if (!data.polygon || data.polygon.length < 3) return null;
-                    return { polygon: data.polygon, source: data.source ?? "sam3" };
-                  })
-                  .then((result) => {
-                    if (result) {
-                      hasUserEditedRef.current = false;
-                      setSam3Polygon(result.polygon);
-                      setSam3Source(result.source);
-                    } else {
-                      console.warn("[page] click-override SAM3 returned no polygon");
-                    }
-                  })
-                  .catch((err) =>
-                    console.warn("[page] click-override SAM3 failed:", err),
-                  )
-                  .finally(() => setPickingLoading(false));
-              }}
+              // Tier C: pitch comes from RoofData totals (average across
+              // facets) rather than Solar API's single per-roof number.
+              pitchDegrees={
+                roofData && roofData.source !== "none"
+                  ? roofData.totals.averagePitchDegrees
+                  : null
+              }
+              // Pin-override / pickingBuilding intentionally dropped —
+              // see TODO above. MapView's pickingBuilding prop is optional;
+              // omitting it disables the pick UI entirely.
             />
             {/* ─── Photorealistic 3D mesh (Google Map Tiles 3D via Cesium) ───
                  Sits in column 2 of the grid, beside MapView in column 1.
@@ -2191,23 +1083,13 @@ function HomePageInner() {
             sourceLabel={
               polygonSource === "edited"
                 ? "Edited"
-                : polygonSource === "sam3"
-                  ? "SAM3"
-                  : polygonSource === "solar-mask"
-                    ? "Solar mask"
-                    : polygonSource === "roboflow"
-                      ? "Roof AI"
-                      : polygonSource === "sam"
-                        ? "SAM 2"
-                        : polygonSource === "osm"
-                          ? "OSM"
-                          : polygonSource === "microsoft-buildings"
-                            ? "MS Footprints"
-                            : polygonSource === "solar"
-                              ? "Solar facets"
-                              : polygonSource === "ai"
-                                ? "AI traced"
-                                : null
+                : polygonSource === "solar"
+                  ? "Solar facets"
+                  : polygonSource === "ai"
+                    ? "AI traced"
+                    : polygonSource === "sam3"
+                      ? "Pipeline"
+                      : null
             }
             confidence={
               polygonSource !== "none" ? estimateConfidence.level : null
@@ -2284,60 +1166,3 @@ function EmptyState() {
   );
 }
 
-/**
- * Map a single-polygon source's vertex count to a "Solar-equivalent" segment
- * count for the line-item / lengths heuristics. A 4-vertex rectangle is one
- * gable; an 8-vertex L is roughly two gables; complex multi-bay houses with
- * 12+ vertices behave like 4-5 facets. Returns 4 (the heuristic default) when
- * we have nothing.
- */
-function polygonVertexComplexity(
-  polys: Array<Array<{ lat: number; lng: number }>> | undefined,
-): number {
-  if (!polys || polys.length === 0) return 4;
-  if (polys.length > 1) return polys.length;
-  const poly = polys[0];
-  if (poly.length < 4) return 2;
-
-  // Count REFLEX vertices (interior angle > 180°). Each reflex vertex
-  // marks a junction between two distinct roof sections — an L-shape has
-  // one reflex vertex (where the L bends), a T-shape has two, etc.
-  // Reflex count is a much better "number of wings" signal than raw
-  // vertex count, which gets confused by jagged segmentation noise.
-  // Project to local meters around centroid for stable cross-products.
-  let cLat = 0;
-  for (const p of poly) cLat += p.lat;
-  cLat /= poly.length;
-  const cosLat = Math.cos((cLat * Math.PI) / 180);
-  const pts = poly.map((p) => ({
-    x: p.lng * 111_320 * cosLat,
-    y: p.lat * 111_320,
-  }));
-  // Polygon orientation via signed shoelace (positive = CCW in this
-  // x-east / y-north frame).
-  let signedArea2 = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const a = pts[i];
-    const b = pts[(i + 1) % pts.length];
-    signedArea2 += a.x * b.y - b.x * a.y;
-  }
-  const ccw = signedArea2 > 0;
-  let reflex = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const prev = pts[(i - 1 + pts.length) % pts.length];
-    const cur = pts[i];
-    const next = pts[(i + 1) % pts.length];
-    const cross =
-      (cur.x - prev.x) * (next.y - cur.y) -
-      (cur.y - prev.y) * (next.x - cur.x);
-    // For a CCW polygon, convex turns are positive cross. Reflex = sign
-    // opposite to orientation. (And reverse for CW.)
-    const isReflex = ccw ? cross < 0 : cross > 0;
-    if (isReflex) reflex++;
-  }
-  // Approximate segment count: each "wing" (one reflex separation)
-  // typically contributes ~2 roof facets (front + back). So segments
-  // ≈ 2 × (reflex + 1). Bounded between 2 (simple gable) and 8.
-  const segments = 2 * (reflex + 1);
-  return Math.max(2, Math.min(8, segments));
-}
