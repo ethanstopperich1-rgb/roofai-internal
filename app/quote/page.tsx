@@ -193,7 +193,10 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
   const [material, setMaterial] = useState<Material>("asphalt-architectural");
   const [addOns, setAddOns] = useState<SimpleAddon[]>(QUOTE_ADDONS);
   const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState<{ leadId: string } | null>(null);
+  const [submitted, setSubmitted] = useState<{
+    leadId: string;
+    proposalId: string;
+  } | null>(null);
   const [submitError, setSubmitError] = useState("");
   /** Public id returned from the step-1 /api/leads call — final submit
    *  updates the same row instead of inserting a duplicate. */
@@ -808,7 +811,7 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
       ) {
         saveEstimateV2(customerEstimate as EstimateV2);
       }
-      setSubmitted({ leadId: data.leadId });
+      setSubmitted({ leadId: data.leadId, proposalId: estimateIdRef.current });
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Failed to submit");
     } finally {
@@ -1028,6 +1031,7 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
         {submitted && (
           <ThankYou
             leadId={submitted.leadId}
+            proposalId={submitted.proposalId}
             range={range}
             onReset={() => {
               // Clear every wizard slot so "another property" lands the
@@ -1753,13 +1757,22 @@ function QuoteStep({
 
 function ThankYou({
   leadId,
+  proposalId,
   range,
   onReset,
 }: {
   leadId: string;
+  /** The persisted proposal's public_id (matches estimateIdRef.current
+   *  and the row stored at /p/{proposalId}). This — not leadId — is the
+   *  id the share link reads from, so we surface it as the reference. */
+  proposalId: string;
   range: { low: number; high: number };
   onReset: () => void;
 }) {
+  // Suppress unused warning — leadId still arrives in case future copy
+  // wants to surface it separately, but the customer-facing reference is
+  // proposalId (the share-link key).
+  void leadId;
   return (
     <div className="space-y-8 float-in">
       <div className="text-center">
@@ -1781,9 +1794,9 @@ function ThankYou({
           You&apos;re all set.
         </h2>
         <p className="text-white/65 text-[14.5px] mt-4 max-w-xl mx-auto">
-          A {BRAND_CONFIG.companyName} partner roofer will reach out shortly. Reference:
+          A {BRAND_CONFIG.companyName} partner roofer will reach out shortly. Proposal reference:
         </p>
-        <div className="font-mono text-[13px] mt-2 select-all iridescent-text">{leadId}</div>
+        <div className="font-mono text-[13px] mt-2 select-all iridescent-text">{proposalId}</div>
         {/* Inbound number — Noland's brand DID. Customers who'd rather
             call IN than wait for the outbound see this immediately on
             the confirmation screen. Click-to-call works on mobile; on
