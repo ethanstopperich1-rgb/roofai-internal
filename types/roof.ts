@@ -134,6 +134,21 @@ export interface RoofData {
    *  type so older fixtures + the v1 estimate-loader shim don't have to
    *  set it — the field is strictly additive. */
   outlinePolygon?: Array<{ lat: number; lng: number }> | null;
+  /** Cross-source measurement baseline. When the winning source is Tier A
+   *  (LiDAR), we still capture what Tier C Solar said about the same roof
+   *  so the UI can show an "X agrees with Y" trust signal. Populated by
+   *  the pipeline when both sources resolved during the same run.
+   *  Strictly additive / optional — older payloads, degraded results, and
+   *  Tier C/D primaries leave this null. */
+  crossSourceBaseline?: {
+    solar?: {
+      sqft: number | null;
+      pitchDegrees: number | null;
+      segmentCount: number;
+      imageryDate: string | null;
+      imageryQuality: string;
+    } | null;
+  } | null;
 }
 
 export interface PricingInputs {

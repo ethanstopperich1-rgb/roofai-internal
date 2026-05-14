@@ -43,6 +43,7 @@ import type {
 } from "@/types/roof";
 import { priceRoofData } from "@/lib/roof-engine";
 import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
+import MeasurementVerification from "@/components/roof/MeasurementVerification";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import { BRAND_CONFIG } from "@/lib/branding";
 
@@ -1766,6 +1767,7 @@ function QuoteStep({
           the wizard usable. */}
       {hasPricedV2 && roofData && (
         <>
+          <MeasurementVerification data={roofData} variant="customer" />
           <RoofTotalsCard data={roofData} />
           <DetectedFeaturesPanel data={roofData} variant="customer" />
         </>

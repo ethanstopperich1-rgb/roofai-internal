@@ -76,6 +76,7 @@ import {
 } from "@/lib/sources/multiview-source";
 import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
+import MeasurementVerification from "@/components/roof/MeasurementVerification";
 import { FacetList } from "@/components/roof/FacetList";
 import { saveEstimateV2 } from "@/lib/storage";
 import { DEFAULT_ADDONS, computeBase, computeTotal } from "@/lib/pricing";
@@ -1458,6 +1459,7 @@ function HomePageInner() {
                   RoofData (single canonical feed). */}
               {roofData && roofData.source !== "none" && (
                 <>
+                  <MeasurementVerification data={roofData} variant="rep" />
                   <RoofTotalsCard data={roofData} />
                   <DetectedFeaturesPanel data={roofData} variant="rep" />
                   {priced && <FacetList data={roofData} priced={priced} />}

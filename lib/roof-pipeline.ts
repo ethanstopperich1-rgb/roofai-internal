@@ -233,6 +233,23 @@ export async function runRoofPipeline(opts: {
   }
 
   primary.diagnostics.attempts = attempts;
+
+  // Cross-source baseline: when Tier A wins, capture what Tier C Solar
+  // said about the same roof so the UI can show a measurement-agreement
+  // trust signal. The Solar hint was already fetched for the parcel
+  // polygon — re-use it rather than firing another request.
+  if (primary.source === "tier-a-lidar" && solarHint) {
+    primary.crossSourceBaseline = {
+      solar: {
+        sqft: solarHint.sqft,
+        pitchDegrees: solarHint.pitchDegrees,
+        segmentCount: solarHint.segmentCount,
+        imageryDate: solarHint.imageryDate,
+        imageryQuality: solarHint.imageryQuality,
+      },
+    };
+  }
+
   const latencyMs = Date.now() - startedAt;
   console.log("[roof-pipeline] pipeline_source_picked", {
     source: primary.source,
