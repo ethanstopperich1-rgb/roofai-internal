@@ -65,22 +65,7 @@ def check_3dep_coverage(*, lat: float, lng: float) -> dict[str, Any]:
     # `s3://usgs-lidar-public/usgs-3dep-mvt-tindex.gpkg` once we have
     # geopandas in the image.
     state_prefixes = _state_prefix_candidates(lat=lat, lng=lng)
-    found: list[dict[str, Any]] = []
-    for prefix in state_prefixes:
-        try:
-            response = s3.list_objects_v2(
-                Bucket="prd-tnm", Prefix=prefix, MaxKeys=50,
-            )
-        except Exception:  # noqa: BLE001
-            continue
-        for obj in response.get("Contents", []):
-            if obj["Key"].endswith(".laz") or obj["Key"].endswith(".las"):
-                found.append({
-                    "key": obj["Key"],
-                    "last_modified": obj["LastModified"].isoformat() if obj.get("LastModified") else None,
-                })
-
-    if not found:
+    if not state_prefixes:
         return {
             "covered": False,
             "tile_ids": [],
@@ -89,16 +74,61 @@ def check_3dep_coverage(*, lat: float, lng: float) -> dict[str, Any]:
             "coverage_pct": 0.0,
         }
 
-    # Most recent flight date as capture_date.
-    dated = [f for f in found if f.get("last_modified")]
-    capture_date = max((f["last_modified"] for f in dated), default=None)
+    # Coverage probe — verify the project prefix exists in S3 with
+    # ANY key (even a project shapefile counts). We don't try to find
+    # .laz files in the listing here because:
+    #   1. Florida alone has 20+ projects under `FL_`; alphabetical
+    #      listing with MaxKeys=50 returns only metadata/browse JPGs
+    #      from the first project, never reaching .laz tiles.
+    #   2. Spatial filtering (does THIS lat/lng land in THIS project?)
+    #      requires the GeoPackage tile index, which we don't carry
+    #      in the Modal image yet (TODO above).
+    # Strategy: confirm SOMETHING exists under the state prefix (so we
+    # know USGS publishes data there), then defer to pull_lidar.py for
+    # actual per-parcel tile intersection. If no tiles overlap the
+    # parcel bbox, pull_lidar.py returns empty and the orchestrator
+    # falls through to Tier C — same end-state as a covered=False
+    # return, but it gives addresses inside real coverage a chance to
+    # succeed when they should.
+    project_keys: list[str] = []
+    capture_date: str | None = None
+    for prefix in state_prefixes:
+        try:
+            response = s3.list_objects_v2(
+                Bucket="prd-tnm",
+                Prefix=prefix,
+                Delimiter="/",
+                MaxKeys=200,
+            )
+        except Exception as err:  # noqa: BLE001
+            log.warning("3dep coverage list failed for %s: %s", prefix, err)
+            continue
+        for common in response.get("CommonPrefixes", []):
+            project_keys.append(common["Prefix"])
+        for obj in response.get("Contents", []):
+            mod = obj.get("LastModified")
+            if mod:
+                iso = mod.isoformat()
+                if capture_date is None or iso > capture_date:
+                    capture_date = iso
+
+    if not project_keys:
+        return {
+            "covered": False,
+            "tile_ids": [],
+            "project_name": None,
+            "capture_date": None,
+            "coverage_pct": 0.0,
+        }
 
     return {
         "covered": True,
-        "tile_ids": [f["key"] for f in found],
-        "project_name": _infer_project_name(found[0]["key"]),
+        # Hand off the project prefix list; pull_lidar.py will intersect
+        # with the parcel bbox to find actual tile keys.
+        "tile_ids": project_keys,
+        "project_name": _infer_project_name(project_keys[0]),
         "capture_date": capture_date,
-        "coverage_pct": 1.0,  # conservative; refine with shapefile intersection
+        "coverage_pct": 1.0,  # optimistic; refine when GeoPackage index lands
     }
 
 
