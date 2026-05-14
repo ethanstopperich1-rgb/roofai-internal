@@ -28,6 +28,7 @@ import ResultsPanel from "@/components/ResultsPanel";
 import EstimateSticky from "@/components/EstimateSticky";
 import OutputButtons from "@/components/OutputButtons";
 import MapView from "@/components/MapView";
+import ConfirmHomePin from "@/components/ConfirmHomePin";
 import InsightsPanel from "@/components/InsightsPanel";
 import PropertyContextPanel from "@/components/PropertyContextPanel";
 import StormHistoryCard from "@/components/StormHistoryCard";
@@ -134,6 +135,12 @@ function HomePageInner() {
     searchParams.get("nocache") === "1" ? "&nocache=1" : "";
   const [addressText, setAddressText] = useState("");
   const [address, setAddress] = useState<AddressInfo | null>(null);
+  // Pin-confirmation flow. When set, the page renders <ConfirmHomePin>
+  // instead of kicking off the estimate. The pending address is the
+  // geocoded result from Places autocomplete; on confirm we replace its
+  // lat/lng with the (possibly user-dragged or smart-corrected) point
+  // and feed it into runEstimate.
+  const [pendingAddress, setPendingAddress] = useState<AddressInfo | null>(null);
   const [assumptions, setAssumptions] = useState<Assumptions>(DEFAULT_ASSUMPTIONS);
   const [addOns, setAddOns] = useState<AddOn[]>(DEFAULT_ADDONS);
   const [staff, setStaff] = useState("");
@@ -1178,6 +1185,26 @@ function HomePageInner() {
     [assumptions.sqft, assumptions.complexity],
   );
 
+  /**
+   * Gate between address selection and the estimate pipeline. When the
+   * incoming address has a lat/lng (= user picked from autocomplete or we
+   * geocoded successfully), we route it through the pin-confirmation step
+   * first. Addresses without coords (manual typing, autocomplete offline)
+   * skip the confirmation — the pipeline already handles those via its
+   * fallback paths.
+   */
+  const requestEstimate = (explicitAddr?: AddressInfo) => {
+    const addr: AddressInfo =
+      explicitAddr ?? address ?? { formatted: addressText.trim() };
+    if (!addr.formatted?.trim()) return;
+    if (addr.lat == null || addr.lng == null) {
+      // No coords → no map to confirm against. Run estimate directly.
+      void runEstimate(addr);
+      return;
+    }
+    setPendingAddress(addr);
+  };
+
   const runEstimate = async (explicitAddr?: AddressInfo) => {
     // Accept an explicit address from the autocomplete pick so we don't
     // race with React state. Falls back to current state for the
@@ -1556,6 +1583,29 @@ function HomePageInner() {
 
   return (
     <div className="space-y-8 sm:space-y-10">
+      {pendingAddress && pendingAddress.lat != null && pendingAddress.lng != null && (
+        <div className="fixed inset-0 z-[200] bg-black/95">
+          <ConfirmHomePin
+            address={pendingAddress.formatted}
+            geocodedLatLng={{
+              lat: pendingAddress.lat,
+              lng: pendingAddress.lng,
+            }}
+            onConfirm={(confirmed) => {
+              const finalAddr: AddressInfo = {
+                ...pendingAddress,
+                lat: confirmed.lat,
+                lng: confirmed.lng,
+              };
+              setPendingAddress(null);
+              void runEstimate(finalAddr);
+            }}
+            onCancel={() => {
+              setPendingAddress(null);
+            }}
+          />
+        </div>
+      )}
       {/* Floating voice-note recorder — mounts once the rep has loaded
           an address. Clicking it captures from the mic, ships to
           /api/voice-note for Whisper transcription + Claude structuring,
@@ -1627,7 +1677,7 @@ function HomePageInner() {
           value={addressText}
           onChange={setAddressText}
           onSelect={setAddress}
-          onSubmit={runEstimate}
+          onSubmit={requestEstimate}
         />
 
         {/* Keyboard discoverability strip — surfaces the shortcuts the
