@@ -2,28 +2,26 @@
 services/roof-lidar/coverage_check.py
 
 Decides whether the USGS 3DEP LiDAR archive has point cloud coverage
-for a given lat/lng, and if so returns the tile IDs that intersect a
-~500m bbox around the address plus the most recent capture date.
+for a given lat/lng, and returns the tile download URLs that intersect
+a ~500m bbox around the address plus the most recent capture date.
 
-3DEP is published in S3 buckets organized by Project → Workunit →
-LAZ tiles. The authoritative manifest is at:
+PRIMARY DATA SOURCE — USGS National Map TNM Access API:
 
-    https://www.usgs.gov/tools/3dep-lidar-explorer
+    https://tnmaccess.nationalmap.gov/api/v1/products
 
-For programmatic access we use the AWS open-data registry:
+This is the same REST endpoint that powers the USGS National Map
+Viewer. It accepts a bbox query and returns matching products
+(including Lidar Point Cloud) with download URLs, capture dates, and
+size metadata. Much simpler — and CORRECT — than the previous attempt
+of listing S3 prefixes by state (which silently failed for FL because
+the project structure is nested several levels deep and the first 50
+keys alphabetically are metadata/browse JPGs, not .laz tiles).
 
-    s3://prd-tnm/StagedProducts/Elevation/LPC/Projects/
-
-Each project has a `metadata` folder with project-level WKT bounding
-polygons and a per-tile shapefile index. This module reads the
-projects index (cached locally for 24h) and finds projects that
-contain the query point, then returns their tile ID list.
-
-For production tuning:
-- TODO: the project shapefile index is large (~50MB); subset to a
-  state-level cache to keep cold-start under 5s.
-- TODO: Florida has the post-hurricane statewide program — prefer it
-  over the smaller county-level projects when both cover the same point.
+CONUS coverage is published at https://prd-tnm.s3.amazonaws.com/ under
+`StagedProducts/Elevation/LPC/Projects/`. The TNM API maps a bbox to a
+list of tiles; this function returns those tiles' direct-HTTPS
+downloadURLs which pull_lidar.py fetches over HTTPS (no S3 client
+needed for the data retrieval — TNM serves on rockyweb.usgs.gov).
 """
 
 from __future__ import annotations
@@ -33,137 +31,122 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+TNM_API_URL = "https://tnmaccess.nationalmap.gov/api/v1/products"
+# Half-extent in meters for the bbox we send to TNM. Residential
+# parcels are typically <50m across; 250m gives margin for the 4
+# adjacent tiles a flight stores them in. 500m would pull in
+# neighbouring tiles unnecessarily.
+BBOX_HALF_EXTENT_M = 250
+
 
 def check_3dep_coverage(*, lat: float, lng: float) -> dict[str, Any]:
     """Return dict with keys:
         covered: bool
-        tile_ids: list[str]           — LAZ tile keys in S3
-        project_name: str | None
+        tile_ids: list[str]           — Direct HTTPS download URLs for
+                                        each LAZ tile that intersects
+                                        the parcel bbox. pull_lidar.py
+                                        fetches these directly.
+        project_name: str | None      — USGS project slug
+                                        (e.g. "FL_Peninsular_FDEM_2018_D19_DRRA")
         capture_date: str | None      — ISO date of the flight
-        coverage_pct: float           — fraction of the 500m bbox covered (1.0 = full)
+                                        (publicationDate from TNM)
+        coverage_pct: float           — fraction of the bbox covered.
+                                        1.0 when TNM returned ≥1 tile.
     """
-    # Lazy import — boto3 is heavy and only needed when actually checking.
     try:
-        import boto3  # noqa: PLC0415
-        from botocore import UNSIGNED  # noqa: PLC0415
-        from botocore.config import Config  # noqa: PLC0415
+        import requests  # noqa: PLC0415
     except ImportError as err:
-        raise RuntimeError(f"boto3 not installed: {err}") from err
+        raise RuntimeError(f"requests not installed: {err}") from err
 
-    s3 = boto3.client(
-        "s3",
-        config=Config(signature_version=UNSIGNED, region_name="us-west-2"),
+    bbox = _bbox_around(lat=lat, lng=lng, half_extent_m=BBOX_HALF_EXTENT_M)
+    bbox_str = (
+        f"{bbox['min_lng']},{bbox['min_lat']},{bbox['max_lng']},{bbox['max_lat']}"
     )
 
-    # The 3DEP projects manifest lists every project's bbox in
-    # `prd-tnm/StagedProducts/Elevation/metadata/`. For the v1 build we
-    # short-circuit: query the bucket prefix that contains the lat-tile
-    # for this state. This is a heuristic — production should read the
-    # GeoPackage projects index — but it's enough for the first deploy.
-    #
-    # TODO: replace heuristic-prefix list with proper index lookup using
-    # `s3://usgs-lidar-public/usgs-3dep-mvt-tindex.gpkg` once we have
-    # geopandas in the image.
-    state_prefixes = _state_prefix_candidates(lat=lat, lng=lng)
-    if not state_prefixes:
-        return {
-            "covered": False,
-            "tile_ids": [],
-            "project_name": None,
-            "capture_date": None,
-            "coverage_pct": 0.0,
-        }
+    params = {
+        "datasets": "Lidar Point Cloud (LPC)",
+        "bbox": bbox_str,
+        "prodFormats": "LAS,LAZ",
+        "max": 25,  # cap pulls — 1-4 typical for a residential parcel
+    }
+    try:
+        response = requests.get(TNM_API_URL, params=params, timeout=15)
+        response.raise_for_status()
+    except Exception as err:  # noqa: BLE001
+        log.warning("TNM API request failed: %s", err)
+        return _no_coverage()
 
-    # Coverage probe — verify the project prefix exists in S3 with
-    # ANY key (even a project shapefile counts). We don't try to find
-    # .laz files in the listing here because:
-    #   1. Florida alone has 20+ projects under `FL_`; alphabetical
-    #      listing with MaxKeys=50 returns only metadata/browse JPGs
-    #      from the first project, never reaching .laz tiles.
-    #   2. Spatial filtering (does THIS lat/lng land in THIS project?)
-    #      requires the GeoPackage tile index, which we don't carry
-    #      in the Modal image yet (TODO above).
-    # Strategy: confirm SOMETHING exists under the state prefix (so we
-    # know USGS publishes data there), then defer to pull_lidar.py for
-    # actual per-parcel tile intersection. If no tiles overlap the
-    # parcel bbox, pull_lidar.py returns empty and the orchestrator
-    # falls through to Tier C — same end-state as a covered=False
-    # return, but it gives addresses inside real coverage a chance to
-    # succeed when they should.
-    project_keys: list[str] = []
-    capture_date: str | None = None
-    for prefix in state_prefixes:
-        try:
-            response = s3.list_objects_v2(
-                Bucket="prd-tnm",
-                Prefix=prefix,
-                Delimiter="/",
-                MaxKeys=200,
-            )
-        except Exception as err:  # noqa: BLE001
-            log.warning("3dep coverage list failed for %s: %s", prefix, err)
+    payload = response.json()
+    items = payload.get("items", []) or []
+    if not items:
+        return _no_coverage()
+
+    # Each item has downloadURL + publicationDate. Filter to LAZ/LAS
+    # only (TNM occasionally returns related artefacts).
+    tiles: list[dict[str, Any]] = []
+    for item in items:
+        url = item.get("downloadURL")
+        fmt = (item.get("format") or "").upper()
+        if not url:
             continue
-        for common in response.get("CommonPrefixes", []):
-            project_keys.append(common["Prefix"])
-        for obj in response.get("Contents", []):
-            mod = obj.get("LastModified")
-            if mod:
-                iso = mod.isoformat()
-                if capture_date is None or iso > capture_date:
-                    capture_date = iso
+        if fmt not in ("LAZ", "LAS"):
+            continue
+        tiles.append({
+            "url": url,
+            "publicationDate": item.get("publicationDate"),
+            "title": item.get("title"),
+            "sizeInBytes": item.get("sizeInBytes"),
+        })
 
-    if not project_keys:
-        return {
-            "covered": False,
-            "tile_ids": [],
-            "project_name": None,
-            "capture_date": None,
-            "coverage_pct": 0.0,
-        }
+    if not tiles:
+        return _no_coverage()
+
+    capture_date = max(
+        (t["publicationDate"] for t in tiles if t.get("publicationDate")),
+        default=None,
+    )
+    project_name = _infer_project_name(tiles[0]["url"])
 
     return {
         "covered": True,
-        # Hand off the project prefix list; pull_lidar.py will intersect
-        # with the parcel bbox to find actual tile keys.
-        "tile_ids": project_keys,
-        "project_name": _infer_project_name(project_keys[0]),
+        "tile_ids": [t["url"] for t in tiles],
+        "project_name": project_name,
         "capture_date": capture_date,
-        "coverage_pct": 1.0,  # optimistic; refine when GeoPackage index lands
+        "coverage_pct": 1.0,
     }
 
 
-def _state_prefix_candidates(*, lat: float, lng: float) -> list[str]:
-    """Heuristic mapping from lat/lng → likely S3 project prefixes.
+def _no_coverage() -> dict[str, Any]:
+    return {
+        "covered": False,
+        "tile_ids": [],
+        "project_name": None,
+        "capture_date": None,
+        "coverage_pct": 0.0,
+    }
 
-    Florida (Voxaris's core market) is well-covered by FEMA / USGS
-    post-hurricane statewide programs. CONUS-wide coverage is fragmented
-    across hundreds of projects, so a fuzzy state-level lookup avoids
-    listing the entire 50TB bucket on every request.
 
-    TODO(post-deploy): replace with a real GeoPackage index lookup.
+def _bbox_around(*, lat: float, lng: float, half_extent_m: float) -> dict[str, float]:
+    """Small WGS84 bbox using local-flat-earth approximation. Good
+    enough for the ±250m TNM query — we're not doing precise geodesy."""
+    import math  # noqa: PLC0415
+    lat_per_m = 1.0 / 111_320.0
+    lng_per_m = 1.0 / (111_320.0 * math.cos(math.radians(lat)))
+    dlat = half_extent_m * lat_per_m
+    dlng = half_extent_m * lng_per_m
+    return {
+        "min_lat": lat - dlat,
+        "max_lat": lat + dlat,
+        "min_lng": lng - dlng,
+        "max_lng": lng + dlng,
+    }
+
+
+def _infer_project_name(url: str) -> str | None:
+    """Pull the project slug out of a TNM download URL like
+    https://rockyweb.usgs.gov/.../Projects/FL_Peninsular_FDEM_2018_D19_DRRA/...
     """
-    # Coarse state buckets — only Florida + common Voxaris demo areas
-    # for v1. Expand as the service rolls out to new markets.
-    candidates: list[str] = []
-    if 24 <= lat <= 31 and -88 <= lng <= -79:  # Florida-ish
-        candidates.append("StagedProducts/Elevation/LPC/Projects/FL_")
-    if 30 <= lat <= 37 and -101 <= lng <= -93:  # Texas-ish
-        candidates.append("StagedProducts/Elevation/LPC/Projects/TX_")
-    if 41 <= lat <= 49 and -97 <= lng <= -89:  # Minnesota-ish
-        candidates.append("StagedProducts/Elevation/LPC/Projects/MN_")
-    if not candidates:
-        # Generic catch — listing across all projects is too expensive,
-        # so we just signal "unknown state, look manually" by returning
-        # nothing. The api.py wrapper treats this as no-coverage and
-        # falls through to Tier B/C.
-        candidates.append("StagedProducts/Elevation/LPC/Projects/")
-    return candidates
-
-
-def _infer_project_name(key: str) -> str | None:
-    """Pull the project slug out of an S3 key like
-    `StagedProducts/Elevation/LPC/Projects/FL_Peninsular_2018_B19/...`."""
-    parts = key.split("/")
+    parts = url.split("/")
     try:
         idx = parts.index("Projects")
         return parts[idx + 1] if idx + 1 < len(parts) else None

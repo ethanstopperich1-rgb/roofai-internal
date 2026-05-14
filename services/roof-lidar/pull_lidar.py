@@ -1,13 +1,25 @@
 """
 services/roof-lidar/pull_lidar.py
 
-Fetch LAS/LAZ tiles from the USGS 3DEP S3 bucket, decompress, return
-the concatenated point cloud as a NumPy array.
+Fetch LAS/LAZ tiles directly from USGS 3DEP HTTPS endpoints (rockyweb.usgs.gov),
+decompress with laspy, reproject to WGS84 lat/lng, and return the
+concatenated point cloud filtered to a small bbox around the address.
 
 The Modal function mounts a persistent volume at `cache_root` so
-fetched tiles survive 24h between calls. Cache key is the tile S3 key
+fetched tiles survive 24h between calls. Cache key is the tile URL
 hashed; cache invalidation isn't needed within 24h because 3DEP files
 are immutable once published.
+
+WHY HTTPS, NOT S3: USGS publishes 3DEP under prd-tnm S3 but also serves
+the same content via direct HTTPS (rockyweb.usgs.gov). The TNM Access
+API (used by coverage_check.py) returns HTTPS URLs, not S3 keys, so
+HTTPS is the consistent pull path. No anonymous S3 client needed.
+
+WHY CRS REPROJECTION: USGS LAZ files store coordinates in a state-plane
+or UTM projection encoded in the LAS header CRS. A naive XY-as-lng-lat
+filter (the previous implementation) places points thousands of km off
+in the wrong hemisphere. We use laspy's CRS parse + pyproj.Transformer
+to reproject every point to WGS84 lat/lng before bbox filtering.
 """
 
 from __future__ import annotations
@@ -20,9 +32,6 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# Anonymous S3 client (3DEP is a public bucket).
-_BUCKET = "prd-tnm"
-
 
 def fetch_lidar_for_bbox(
     *,
@@ -32,63 +41,73 @@ def fetch_lidar_for_bbox(
     cache_root: str | None = None,
 ) -> dict[str, Any]:
     """Return a dict with:
-        xyz: numpy.ndarray of shape (N, 3) — points in WGS84 lat/lng/alt
+        xyz: numpy.ndarray of shape (N, 3) — points in WGS84
+            [lng, lat, alt_meters]
         classification: numpy.ndarray of shape (N,) — LAS class codes
         bbox: dict with min/max lat/lng/alt
 
-    Filters to a 500m bbox around (lat, lng) before returning to keep
-    downstream memory bounded for sub-suburban parcels.
+    `tile_ids` are HTTPS download URLs (from coverage_check.py / TNM
+    API). Points are filtered to a 500m bbox around (lat, lng) to keep
+    downstream memory bounded for residential parcels.
     """
     try:
-        import boto3  # noqa: PLC0415
-        from botocore import UNSIGNED  # noqa: PLC0415
-        from botocore.config import Config  # noqa: PLC0415
+        import requests  # noqa: PLC0415
         import numpy as np  # noqa: PLC0415
         import laspy  # noqa: PLC0415
+        import pyproj  # noqa: PLC0415
     except ImportError as err:
         raise RuntimeError(f"required dep missing: {err}") from err
 
     if not tile_ids:
         raise ValueError("no tile_ids supplied")
 
-    s3 = boto3.client(
-        "s3", config=Config(signature_version=UNSIGNED, region_name="us-west-2"),
-    )
-
-    # Limit to the first 4 tiles (large flights have hundreds; 4 tiles
-    # at ~250m each is enough to cover a residential parcel).
+    # Limit to the first 4 tiles. Most residential parcels fit on a
+    # single tile; we pull a few in case the parcel straddles edges.
     pulled: list[Any] = []
-    for tile_key in tile_ids[:4]:
-        local_path = _ensure_cached_tile(s3, tile_key, cache_root)
+    for tile_url in tile_ids[:4]:
+        local_path = _ensure_cached_tile(tile_url, cache_root)
         try:
             las = laspy.read(local_path)
             pulled.append(las)
         except Exception as err:  # noqa: BLE001
-            log.warning("failed to parse %s: %s", tile_key, err)
+            log.warning("failed to parse %s: %s", tile_url, err)
 
     if not pulled:
         raise RuntimeError("no tiles parseable")
 
-    # Concatenate raw points + classifications.
+    # Concatenate raw points + classifications, reprojecting from each
+    # LAS's native CRS to WGS84 (lng, lat).
     all_xyz: list[Any] = []
     all_class: list[Any] = []
     for las in pulled:
-        xyz = np.vstack((las.x, las.y, las.z)).T
+        src_xyz = np.vstack((las.x, las.y, las.z)).T  # (N, 3) in native CRS
+        try:
+            src_crs = las.header.parse_crs()
+        except Exception as err:  # noqa: BLE001
+            log.warning("CRS parse failed for tile: %s", err)
+            src_crs = None
+
+        if src_crs is None:
+            log.warning(
+                "tile missing CRS; treating XY as already lng/lat — "
+                "this will produce wrong points for state-plane/UTM tiles",
+            )
+            xyz = src_xyz
+        else:
+            transformer = pyproj.Transformer.from_crs(
+                src_crs, "EPSG:4326", always_xy=True,
+            )
+            xs, ys = transformer.transform(src_xyz[:, 0], src_xyz[:, 1])
+            xyz = np.column_stack([xs, ys, src_xyz[:, 2]])
+
         all_xyz.append(xyz)
         all_class.append(np.asarray(las.classification))
+
     xyz = np.vstack(all_xyz)
     classification = np.concatenate(all_class)
 
-    # LAS coordinates may be in a state-plane / UTM projection; convert
-    # to WGS84 lat/lng using the LAS file's CRS (laspy exposes via
-    # `parse_crs()`). For v1 we assume the LAS is already lat/lng — this
-    # is wrong for many real LAS files, hence the TODO. The bbox filter
-    # below uses the raw XY as if they were lng/lat which works for
-    # already-WGS84 data and is *visibly broken* for projected data,
-    # which is the right surface signal for the user to swap in proper
-    # CRS handling.
-    # TODO(post-deploy): use pyproj.Transformer with the LAS CRS to
-    # reproject to WGS84 before bbox filtering.
+    # Filter to 500m bbox around the input address — WGS84 lng/lat now
+    # that everything's been reprojected.
     bbox = _bbox_around(lat=lat, lng=lng, half_extent_m=250)
     keep = (
         (xyz[:, 0] >= bbox["min_lng"]) & (xyz[:, 0] <= bbox["max_lng"]) &
@@ -103,19 +122,35 @@ def fetch_lidar_for_bbox(
     }
 
 
-def _ensure_cached_tile(s3: Any, key: str, cache_root: str | None) -> str:
-    """Download tile to local disk if not already cached. Returns local path."""
+def _ensure_cached_tile(tile_url: str, cache_root: str | None) -> str:
+    """Download tile to local disk if not already cached. Returns local path.
+
+    Streams in 8MB chunks because 3DEP LAZ tiles are routinely 200-500MB
+    and we don't want to hold the whole thing in memory before writing.
+    """
+    import requests  # noqa: PLC0415
+
     if not cache_root:
         cache_root = "/tmp/voxaris-lidar"
     os.makedirs(cache_root, exist_ok=True)
-    h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-    suffix = ".laz" if key.endswith(".laz") else ".las"
-    local_path = os.path.join(cache_root, f"{h}{suffix}")
+    h = hashlib.sha1(tile_url.encode("utf-8")).hexdigest()[:16]
+    # Honour the actual file extension from the URL — defaults to .laz.
+    ext = ".laz"
+    for candidate in (".laz", ".las"):
+        if tile_url.lower().endswith(candidate):
+            ext = candidate
+            break
+    local_path = os.path.join(cache_root, f"{h}{ext}")
     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+        log.info("cache hit: %s", local_path)
         return local_path
-    log.info("downloading %s → %s", key, local_path)
-    with open(local_path, "wb") as out:
-        s3.download_fileobj(_BUCKET, key, out)
+    log.info("downloading %s → %s", tile_url, local_path)
+    with requests.get(tile_url, stream=True, timeout=120) as resp:
+        resp.raise_for_status()
+        with open(local_path, "wb") as out:
+            for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                if chunk:
+                    out.write(chunk)
     return local_path
 
 
