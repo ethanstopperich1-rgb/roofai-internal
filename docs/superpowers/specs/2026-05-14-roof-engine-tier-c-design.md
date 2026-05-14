@@ -41,8 +41,10 @@ export interface RoofData {
   /** Address + lat/lng of the resolved building center. */
   address: { formatted: string; lat: number; lng: number; zip?: string };
 
-  /** Provenance — which source produced this primary data. */
-  source: "tier-a-lidar" | "tier-b-multiview" | "tier-c-solar" | "tier-c-vision";
+  /** Provenance — which source produced this primary data.
+   *  "none" = all sources failed; this is a degraded RoofData (see §3.8).
+   *  Consumers MUST branch on source === "none" before reading facets/edges. */
+  source: "tier-a-lidar" | "tier-b-multiview" | "tier-c-solar" | "tier-c-vision" | "none";
 
   /** Refinements applied on top of the primary source. Empty in Tier C. */
   refinements: Array<"multiview-obliques">;
@@ -59,9 +61,9 @@ export interface RoofData {
   /** Vision-estimated age bucket; null when unknown. */
   ageBucket: "new" | "moderate" | "aged" | "very-aged" | null;
 
-  /** Per-facet detail. Always non-empty. */
+  /** Per-facet detail. Non-empty when source !== "none". */
   facets: Facet[];
-  /** Classified edges between facets + perimeter. Always non-empty. */
+  /** Classified edges between facets + perimeter. Non-empty when source !== "none". */
   edges: Edge[];
   /** Detected objects on the roof. Empty when none detected; never absent. */
   objects: RoofObject[];
@@ -227,7 +229,12 @@ export async function runRoofPipeline(opts: {
       });
     }
   }
-  if (!primary) throw new Error("All Tier C sources failed");
+  if (!primary) {
+    // All sources failed. Return a degraded RoofData so consumers can render
+    // a clean "we couldn't analyze this address" state instead of catching
+    // an exception. See §3.8.
+    return makeDegradedRoofData({ address: opts.address, attempts });
+  }
 
   primary.diagnostics.attempts = attempts;
   return primary;
@@ -321,6 +328,64 @@ RoofData.confidence =
 ```
 
 Tier B refinement bumps to `min(0.95, confidence + 0.10)`. Tier A overrides to ≥ 0.90 regardless.
+
+### 3.8 Pipeline-wide failure — degraded RoofData
+
+When every registered source returns `null` or throws, `runRoofPipeline` does **not** throw. It returns a degraded RoofData with `source: "none"`, empty `facets/edges/objects`, zeroed `flashing/totals`, `confidence: 0`, and populated `diagnostics.warnings` + `diagnostics.attempts` describing what was tried.
+
+```ts
+function makeDegradedRoofData(opts: {
+  address: RoofData["address"];
+  attempts: RoofDiagnostics["attempts"];
+}): RoofData {
+  return {
+    address: opts.address,
+    source: "none",
+    refinements: [],
+    confidence: 0,
+    imageryDate: null,
+    ageYearsEstimate: null,
+    ageBucket: null,
+    facets: [],
+    edges: [],
+    objects: [],
+    flashing: {
+      chimneyLf: 0, skylightLf: 0, dormerStepLf: 0, wallStepLf: 0,
+      headwallLf: 0, apronLf: 0, valleyLf: 0, dripEdgeLf: 0,
+      pipeBootCount: 0, iwsSqft: 0,
+    },
+    totals: {
+      facetsCount: 0, edgesCount: 0, objectsCount: 0,
+      totalRoofAreaSqft: 0, totalFootprintSqft: 0, totalSquares: 0,
+      averagePitchDegrees: 0, wastePct: 11, complexity: "moderate",
+      predominantMaterial: null,
+    },
+    diagnostics: {
+      attempts: opts.attempts,
+      warnings: ["We couldn't analyze this address — no source had coverage."],
+      needsReview: [],
+    },
+  };
+}
+```
+
+**Consumer contract:** both `/internal` and `/quote` MUST branch on `roofData.source === "none"` immediately after the pipeline call and render an explicit "couldn't analyze this address" state — never feed a degraded RoofData into `priceRoofData` or any rendering component that assumes non-empty facets.
+
+`makeDegradedRoofData` results are **never cached** (see §3.9).
+
+### 3.9 RoofData caching
+
+`runRoofPipeline` caches successful RoofData (`source !== "none"`) at the orchestrator level via the existing `lib/cache.ts` infrastructure.
+
+- **Key:** `roof-data:${lat.toFixed(6)},${lng.toFixed(6)}`
+- **TTL:** 1 hour (matches the existing Solar API cache lifetime)
+- **Miss path:** runs the full pipeline as specified
+- **Cache bypass:** `?nocache=1` query param threaded through the debug route in Phase 1 + the `/internal` "re-analyze" button (already present in the rep workflow for stale-imagery cases)
+- **Degraded RoofData is never cached.** Retries on `source: "none"` should always rerun — coverage may have improved, Anthropic key may have rotated in, etc.
+
+**Rationale:** the per-source caches (`lib/cache.ts` for Solar, none today for vision) save the API calls, but every `runRoofPipeline` invocation still pays the assembly cost (facet construction, edge classification, flashing computation, totals). Caching the composed output makes repeat reads of the same address effectively free, which matters when reps reopen estimates or customers hit `/quote` more than once.
+
+**Bypass discipline:** rep-side edits to `PricingInputs` (material, multipliers, addOns) must **not** trigger a fresh pipeline run — they only affect `priceRoofData`. Pipeline rerun is reserved for explicit "re-analyze" actions and the `nocache=1` debug path.
 
 ---
 
@@ -540,7 +605,7 @@ function classifyEdges(
    - Pitch-aware split as a fallback when `dominantAzimuthDeg` is null: use existing `eaveRakeSplit` ratios applied longest-first.
 5. Every emitted edge: `confidence: 0.4`, `polyline` = the real lat/lng coordinates at `heightM: 0`.
 
-When `dominantAzimuthDeg` is null (vision-only source, or Solar returned no useful azimuth signal), both shared and exterior edges fall through to length-ranked assignment: shared edges split into ridge/hip/valley by complexity-ratio LF caps applied longest-first; exterior edges split into eave/rake using the existing `eaveRakeSplit` ratios applied longest-first. Confidence still 0.4.
+When `dominantAzimuthDeg` is null (vision-only source, or Solar returned no useful azimuth signal — e.g. octagonal turrets, round buildings, single-facet polygons), the classifier reconstructs a synthetic dominant axis from the longest exterior polygon edge across all facets, then runs the same bearing-relative algorithm above. This preserves the heuristic shape rather than silently degrading to "everything is a ridge." Only when fewer than 2 facets are present (single-facet vision fallback) does the classifier fall back further to length-ranked assignment: shared edges split into ridge/hip/valley by complexity-ratio LF caps applied longest-first; exterior edges split into eave/rake using the existing `eaveRakeSplit` ratios applied longest-first. Confidence stays 0.4 throughout.
 
 ---
 
@@ -715,6 +780,8 @@ Without instrumentation we can't measure whether the rebuild actually moved the 
 - [ ] Low-slope facets show `<LowSlopeBadge>`.
 - [ ] `version: 2` estimates load via the v2 renderer; legacy estimates load via the shim with no visible regression on the dashboard summary, `/p/[id]` share link, or rep rolodex.
 - [ ] All six telemetry events fire and appear in the console / Sentry breadcrumbs.
+- [ ] Pipeline-wide failure produces `source: "none"` RoofData (not an exception); both `/internal` and `/quote` render the "couldn't analyze this address" state cleanly. Test by temporarily unsetting `ANTHROPIC_API_KEY` + pointing at a known Solar-404 address.
+- [ ] RoofData cache hits on repeat read of the same address (verify via `lib/cache.ts` instrumentation or a console.log on cache hit); `?nocache=1` correctly bypasses; degraded RoofData is never cached.
 - [ ] `npm run typecheck`, `npm run lint`, `npm run build` all green at each phase boundary.
 - [ ] Verified against three addresses: 8450 Oak Park Rd (complex), one simple ranch, one rural Solar-404 (vision fallback).
 - [ ] Three separate commits pushed: end-of-Phase-1, end-of-Phase-2, end-of-Phase-3.
