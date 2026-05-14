@@ -1,24 +1,62 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { loadEstimates } from "@/lib/storage";
+import { loadEstimatesTagged } from "@/lib/storage";
 import { fmt } from "@/lib/pricing";
-import type { Estimate } from "@/types/estimate";
+import type { LoadedEstimate } from "@/types/roof";
 import { TrendingUp, Users, Wallet, Hash } from "lucide-react";
 
+/**
+ * Normalized row — adapter so the table renders v1 + v2 uniformly.
+ * Mirrors the adapter in app/(internal)/history/page.tsx; kept local
+ * because the field shapes (only what the admin table needs) are subtly
+ * different (no kind chip on this page).
+ */
+interface Row {
+  id: string;
+  createdAt: string;
+  staff: string;
+  address: string;
+  zip: string;
+  total: number;
+}
+
+function toRow(loaded: LoadedEstimate): Row {
+  if (loaded.kind === "v2") {
+    const e = loaded.estimate;
+    return {
+      id: e.id,
+      createdAt: e.createdAt,
+      staff: e.staff ?? "",
+      address: e.address.formatted,
+      zip: e.address.zip ?? "",
+      total: Math.round((e.priced.totalLow + e.priced.totalHigh) / 2),
+    };
+  }
+  const e = loaded.estimate;
+  return {
+    id: e.id,
+    createdAt: e.createdAt,
+    staff: e.staff ?? "",
+    address: e.address.formatted,
+    zip: e.address.zip ?? "",
+    total: e.total ?? 0,
+  };
+}
+
 export default function AdminPage() {
-  const [list, setList] = useState<Estimate[]>([]);
+  const [list, setList] = useState<Row[]>([]);
   const [zip, setZip] = useState("");
   const [staff, setStaff] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
-  useEffect(() => setList(loadEstimates()), []);
+  useEffect(() => setList(loadEstimatesTagged().map(toRow)), []);
 
   const filtered = useMemo(() => {
     return list.filter((e) => {
-      if (zip && (e.address.zip ?? "") !== zip) return false;
-      if (staff && !(e.staff ?? "").toLowerCase().includes(staff.toLowerCase())) return false;
+      if (zip && e.zip !== zip) return false;
+      if (staff && !e.staff.toLowerCase().includes(staff.toLowerCase())) return false;
       const ts = new Date(e.createdAt).getTime();
       if (from && ts < new Date(from).getTime()) return false;
       if (to && ts > new Date(to).getTime() + 86400000) return false;
@@ -84,8 +122,8 @@ export default function AdminPage() {
                 <td className="px-5 py-3 text-slate-400 font-mono tabular text-[12px]">
                   {new Date(e.createdAt).toLocaleDateString()}
                 </td>
-                <td className="px-5 py-3 max-w-md truncate font-medium">{e.address.formatted}</td>
-                <td className="px-5 py-3 text-slate-300 font-mono tabular">{e.address.zip || <span className="text-slate-600">—</span>}</td>
+                <td className="px-5 py-3 max-w-md truncate font-medium">{e.address}</td>
+                <td className="px-5 py-3 text-slate-300 font-mono tabular">{e.zip || <span className="text-slate-600">—</span>}</td>
                 <td className="px-5 py-3 text-slate-400">{e.staff || <span className="text-slate-600">—</span>}</td>
                 <td className="px-5 py-3 text-right font-display tabular font-semibold">{fmt(e.total)}</td>
               </tr>

@@ -2,27 +2,70 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { deleteEstimate, loadEstimates } from "@/lib/storage";
+import { deleteEstimate, loadEstimatesTagged } from "@/lib/storage";
 import { fmt } from "@/lib/pricing";
-import type { Estimate } from "@/types/estimate";
+import type { LoadedEstimate } from "@/types/roof";
 import { Trash2, Search, ArrowRight } from "lucide-react";
 
+/**
+ * Normalized row shape — works for both v1 and v2 estimates. The table
+ * only needs a handful of fields; this adapter pulls them from whichever
+ * shape the row uses so the rendering stays uniform.
+ */
+interface Row {
+  id: string;
+  createdAt: string;
+  staff: string;
+  customerName: string;
+  address: string;
+  zip: string;
+  total: number;
+  kind: "v1" | "v2";
+}
+
+function toRow(loaded: LoadedEstimate): Row {
+  if (loaded.kind === "v2") {
+    const e = loaded.estimate;
+    return {
+      id: e.id,
+      createdAt: e.createdAt,
+      staff: e.staff ?? "",
+      customerName: e.customerName ?? "",
+      address: e.address.formatted,
+      zip: e.address.zip ?? "",
+      total: Math.round((e.priced.totalLow + e.priced.totalHigh) / 2),
+      kind: "v2",
+    };
+  }
+  const e = loaded.estimate;
+  return {
+    id: e.id,
+    createdAt: e.createdAt,
+    staff: e.staff ?? "",
+    customerName: e.customerName ?? "",
+    address: e.address.formatted,
+    zip: e.address.zip ?? "",
+    total: e.total ?? 0,
+    kind: "v1",
+  };
+}
+
 export default function HistoryPage() {
-  const [list, setList] = useState<Estimate[]>([]);
+  const [list, setList] = useState<Row[]>([]);
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
-    setList(loadEstimates());
+    setList(loadEstimatesTagged().map(toRow));
   }, []);
 
   const filtered = list.filter((e) => {
     const q = filter.toLowerCase();
     return (
       !q ||
-      e.address.formatted.toLowerCase().includes(q) ||
-      (e.customerName ?? "").toLowerCase().includes(q) ||
-      (e.staff ?? "").toLowerCase().includes(q) ||
-      (e.address.zip ?? "").includes(q)
+      e.address.toLowerCase().includes(q) ||
+      e.customerName.toLowerCase().includes(q) ||
+      e.staff.toLowerCase().includes(q) ||
+      e.zip.includes(q)
     );
   });
 
@@ -82,7 +125,14 @@ export default function HistoryPage() {
                 <td className="px-5 py-3.5 text-slate-400 font-mono tabular text-[12px] whitespace-nowrap">
                   {new Date(e.createdAt).toLocaleDateString()}
                 </td>
-                <td className="px-5 py-3.5 max-w-md truncate font-medium">{e.address.formatted}</td>
+                <td className="px-5 py-3.5 max-w-md truncate font-medium">
+                  {e.address}
+                  {e.kind === "v2" && (
+                    <span className="ml-2 inline-block rounded bg-cy-300/10 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wide text-cy-300">
+                      v2
+                    </span>
+                  )}
+                </td>
                 <td className="px-5 py-3.5 text-slate-300">{e.customerName || <span className="text-slate-600">—</span>}</td>
                 <td className="px-5 py-3.5 text-slate-400">{e.staff || <span className="text-slate-600">—</span>}</td>
                 <td className="px-5 py-3.5 text-right font-display tabular font-semibold">{fmt(e.total)}</td>
@@ -92,7 +142,7 @@ export default function HistoryPage() {
                     onClick={() => {
                       if (confirm("Delete this estimate?")) {
                         deleteEstimate(e.id);
-                        setList(loadEstimates());
+                        setList(loadEstimatesTagged().map(toRow));
                       }
                     }}
                   >
