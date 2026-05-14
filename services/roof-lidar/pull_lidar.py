@@ -92,7 +92,23 @@ def fetch_lidar_for_bbox(
         raise RuntimeError("no tiles parseable")
 
     # Concatenate raw points + classifications, reprojecting from each
-    # LAS's native CRS to WGS84 (lng, lat).
+    # LAS's native CRS to a LOCAL ENU METER FRAME centered on the
+    # parcel address. This is non-obvious but critical: the downstream
+    # pipeline (isolate_roof, segment_planes, build_facets) assumes
+    # x/y/z are all in METERS at the same scale so that Open3D normal
+    # estimation finds real surface normals. If we returned WGS84
+    # lng/lat for x/y while z is meters, the unit-mismatch makes every
+    # normal point near-straight-up (since z variance >> deg variance),
+    # collapsing all DBSCAN clusters into one plane and producing zero
+    # facets.
+    #
+    # Local frame: Azimuthal Equidistant projection centered on (lat, lng).
+    # Preserves distances around the origin perfectly — the parcel is
+    # within 500m of origin so distortion is negligible. x = meters east,
+    # y = meters north, z = meters up (untouched from LAS).
+    local_crs = pyproj.CRS.from_proj4(
+        f"+proj=aeqd +lat_0={lat} +lon_0={lng} +ellps=WGS84 +units=m",
+    )
     all_xyz: list[Any] = []
     all_class: list[Any] = []
     for las in pulled:
@@ -105,13 +121,13 @@ def fetch_lidar_for_bbox(
 
         if src_crs is None:
             log.warning(
-                "tile missing CRS; treating XY as already lng/lat — "
-                "this will produce wrong points for state-plane/UTM tiles",
+                "tile missing CRS; cannot reproject — falling back to "
+                "passing native coords (downstream segmentation will likely fail)",
             )
             xyz = src_xyz
         else:
             transformer = pyproj.Transformer.from_crs(
-                src_crs, "EPSG:4326", always_xy=True,
+                src_crs, local_crs, always_xy=True,
             )
             xs, ys = transformer.transform(src_xyz[:, 0], src_xyz[:, 1])
             xyz = np.column_stack([xs, ys, src_xyz[:, 2]])
@@ -122,19 +138,30 @@ def fetch_lidar_for_bbox(
     xyz = np.vstack(all_xyz)
     classification = np.concatenate(all_class)
 
-    # Filter to 500m bbox around the input address — WGS84 lng/lat now
-    # that everything's been reprojected.
-    bbox = _bbox_around(lat=lat, lng=lng, half_extent_m=250)
+    # Filter to a 250m square in the local meter frame (origin is the
+    # address). This is geometrically equivalent to the previous WGS84
+    # bbox but the math is trivial in local meters.
+    HALF_EXTENT_M = 250
     keep = (
-        (xyz[:, 0] >= bbox["min_lng"]) & (xyz[:, 0] <= bbox["max_lng"]) &
-        (xyz[:, 1] >= bbox["min_lat"]) & (xyz[:, 1] <= bbox["max_lat"])
+        (np.abs(xyz[:, 0]) <= HALF_EXTENT_M) &
+        (np.abs(xyz[:, 1]) <= HALF_EXTENT_M)
     )
+
+    # Preserve the WGS84 bbox in the return value for callers that
+    # need to map output back to lat/lng (build_facets converts facet
+    # polygons back via the same aeqd CRS).
+    bbox_wgs = _bbox_around(lat=lat, lng=lng, half_extent_m=HALF_EXTENT_M)
     return {
         "xyz": xyz[keep],
         "classification": classification[keep],
-        "bbox": bbox,
+        "bbox": bbox_wgs,
         "tile_count": len(pulled),
         "fetched_at": int(time.time()),
+        # Used by downstream stages that need to project points back
+        # to WGS84 (e.g. when emitting RoofData.facets[].polygon).
+        "origin_lat": lat,
+        "origin_lng": lng,
+        "frame": "aeqd_meters",
     }
 
 
