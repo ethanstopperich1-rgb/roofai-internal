@@ -290,6 +290,22 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
     return priceRoofData(roofData, pricingInputs);
   }, [roofData, pricingInputs]);
 
+  // Once-per-address guard so RoofData-driven sqft seeding doesn't
+  // re-stomp the customer's manual sqft edit (the RoofStep input is
+  // editable). The customer's first edit "wins" and the pipeline value
+  // never lands again for that address.
+  const sqftTouchedRef = useRef(false);
+  useEffect(() => {
+    if (!roofData || roofData.source === "none") return;
+    if (sqftTouchedRef.current) return;
+    // Seed sqft from the canonical pipeline result so the customer-
+    // facing RoofStep + the priced totals show consistent numbers.
+    const pipelineSqft = roofData.totals.totalRoofAreaSqft;
+    if (pipelineSqft > 0 && pipelineSqft !== sqft) {
+      setSqft(pipelineSqft);
+    }
+  }, [roofData, sqft]);
+
   /** Tier C unified pipeline call. Replaces the legacy Solar / SAM3 /
    *  Solar-mask / MS-Buildings cascade — one fetch, one canonical
    *  RoofData feed for RoofTotalsCard + DetectedFeaturesPanel + pricing.
@@ -840,7 +856,7 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
             pitch={pitch}
             satelliteUrl={satelliteUrl}
             roofPolygon={roofPolygon}
-            loading={loadingRoof}
+            loading={loadingRoof || pipelineLoading}
             pickingLoading={pickingLoading}
             // Click-pick re-trace. Fired when the customer taps a
             // different building in the satellite tile (via the "Wrong
@@ -906,8 +922,12 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
                 setPickingLoading(false);
               }
             }}
-            onChangeSqft={setSqft}
+            onChangeSqft={(n) => {
+              sqftTouchedRef.current = true;
+              setSqft(n);
+            }}
             onPolygonEdited={(poly) => {
+              sqftTouchedRef.current = true;
               setRoofPolygon(poly);
               // Recompute sqft from the edited polygon: footprint via
               // shoelace × slope multiplier from Solar pitch (or 1.118
@@ -998,6 +1018,7 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
               setRoofData(null);
               setPipelineError(null);
               setPipelineLoading(false);
+              sqftTouchedRef.current = false;
               estimateIdRef.current = `est_${crypto.randomUUID().replace(/-/g, "")}`;
             }}
           />
