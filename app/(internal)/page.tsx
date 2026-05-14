@@ -1070,24 +1070,32 @@ function HomePageInner() {
         className="glass-panel-hero p-5 sm:p-7 md:p-9 relative"
         style={{ isolation: "isolate" }}
       >
-        <div className="relative flex items-end justify-between gap-6 mb-6 flex-wrap">
-          <div className="flex items-end gap-3">
-            <div className="glass-eyebrow">
-              <Zap size={11} /> Quick Estimate
-            </div>
-            <div className="hidden md:flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-slate-300">
-              <span>address</span>
-              <span className="w-3 h-px bg-slate-400/60" />
-              <span>analyze</span>
-              <span className="w-3 h-px bg-slate-400/60" />
-              <span>review</span>
-              <span className="w-3 h-px bg-slate-400/60" />
-              <span className="text-cy-300 font-semibold">deliver</span>
-            </div>
-          </div>
-          <div className="flex items-stretch gap-2 w-full sm:w-auto">
+        {/* Top strip — dynamic progress stepper on the left, rep meta
+            (name input + New) on the right. The stepper used to be a
+            static "ADDRESS — ANALYZE — REVIEW — DELIVER" breadcrumb
+            with "DELIVER" hardcoded as the active step, which was both
+            wrong and noisy. Now it reflects actual pipeline state:
+              address  → active until an address resolves
+              analyze  → active while the pipeline is in flight
+              review   → active once roofData lands
+              deliver  → active once a priced estimate exists
+            On narrow widths the labels collapse to dots so the bar
+            stays a single row. */}
+        <div className="relative flex items-center justify-between gap-4 mb-7 flex-wrap">
+          <HeroStepper
+            current={
+              !shown
+                ? "address"
+                : pipelineLoading || !roofData
+                  ? "analyze"
+                  : !priced
+                    ? "review"
+                    : "deliver"
+            }
+          />
+          <div className="flex items-stretch gap-2 ml-auto">
             <input
-              className="glass-input flex-1 sm:flex-none sm:w-44 text-[13px]"
+              className="glass-input flex-1 sm:flex-none sm:w-40 text-[13px]"
               placeholder="Your name"
               value={staff}
               onChange={(e) => setStaff(e.target.value)}
@@ -1105,13 +1113,14 @@ function HomePageInner() {
           </div>
         </div>
 
-        <h1 className="font-display text-[28px] sm:text-4xl md:text-[44px] leading-[1.05] tracking-tight font-medium mb-1.5">
+        <h1 className="font-display text-[30px] sm:text-[40px] md:text-[48px] leading-[1.02] tracking-[-0.025em] font-semibold mb-2 text-balance">
           Where are we{" "}
           <span className="iridescent-text">roofing</span>{" "}
           today?
         </h1>
-        <p className="text-[13.5px] text-slate-400 mb-6 max-w-xl">
-          Type or paste an address. Pick a suggestion — Pitch auto-measures and assesses the roof.
+        <p className="text-[14px] text-slate-400 mb-6 max-w-xl leading-relaxed">
+          Type or paste an address. Pitch auto-measures the roof and assesses
+          it against LiDAR + satellite + storm data.
         </p>
 
         <AddressInput
@@ -1121,15 +1130,25 @@ function HomePageInner() {
           onSubmit={requestEstimate}
         />
 
-        {/* Keyboard discoverability strip — surfaces the shortcuts the
-            useKeyboardShortcuts hook already binds. Hidden on mobile
-            (touch users have no keyboard) and on small screens. */}
-        <div className="hidden md:flex flex-wrap items-center gap-x-4 gap-y-2 mt-4 text-[10.5px] font-mono uppercase tracking-[0.12em] text-slate-500">
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘K</span> Address</span>
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘N</span> New</span>
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘S</span> Save</span>
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘P</span> PDF</span>
-          <span className="flex items-center gap-1.5"><span className="kbd">⌘E</span> Email</span>
+        {/* Keyboard shortcuts — collapsed to a single subtle line so they
+            stop visually competing with the address input. Power users
+            still get the hint; new reps don't see a noise strip. */}
+        <div className="hidden md:flex items-center gap-4 mt-4 text-[10.5px] font-mono uppercase tracking-[0.14em] text-slate-500">
+          <span className="flex items-center gap-1.5">
+            <span className="kbd">⌘K</span> Address
+          </span>
+          <span className="text-slate-600">·</span>
+          <span className="flex items-center gap-1.5">
+            <span className="kbd">⌘S</span> Save
+          </span>
+          <span className="text-slate-600">·</span>
+          <span className="flex items-center gap-1.5">
+            <span className="kbd">⌘P</span> PDF
+          </span>
+          <span className="text-slate-600">·</span>
+          <span className="flex items-center gap-1.5">
+            <span className="kbd">⌘E</span> Email
+          </span>
         </div>
       </section>
 
@@ -1649,6 +1668,68 @@ export default function HomePage() {
     <Suspense fallback={null}>
       <HomePageInner />
     </Suspense>
+  );
+}
+
+/** Hero progress stepper. State-driven (vs. the old static "deliver
+ *  always cyan" version). On lg+ shows label + connector dots, on
+ *  narrow widths collapses to four dots with the active one filled. */
+function HeroStepper({
+  current,
+}: {
+  current: "address" | "analyze" | "review" | "deliver";
+}) {
+  const steps = [
+    { key: "address", label: "Address" },
+    { key: "analyze", label: "Analyze" },
+    { key: "review", label: "Review" },
+    { key: "deliver", label: "Deliver" },
+  ] as const;
+  const currentIdx = steps.findIndex((s) => s.key === current);
+  return (
+    <div
+      className="flex items-center gap-2.5 sm:gap-3 text-[10.5px] font-mono uppercase tracking-[0.16em]"
+      role="status"
+      aria-label={`Workflow: ${steps[currentIdx]?.label ?? "—"}`}
+    >
+      {steps.map((s, i) => {
+        const active = i === currentIdx;
+        const done = i < currentIdx;
+        return (
+          <span key={s.key} className="flex items-center gap-2.5 sm:gap-3">
+            <span
+              className={`flex items-center gap-1.5 transition-colors ${
+                active
+                  ? "text-cy-300"
+                  : done
+                    ? "text-slate-300"
+                    : "text-slate-500"
+              }`}
+            >
+              <span
+                className={`inline-block w-1.5 h-1.5 rounded-full transition-all ${
+                  active
+                    ? "bg-cy-300 shadow-[0_0_8px_rgba(56,197,238,0.6)]"
+                    : done
+                      ? "bg-slate-300"
+                      : "bg-slate-600"
+                }`}
+                aria-hidden
+              />
+              <span className={active ? "font-semibold" : ""}>{s.label}</span>
+            </span>
+            {i < steps.length - 1 && (
+              <span
+                className={`hidden sm:inline-block w-4 h-px ${
+                  i < currentIdx ? "bg-slate-300/60" : "bg-slate-600/50"
+                }`}
+                aria-hidden
+              />
+            )}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
