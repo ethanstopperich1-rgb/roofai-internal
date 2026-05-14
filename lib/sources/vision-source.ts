@@ -22,6 +22,10 @@ export async function tierCVisionSource(opts: {
    *  has a Microsoft Buildings or geocoded estimate, pass it; otherwise
    *  defaults to 2000 sqft. */
   estimatedFootprintSqft?: number;
+  /** Unused at vision tier — accepted so the orchestrator can pass
+   *  uniform args to every source. */
+  parcelPolygon?: Array<{ lat: number; lng: number }>;
+  imageryDate?: string | null;
 }): Promise<RoofData | null> {
   const visionFetcher = opts.visionFetcher ?? defaultVisionFetcher;
   const vision = await getMemoizedVision({

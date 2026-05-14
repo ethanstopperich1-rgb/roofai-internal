@@ -35,6 +35,10 @@ export async function tierCSolarSource(opts: {
   /** Injected fetcher for the pixel-accurate Solar mask outline.
    *  Defaults to the real fetchSolarRoofMask. */
   maskFetcher?: MaskFetcher;
+  /** Unused at Tier C — accepted so the orchestrator can pass
+   *  uniform args to every source. */
+  parcelPolygon?: Array<{ lat: number; lng: number }>;
+  imageryDate?: string | null;
 }): Promise<RoofData | null> {
   const solarFetcher = opts.solarFetcher ?? defaultSolarFetcher;
   const visionFetcher = opts.visionFetcher ?? defaultVisionFetcher;
