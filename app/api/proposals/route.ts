@@ -20,11 +20,15 @@ import {
   supabaseServiceRoleConfigured,
 } from "@/lib/supabase";
 import type { Estimate } from "@/types/estimate";
+import type { EstimateV2 } from "@/types/roof";
 
 export const runtime = "nodejs";
 
 interface SaveProposalRequest {
-  estimate: Estimate;
+  /** v1 Estimate or v2 EstimateV2 — discriminated at runtime via the
+   *  `version` field. Both shapes carry an `id`, `address`, and totals
+   *  the route can map onto the proposals row. */
+  estimate: Estimate | EstimateV2;
   /** Office slug. Defaults to "voxaris" while auth migration is pending.
    *  Once Supabase Auth lands, the office comes from the JWT and this
    *  param goes away. */
@@ -145,6 +149,26 @@ export async function POST(req: Request) {
     if (lead) leadId = lead.id;
   }
 
+  // Derive totals for the proposals.total_low / total_high columns.
+  // v2 snapshots have version: 2 and totals under priced.totalLow /
+  // priced.totalHigh. v1 carries baseLow / baseHigh at the top. The
+  // columns are integer, so we round.
+  let totalLow: number | null = null;
+  let totalHigh: number | null = null;
+  if ((estimate as EstimateV2).version === 2) {
+    const v2 = estimate as EstimateV2;
+    if (Number.isFinite(v2.priced?.totalLow)) {
+      totalLow = Math.round(v2.priced.totalLow);
+    }
+    if (Number.isFinite(v2.priced?.totalHigh)) {
+      totalHigh = Math.round(v2.priced.totalHigh);
+    }
+  } else {
+    const v1 = estimate as Estimate;
+    if (typeof v1.baseLow === "number") totalLow = Math.round(v1.baseLow);
+    if (typeof v1.baseHigh === "number") totalHigh = Math.round(v1.baseHigh);
+  }
+
   // Upsert by public_id so re-saves of the same estimate (rep clicks
   // Save twice) update rather than collide. JSON.parse(JSON.stringify)
   // round-trip widens the snapshot to the Supabase `Json` type — the
@@ -157,8 +181,8 @@ export async function POST(req: Request) {
         lead_id: leadId,
         public_id: estimate.id,
         snapshot: JSON.parse(JSON.stringify(estimate)),
-        total_low: estimate.baseLow ?? null,
-        total_high: estimate.baseHigh ?? null,
+        total_low: totalLow,
+        total_high: totalHigh,
       },
       { onConflict: "public_id" },
     );

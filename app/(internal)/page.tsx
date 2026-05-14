@@ -1223,14 +1223,56 @@ function HomePageInner() {
                 <OutputButtons
                   estimate={estimate}
                   office={office}
-                  // Funnel the visible Save button through the canonical
-                  // EstimateV2 write when we have one; matches the ⌘S
-                  // shortcut behavior (which already prefers v2). Falls
-                  // back to legacy v1 storage only when no RoofData has
-                  // landed yet.
-                  onSave={() => {
-                    if (estimateV2) saveEstimateV2(estimateV2);
-                    else saveEstimate(estimate);
+                  // /internal owns the full save flow (localStorage +
+                  // Supabase POST). When we have an EstimateV2 we send
+                  // the v2 snapshot to BOTH — so the dashboard's
+                  // /dashboard/proposals/[publicId] page sees the
+                  // canonical Tier C shape from rep-tool saves, not
+                  // just from /quote submits. Without this, /internal
+                  // saved v2 locally but POSTed a v1 projection to
+                  // Supabase, leaving the dashboard's v2 renderer
+                  // permanently unreachable from rep workflow.
+                  onSave={async () => {
+                    if (estimateV2) {
+                      saveEstimateV2(estimateV2);
+                      try {
+                        await fetch("/api/proposals", {
+                          method: "POST",
+                          credentials: "same-origin",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            estimate: estimateV2,
+                            office,
+                          }),
+                        });
+                      } catch (err) {
+                        console.warn(
+                          "[internal] supabase v2 save failed:",
+                          err,
+                        );
+                      }
+                    } else {
+                      // Pre-pipeline save (no RoofData yet) — fall back
+                      // to the legacy v1 flow so the rep still has
+                      // something to come back to.
+                      saveEstimate(estimate);
+                      try {
+                        await fetch("/api/proposals", {
+                          method: "POST",
+                          credentials: "same-origin",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            estimate,
+                            office,
+                          }),
+                        });
+                      } catch (err) {
+                        console.warn(
+                          "[internal] supabase v1 save failed:",
+                          err,
+                        );
+                      }
+                    }
                   }}
                 />
               </div>

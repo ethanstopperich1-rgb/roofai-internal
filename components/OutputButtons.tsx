@@ -9,14 +9,15 @@ import { saveEstimate } from "@/lib/storage";
 interface Props {
   estimate: Estimate;
   onSaved?: () => void;
-  /** Optional override for the localStorage write. When provided, the
-   *  visible Save button calls this INSTEAD OF `saveEstimate(estimate)`
-   *  — letting the /internal page funnel saves through the canonical
-   *  EstimateV2 path (saveEstimateV2) while /quote and any other v1-only
-   *  callers continue to omit it and keep the legacy behavior. The
-   *  Supabase /api/proposals POST below is unaffected — it always runs
-   *  off the v1 Estimate shape since /api/proposals hasn't migrated. */
-  onSave?: () => void;
+  /** Optional override for the FULL save flow (localStorage + Supabase).
+   *  When provided, the visible Save button calls this INSTEAD of the
+   *  built-in legacy persist path (saveEstimate + POST /api/proposals
+   *  with v1 snapshot). The /internal page now uses this to send a v2
+   *  EstimateV2 snapshot to BOTH localStorage (via saveEstimateV2) AND
+   *  Supabase (via its own POST) — so the dashboard sees v2 proposals
+   *  from rep-tool saves, not just v1 projections. v1-only callers
+   *  (/quote ingest, embeds) keep omitting it and get the legacy path. */
+  onSave?: () => void | Promise<void>;
   /** Optional — when the rep opened this estimator from an existing lead
    *  drawer (or from a /quote ingest where we know the lead public_id),
    *  passing it here lets /api/proposals do an exact match by id rather
@@ -60,13 +61,20 @@ export default function OutputButtons({
    *  rep history view) AND Supabase via /api/proposals (the cross-
    *  device share-link path). The Supabase POST is fire-and-forget so
    *  the UI still reports "saved" instantly; failure logs a warning
-   *  and the localStorage copy still works for the rep's own browser. */
+   *  and the localStorage copy still works for the rep's own browser.
+   *
+   *  When onSave is provided (i.e. from /internal), the CALLER owns the
+   *  full save flow — both the localStorage write AND the Supabase POST.
+   *  We don't double-up here because /internal sends a v2 snapshot while
+   *  this default path would re-POST a v1 projection, leaving Supabase
+   *  with the inferior shape. v1-only callers (/quote ingest, embeds)
+   *  keep using the legacy path below. */
   const persist = () => {
-    // If the caller provided an onSave override (e.g. /internal funnels
-    // through saveEstimateV2), use it instead of the legacy v1 write.
-    // Otherwise (e.g. /quote) keep the original saveEstimate path.
-    if (onSave) onSave();
-    else saveEstimate(estimate);
+    if (onSave) {
+      void onSave();
+      return;
+    }
+    saveEstimate(estimate);
     void fetch("/api/proposals", {
       method: "POST",
       credentials: "same-origin",
