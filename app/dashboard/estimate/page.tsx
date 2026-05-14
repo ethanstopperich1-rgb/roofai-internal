@@ -1226,9 +1226,15 @@ function HomePageInner() {
       hipsLf: sum("hip"),
       valleysLf: sum("valley"),
       dripEdgeLf: roofData.flashing.dripEdgeLf,
+      // Continuous-metal flashing + Tier B headwall/apron.
       flashingLf:
-        roofData.flashing.chimneyLf + roofData.flashing.skylightLf,
-      stepFlashingLf: roofData.flashing.dormerStepLf,
+        roofData.flashing.chimneyLf +
+        roofData.flashing.skylightLf +
+        roofData.flashing.headwallLf +
+        roofData.flashing.apronLf,
+      // Step flashing = dormer cheek walls + Tier B non-dormer wall-step.
+      stepFlashingLf:
+        roofData.flashing.dormerStepLf + roofData.flashing.wallStepLf,
       iwsSqft: roofData.flashing.iwsSqft,
       source: "polygons" as const,
     };

@@ -476,9 +476,16 @@ function HomePageInner() {
       hipsLf: sum("hip"),
       valleysLf: sum("valley"),
       dripEdgeLf: roofData.flashing.dripEdgeLf,
+      // Continuous-metal flashing: chimney/skylight kits + Tier B's
+      // headwall + apron pieces. Wall step flashing is per-shingle
+      // (below in stepFlashingLf).
       flashingLf:
-        roofData.flashing.chimneyLf + roofData.flashing.skylightLf,
-      stepFlashingLf: roofData.flashing.dormerStepLf,
+        roofData.flashing.chimneyLf +
+        roofData.flashing.skylightLf +
+        roofData.flashing.headwallLf +
+        roofData.flashing.apronLf,
+      stepFlashingLf:
+        roofData.flashing.dormerStepLf + roofData.flashing.wallStepLf,
       iwsSqft: roofData.flashing.iwsSqft,
       source: "polygons" as const,
     };

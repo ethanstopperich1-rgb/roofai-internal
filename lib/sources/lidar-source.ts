@@ -23,6 +23,17 @@ interface LidarServiceResponse {
  *  ~60s. The pipeline orchestrator catches AbortError and falls through. */
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+let unconfiguredLogged = false;
+function logUnconfiguredOnce() {
+  if (unconfiguredLogged) return;
+  unconfiguredLogged = true;
+  console.log(
+    "[tier-a-lidar] LIDAR_SERVICE_URL not set — Tier A skipped. " +
+      "Deploy services/roof-lidar/ to Modal and set the URL to enable. " +
+      "See services/roof-lidar/README.md.",
+  );
+}
+
 export async function tierALidarSource(opts: {
   address: { formatted: string; lat: number; lng: number; zip?: string };
   requestId: string;
@@ -35,7 +46,10 @@ export async function tierALidarSource(opts: {
 }): Promise<RoofData | null> {
   const serviceUrl = process.env.LIDAR_SERVICE_URL;
   if (!serviceUrl) {
-    // Unconfigured — silent skip. Pipeline falls through.
+    // Unconfigured — silent skip. Pipeline falls through to Tier C.
+    // Log once-per-process so an obviously-unconfigured deploy is visible
+    // in logs without spamming on every call.
+    logUnconfiguredOnce();
     return null;
   }
 

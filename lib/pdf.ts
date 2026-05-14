@@ -92,8 +92,15 @@ function projectV2ToLegacy(v2: EstimateV2): Estimate {
     hipsLf: sumEdges("hip"),
     valleysLf: sumEdges("valley"),
     dripEdgeLf: roofData.flashing.dripEdgeLf,
-    flashingLf: roofData.flashing.chimneyLf + roofData.flashing.skylightLf,
-    stepFlashingLf: roofData.flashing.dormerStepLf,
+    // Continuous-metal flashing: chimney/skylight kits + Tier B's headwall
+    // + apron pieces. Wall step flashing is per-shingle stepped (below).
+    flashingLf:
+      roofData.flashing.chimneyLf +
+      roofData.flashing.skylightLf +
+      roofData.flashing.headwallLf +
+      roofData.flashing.apronLf,
+    // Step flashing — dormer cheek walls + Tier B non-dormer wall-step.
+    stepFlashingLf: roofData.flashing.dormerStepLf + roofData.flashing.wallStepLf,
     iwsSqft: roofData.flashing.iwsSqft,
     source: "polygons",
   };
