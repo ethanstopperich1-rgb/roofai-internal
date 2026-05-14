@@ -1,10 +1,11 @@
 // lib/sources/vision-source.ts
-import type { RoofData, Facet, Material } from "@/types/roof";
+import type { RoofData, Facet } from "@/types/roof";
 import type { RoofVision } from "@/types/estimate";
 import {
   classifyEdges, computeFlashing, computeTotals,
 } from "@/lib/roof-engine";
 import { getMemoizedVision, type VisionFetcher } from "@/lib/cache/vision-request";
+import { mapVisionMaterial, visionPenetrationsToObjects } from "./vision-mappers";
 
 /**
  * Tier C vision-only fallback. Single-facet whole-roof RoofData when
@@ -73,6 +74,9 @@ function visionToSingleFacet(
   // 1 m ≈ 1/111320 degrees lat
   const sideM = Math.sqrt(estimatedFootprintSqft / 10.7639); // sqft -> m²
   const halfDeg = sideM / 2 / 111_320;
+  // Synthetic default; vision-only fallback has no measured azimuth.
+  const azimuthDeg = 180;
+  const azRad = (azimuthDeg * Math.PI) / 180;
   return {
     id: "facet-0",
     polygon: [
@@ -81,56 +85,22 @@ function visionToSingleFacet(
       { lat: address.lat + halfDeg, lng: address.lng + halfDeg },
       { lat: address.lat + halfDeg, lng: address.lng - halfDeg },
     ],
-    normal: { x: 0, y: 0, z: 1 },
+    // Normal vector consistent with pitchDegrees + azimuthDeg (matches the
+    // solar source's normal-from-pitch formula). Tier C single-facet
+    // fallback so this normal isn't load-bearing, but keep it consistent
+    // with the rest of the schema.
+    normal: {
+      x: Math.sin(pitchRad) * Math.sin(azRad),
+      y: Math.sin(pitchRad) * Math.cos(azRad),
+      z: Math.cos(pitchRad),
+    },
     pitchDegrees: pitchDeg,
-    azimuthDeg: 180,
+    azimuthDeg,
     areaSqftSloped: slopedArea,
     areaSqftFootprint: estimatedFootprintSqft,
     material: mapVisionMaterial(vision.currentMaterial),
-    isLowSlope: false,
+    isLowSlope: pitchDeg < 18.43,
   };
-}
-
-function visionPenetrationsToObjects(
-  address: { lat: number; lng: number },
-  vision: RoofVision,
-): RoofData["objects"] {
-  return vision.penetrations.map((p, idx) => ({
-    id: `obj-${idx}`,
-    kind: mapPenetrationKind(p.kind),
-    position: { lat: address.lat, lng: address.lng, heightM: 0 },
-    dimensionsFt: {
-      width: p.approxSizeFt ?? defaultDimForKind(p.kind),
-      length: p.approxSizeFt ?? defaultDimForKind(p.kind),
-    },
-    facetId: null,
-  }));
-}
-
-function mapPenetrationKind(k: RoofVision["penetrations"][number]["kind"]): RoofData["objects"][number]["kind"] {
-  if (k === "vent") return "vent";
-  if (k === "chimney") return "chimney";
-  if (k === "skylight") return "skylight";
-  if (k === "stack") return "stack";
-  if (k === "satellite-dish") return "satellite-dish";
-  return "vent";
-}
-
-function defaultDimForKind(k: RoofVision["penetrations"][number]["kind"]): number {
-  if (k === "chimney") return 3;
-  if (k === "skylight") return 3;
-  return 0.75;
-}
-
-function mapVisionMaterial(m: RoofVision["currentMaterial"]): Material | null {
-  if (m === "unknown") return null;
-  if (m === "asphalt-3tab") return "asphalt-3tab";
-  if (m === "asphalt-architectural") return "asphalt-architectural";
-  if (m === "metal-standing-seam") return "metal-standing-seam";
-  if (m === "tile-concrete") return "tile-concrete";
-  if (m === "wood-shake") return "wood-shake";
-  if (m === "flat-membrane") return "flat-membrane";
-  return null;
 }
 
 // TODO(task-19): consumer should inject fetchers that avoid the HTTP self-call

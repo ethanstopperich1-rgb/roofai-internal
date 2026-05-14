@@ -1,12 +1,13 @@
 // lib/sources/solar-source.ts
 import type {
-  RoofData, Facet, RoofObject, Material,
+  RoofData, Facet, Material,
 } from "@/types/roof";
 import type { SolarSummary, RoofVision } from "@/types/estimate";
 import {
   classifyEdges, computeFlashing, computeTotals,
 } from "@/lib/roof-engine";
 import { getMemoizedVision, type VisionFetcher } from "@/lib/cache/vision-request";
+import { mapVisionMaterial, visionPenetrationsToObjects } from "./vision-mappers";
 
 type SolarFetcher = (lat: number, lng: number) => Promise<SolarSummary | null>;
 
@@ -92,49 +93,6 @@ function solarToFacets(solar: SolarSummary, vision: RoofVision | null): Facet[] 
       isLowSlope: pitchDeg < 18.43, // < 4/12
     };
   });
-}
-
-function visionPenetrationsToObjects(
-  address: { lat: number; lng: number },
-  vision: RoofVision | null,
-): RoofObject[] {
-  if (!vision) return [];
-  return vision.penetrations.map((p, idx) => ({
-    id: `obj-${idx}`,
-    kind: mapPenetrationKind(p.kind),
-    position: { lat: address.lat, lng: address.lng, heightM: 0 },
-    dimensionsFt: {
-      width: p.approxSizeFt ?? defaultDimForKind(p.kind),
-      length: p.approxSizeFt ?? defaultDimForKind(p.kind),
-    },
-    facetId: null,
-  }));
-}
-
-function mapPenetrationKind(k: RoofVision["penetrations"][number]["kind"]): RoofObject["kind"] {
-  if (k === "vent") return "vent";
-  if (k === "chimney") return "chimney";
-  if (k === "skylight") return "skylight";
-  if (k === "stack") return "stack";
-  if (k === "satellite-dish") return "satellite-dish";
-  return "vent"; // "other" -> treat as vent
-}
-
-function defaultDimForKind(k: RoofVision["penetrations"][number]["kind"]): number {
-  if (k === "chimney") return 3;
-  if (k === "skylight") return 3;
-  return 0.75;
-}
-
-function mapVisionMaterial(m: RoofVision["currentMaterial"]): Material | null {
-  if (m === "unknown") return null;
-  if (m === "asphalt-3tab") return "asphalt-3tab";
-  if (m === "asphalt-architectural") return "asphalt-architectural";
-  if (m === "metal-standing-seam") return "metal-standing-seam";
-  if (m === "tile-concrete") return "tile-concrete";
-  if (m === "wood-shake") return "wood-shake";
-  if (m === "flat-membrane") return "flat-membrane";
-  return null;
 }
 
 // TODO(task-19): consumer should inject fetchers that avoid the HTTP self-call
