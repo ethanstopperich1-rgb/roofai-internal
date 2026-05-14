@@ -25,6 +25,7 @@ import {
 } from "@/components/quote/BelowFold";
 import EditableRoofMap from "@/components/quote/EditableRoofMap";
 import { fmt, MATERIAL_RATES } from "@/lib/pricing";
+import { saveEstimateV2 } from "@/lib/storage";
 import type {
   AddressInfo,
   Assumptions,
@@ -708,39 +709,55 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
     setSubmitError("");
     setSubmitting(true);
     try {
-      // Build a customer-side Estimate snapshot from the wizard state.
-      // The server attaches this to the lead's `proposals.snapshot`
-      // jsonb column so the dashboard's "Saved estimates" panel shows
-      // the customer's self-served quote — mirrors what the rep tool
-      // saves via OutputButtons + /api/proposals, just with a lighter
-      // shape (no Xactimate line items, no field photos, no insurance
-      // claim metadata — those are rep-only by design).
-      const customerEstimate: Estimate = {
-        id: `est_${crypto.randomUUID().replace(/-/g, "")}`,
-        createdAt: new Date().toISOString(),
-        staff: "Customer · self-served",
-        customerName: lead.name,
-        address: (address ?? { formatted: lead.address }) as AddressInfo,
-        assumptions: {
-          sqft: sqft ?? 0,
-          pitch: (pitch ?? "6/12") as Pitch,
-          material,
-          ageYears: 15,
-          laborMultiplier: 1,
-          materialMultiplier: 1,
-          serviceType: "reroof-tearoff",
-          complexity: "moderate",
-        } satisfies Assumptions,
-        addOns: addOns.map((a) => ({
-          id: a.id,
-          label: a.label,
-          price: a.price,
-          enabled: a.enabled,
-        })) satisfies AddOn[],
-        total: Math.round((range.low + range.high) / 2),
-        baseLow: range.low,
-        baseHigh: range.high,
-      };
+      // Build the customer-side estimate snapshot. Prefer the Tier C v2
+      // shape (EstimateV2: roofData + pricingInputs + priced) when the
+      // pipeline returned usable data — that's the canonical form the
+      // dashboard's summarizeProposalSnapshot + /p/[id] viewer both
+      // already understand. Falls back to the legacy v1 Estimate
+      // shape when the pipeline is unavailable so degraded sessions
+      // still get a proposal row written.
+      const sharedAddress = (address ?? { formatted: lead.address }) as AddressInfo;
+      const stableId = estimateIdRef.current;
+      const customerEstimate: EstimateV2 | Estimate =
+        priced && roofData && roofData.source !== "none"
+          ? ({
+              version: 2,
+              id: stableId,
+              createdAt: new Date().toISOString(),
+              staff: "Customer · self-served",
+              customerName: lead.name,
+              address: sharedAddress,
+              roofData,
+              pricingInputs,
+              priced,
+              isInsuranceClaim: false,
+            } satisfies EstimateV2)
+          : ({
+              id: stableId,
+              createdAt: new Date().toISOString(),
+              staff: "Customer · self-served",
+              customerName: lead.name,
+              address: sharedAddress,
+              assumptions: {
+                sqft: sqft ?? 0,
+                pitch: (pitch ?? "6/12") as Pitch,
+                material,
+                ageYears: 15,
+                laborMultiplier: 1,
+                materialMultiplier: 1,
+                serviceType: "reroof-tearoff",
+                complexity: "moderate",
+              } satisfies Assumptions,
+              addOns: addOns.map((a) => ({
+                id: a.id,
+                label: a.label,
+                price: a.price,
+                enabled: a.enabled,
+              })) satisfies AddOn[],
+              total: Math.round((range.low + range.high) / 2),
+              baseLow: range.low,
+              baseHigh: range.high,
+            } satisfies Estimate);
 
       const res = await fetch("/api/leads", {
         method: "POST",
@@ -753,11 +770,20 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
           zip: address?.zip,
           lat: address?.lat,
           lng: address?.lng,
-          estimatedSqft: sqft,
-          material,
+          estimatedSqft:
+            priced && roofData && roofData.source !== "none"
+              ? roofData.totals.totalRoofAreaSqft
+              : sqft,
+          material: effectiveMaterial,
           selectedAddOns: addOns.filter((a) => a.enabled).map((a) => a.id),
-          estimateLow: range.low,
-          estimateHigh: range.high,
+          estimateLow:
+            priced && roofData && roofData.source !== "none"
+              ? Math.round(priced.totalLow)
+              : range.low,
+          estimateHigh:
+            priced && roofData && roofData.source !== "none"
+              ? Math.round(priced.totalHigh)
+              : range.high,
           // Tenancy — carries through to lead row, Sydney outbound dispatch.
           office,
           source: "quote-wizard-confirmed",
@@ -773,6 +799,15 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "submit_failed");
+      // Mirror the snapshot to localStorage so the customer can revisit
+      // the share link offline / on the same device. v2 saves go
+      // through saveEstimateV2 (canonical); v1 fallback handled below.
+      if (
+        typeof customerEstimate === "object" &&
+        (customerEstimate as EstimateV2).version === 2
+      ) {
+        saveEstimateV2(customerEstimate as EstimateV2);
+      }
       setSubmitted({ leadId: data.leadId });
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Failed to submit");
