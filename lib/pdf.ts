@@ -1,10 +1,122 @@
 "use client";
 
 import jsPDF from "jspdf";
-import type { Estimate, LineItem } from "@/types/estimate";
-import { MATERIAL_RATES, fmt, buildDetailedEstimate } from "./pricing";
+import type {
+  Assumptions,
+  DetailedEstimate,
+  Estimate,
+  LineItem,
+  Material,
+  RoofLengths,
+} from "@/types/estimate";
+import type { EstimateV2 } from "@/types/roof";
+import type { EdgeType } from "@/types/roof";
+import { MATERIAL_RATES, fmt } from "./pricing";
 import { BRAND_CONFIG } from "./branding";
 import { CARRIERS } from "./carriers";
+
+/** Narrow that doesn't widen the input to `Estimate`. */
+function isV2(e: Estimate | EstimateV2): e is EstimateV2 {
+  return (e as EstimateV2).version === 2;
+}
+
+/** Project an EstimateV2 into the legacy Estimate shape the renderer was
+ *  built around. The PDF body code path then runs unchanged. Note: this
+ *  is a render-time projection only — v2 estimates persist as EstimateV2,
+ *  and we never round-trip the projection back to storage. */
+function projectV2ToLegacy(v2: EstimateV2): Estimate {
+  const { pricingInputs, priced, roofData } = v2;
+  const sumEdges = (type: EdgeType) =>
+    roofData.edges.filter((e) => e.type === type).reduce((s, e) => s + e.lengthFt, 0);
+  const totals = roofData.totals;
+
+  // v2's PricingInputs uses Material that includes "wood-shake"/"flat-membrane"
+  // which the legacy Assumptions.material doesn't carry. Coerce unknown
+  // materials to the closest legacy match — wood-shake renders as
+  // architectural, flat-membrane as 3-tab. PDF only uses MATERIAL_RATES[m].label
+  // so the visual impact is just the spec-row label.
+  const legacyMaterial: Material =
+    pricingInputs.material === "wood-shake"
+      ? "asphalt-architectural"
+      : pricingInputs.material === "flat-membrane"
+        ? "asphalt-3tab"
+        : (pricingInputs.material as Material);
+
+  const assumptions: Assumptions = {
+    sqft: Math.round(totals.totalRoofAreaSqft),
+    pitch:
+      totals.averagePitchDegrees >= 35
+        ? "8/12+"
+        : totals.averagePitchDegrees >= 30
+          ? "7/12"
+          : totals.averagePitchDegrees >= 26
+            ? "6/12"
+            : totals.averagePitchDegrees >= 22
+              ? "5/12"
+              : "4/12",
+    material: legacyMaterial,
+    ageYears: roofData.ageYearsEstimate ?? 0,
+    laborMultiplier: pricingInputs.laborMultiplier,
+    materialMultiplier: pricingInputs.materialMultiplier,
+    serviceType: pricingInputs.serviceType,
+    complexity: totals.complexity,
+  };
+
+  const detailed: DetailedEstimate = {
+    lineItems: priced.lineItems.map((li) => ({
+      code: li.code,
+      description: li.description,
+      friendlyName: li.friendlyName,
+      quantity: li.quantity,
+      unit: li.unit,
+      unitCostLow: li.unitCostLow,
+      unitCostHigh: li.unitCostHigh,
+      extendedLow: li.extendedLow,
+      extendedHigh: li.extendedHigh,
+      category: li.category,
+    })),
+    simplifiedItems: priced.simplifiedItems,
+    subtotalLow: priced.subtotalLow,
+    subtotalHigh: priced.subtotalHigh,
+    overheadProfit: priced.overheadProfit,
+    totalLow: priced.totalLow,
+    totalHigh: priced.totalHigh,
+    squares: priced.squares,
+  };
+
+  const lengths: RoofLengths = {
+    perimeterLf: roofData.flashing.dripEdgeLf,
+    eavesLf: sumEdges("eave"),
+    rakesLf: sumEdges("rake"),
+    ridgesLf: sumEdges("ridge"),
+    hipsLf: sumEdges("hip"),
+    valleysLf: sumEdges("valley"),
+    dripEdgeLf: roofData.flashing.dripEdgeLf,
+    flashingLf: roofData.flashing.chimneyLf + roofData.flashing.skylightLf,
+    stepFlashingLf: roofData.flashing.dormerStepLf,
+    iwsSqft: roofData.flashing.iwsSqft,
+    source: "polygons",
+  };
+
+  return {
+    id: v2.id,
+    createdAt: v2.createdAt,
+    staff: v2.staff,
+    customerName: v2.customerName,
+    notes: v2.notes,
+    address: v2.address,
+    assumptions,
+    addOns: pricingInputs.addOns,
+    total: Math.round((priced.totalLow + priced.totalHigh) / 2),
+    baseLow: priced.totalLow,
+    baseHigh: priced.totalHigh,
+    isInsuranceClaim: v2.isInsuranceClaim,
+    detailed,
+    lengths,
+    photos: v2.photos,
+    claim: v2.claim,
+  };
+}
 
 const SERVICE_LABEL: Record<NonNullable<Estimate["assumptions"]["serviceType"]>, string> = {
   new: "New install",
@@ -19,7 +131,8 @@ function hexToRgb(hex: string): [number, number, number] {
   return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
 }
 
-export function generatePdf(e: Estimate) {
+export function generatePdf(input: Estimate | EstimateV2) {
+  const e: Estimate = isV2(input) ? projectV2ToLegacy(input) : input;
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const W = 612;
   const H = 792;
@@ -289,13 +402,13 @@ export function generatePdf(e: Estimate) {
   }
 
   // ---------- Insurance: full Xactimate-style line items ----------
-  if (e.isInsuranceClaim) {
-    const detailed =
-      e.detailed ??
-      buildDetailedEstimate(e.assumptions, e.addOns, {
-        buildingFootprintSqft: e.solar?.buildingFootprintSqft ?? null,
-        segmentCount: e.solar?.segmentCount ?? 4,
-      });
+  // Skip if `detailed` is missing. /internal + /dashboard/estimate both
+  // populate `detailed` from the priced engine at save time (v1) or via
+  // the v2→v1 projection above (v2). Pre-Tier-C v1 saves without
+  // `detailed` will render without the itemized scope — acceptable, those
+  // estimates are stale.
+  if (e.isInsuranceClaim && e.detailed) {
+    const detailed = e.detailed;
 
     if (y > H - 200) {
       doc.addPage();
@@ -514,7 +627,8 @@ export function generatePdf(e: Estimate) {
   doc.save(`${BRAND_CONFIG.productName}_Estimate_${e.id}.pdf`);
 }
 
-export function buildSummaryText(e: Estimate): string {
+export function buildSummaryText(input: Estimate | EstimateV2): string {
+  const e: Estimate = isV2(input) ? projectV2ToLegacy(input) : input;
   const enabled = e.addOns.filter((a) => a.enabled);
   const serviceType = e.assumptions.serviceType ?? "reroof-tearoff";
   const lines = [
