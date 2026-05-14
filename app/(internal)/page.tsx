@@ -1258,7 +1258,15 @@ function HomePageInner() {
                below — adding it here gave the grid 3 children and broke
                the side-by-side layout (3D viewer wrapped to row 2,
                overflowing the fixed-height section). */}
-          <section className="grid lg:grid-cols-2 gap-4 h-[420px] sm:h-[520px] lg:h-[640px] float-in relative">
+          {/* Property hero — 2D map + 3D mesh side-by-side. Height was
+              previously a fixed 640px on lg+ which reserved a giant
+              empty black panel while the 3D viewer / pipeline were
+              still loading (Cesium tiles + LiDAR can take 30-60s). Now
+              capped at min-h instead of fixed h, with a tighter
+              aspect-clipped 3D column — the section fills naturally
+              when content lands and doesn't reserve a viewport of
+              dead space when it doesn't. */}
+          <section className="grid lg:grid-cols-2 gap-4 min-h-[360px] sm:min-h-[440px] lg:min-h-[520px] float-in relative">
             <MapView
               lat={address?.lat}
               lng={address?.lng}
@@ -1354,12 +1362,35 @@ function HomePageInner() {
                   )}
               </div>
             ) : (
-              // Placeholder keeps the 2-column grid intact while SAM3
-              // is in flight. Falls back to a soft glass panel mirroring
-              // the eventual 3D mount so the layout doesn't shift when
-              // the mesh appears.
-              <div className="glass-panel h-full flex items-center justify-center text-slate-500 text-[12px] font-mono uppercase tracking-[0.14em]">
-                3D mesh loads after measurement…
+              // Placeholder keeps the 2-column grid intact while the
+              // pipeline / SAM3 is in flight. Tinted radial gradient
+              // + animated dot + clear copy beats the previous "dead
+              // black panel" look. Also hides itself entirely on
+              // mobile so we don't reserve a full-height column of
+              // empty space below the satellite map on phones.
+              <div
+                className="hidden lg:flex glass-panel h-full flex-col items-center justify-center gap-3 relative overflow-hidden"
+                role="status"
+                aria-live="polite"
+              >
+                <div
+                  aria-hidden
+                  className="absolute inset-0 pointer-events-none"
+                  style={{
+                    background:
+                      "radial-gradient(closest-side at 50% 50%, rgba(56,197,238,0.06), transparent 70%)",
+                  }}
+                />
+                <div className="relative flex items-center gap-2">
+                  <span className="inline-flex w-2 h-2 rounded-full bg-cy-300 animate-pulse" />
+                  <span className="text-[10.5px] font-mono uppercase tracking-[0.18em] text-cy-300/85">
+                    3D mesh
+                  </span>
+                </div>
+                <div className="relative text-[12.5px] text-slate-300 max-w-[18rem] text-center leading-relaxed">
+                  Loads after measurement — Google Map Tiles 3D + LiDAR-derived
+                  roof drape.
+                </div>
               </div>
             )}
           </section>
