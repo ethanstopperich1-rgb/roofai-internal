@@ -9,6 +9,7 @@ import {
 import { getMemoizedVision, type VisionFetcher } from "@/lib/cache/vision-request";
 import { mapVisionMaterial, visionPenetrationsToObjects } from "./vision-mappers";
 import { fetchSolarRoofMask } from "@/lib/solar-mask";
+import { resolveBaseUrl } from "@/lib/base-url";
 
 type SolarFetcher = (lat: number, lng: number) => Promise<SolarSummary | null>;
 type MaskFetcher = (opts: {
@@ -160,13 +161,13 @@ function solarToFacets(solar: SolarSummary, vision: RoofVision | null): Facet[] 
 }
 
 // TODO(task-19): consumer should inject fetchers that avoid the HTTP self-call
-// (call route handlers / engine functions directly server-side). The
-// NEXT_PUBLIC_BASE_URL fallback to localhost is fine for the debug route
-// + local dev but fragile in Vercel SSR where the container's loopback
-// may not resolve.
+// (call route handlers / engine functions directly server-side).
+// resolveBaseUrl() handles the Vercel-vs-local resolution so self-calls
+// actually reach the API in production.
 async function defaultSolarFetcher(lat: number, lng: number): Promise<SolarSummary | null> {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
-  const res = await fetch(`${baseUrl}/api/solar?lat=${lat}&lng=${lng}`, { cache: "no-store" });
+  const res = await fetch(`${resolveBaseUrl()}/api/solar?lat=${lat}&lng=${lng}`, {
+    cache: "no-store",
+  });
   if (!res.ok) return null;
   const data = await res.json() as SolarSummary;
   if (data.segmentCount === 0) return null;
@@ -174,8 +175,9 @@ async function defaultSolarFetcher(lat: number, lng: number): Promise<SolarSumma
 }
 
 async function defaultVisionFetcher(lat: number, lng: number): Promise<RoofVision | null> {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
-  const res = await fetch(`${baseUrl}/api/vision?lat=${lat}&lng=${lng}`, { cache: "no-store" });
+  const res = await fetch(`${resolveBaseUrl()}/api/vision?lat=${lat}&lng=${lng}`, {
+    cache: "no-store",
+  });
   if (!res.ok) return null;
   return res.json();
 }
