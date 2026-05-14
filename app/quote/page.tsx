@@ -938,7 +938,13 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
         {step === "Material" && !submitted && (
           <MaterialStep
             material={material}
-            onMaterialChange={setMaterial}
+            onMaterialChange={(m) => {
+              setMaterial(m);
+              // A material pick on this step is an explicit customer
+              // choice — record it so the Tier C pricing chain uses it
+              // ahead of vision detection.
+              setCustomerMaterial(m);
+            }}
             addOns={addOns}
             onAddOnsChange={setAddOns}
             onBack={goBack}
@@ -953,6 +959,10 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
             sqft={sqft}
             material={material}
             addOns={addOns}
+            roofData={roofData}
+            priced={priced}
+            pipelineLoading={pipelineLoading}
+            pipelineError={pipelineError}
             onBack={goBack}
             onSubmit={submitFinal}
             submitting={submitting}
@@ -1397,12 +1407,50 @@ function MaterialStep({
         })}
       </div>
 
-      {/* "Optional upgrades" section removed per design — the upgrade
-          add-on list felt like noise on the customer-side estimator and
-          inflated the estimate cognitive load without commensurate
-          conversion lift. The rep-facing internal estimator still has
-          full add-on controls; the public /quote flow now shows base
-          tear-off + material price only. */}
+      {/* Optional upgrades — re-introduced for Tier C so the customer
+          can toggle the four QUOTE_ADDONS into priceRoofData. Each
+          toggle re-runs the priced memo upstream and is reflected in
+          the Quote step's headline + simplifiedItems. */}
+      <div className="space-y-3 max-w-xl">
+        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
+          Optional upgrades
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {addOns.map((a) => {
+            const active = a.enabled;
+            return (
+              <button
+                key={a.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() =>
+                  onAddOnsChange(
+                    addOns.map((x) =>
+                      x.id === a.id ? { ...x, enabled: !x.enabled } : x,
+                    ),
+                  )
+                }
+                className={`glass-panel is-interactive text-left p-3 flex items-center gap-3 ${
+                  active ? "glass-panel-selected" : ""
+                }`}
+              >
+                <div
+                  className={`w-4 h-4 rounded-md flex items-center justify-center flex-shrink-0 ${
+                    active
+                      ? "bg-cy-300 text-[#051019]"
+                      : "border border-white/20"
+                  }`}
+                >
+                  {active && <Check size={10} strokeWidth={3} />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] text-white/90">{a.label}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <NavButtons onBack={onBack} onNext={onNext} />
     </div>
@@ -1417,6 +1465,10 @@ function QuoteStep({
   sqft,
   material,
   addOns,
+  roofData,
+  priced,
+  pipelineLoading,
+  pipelineError,
   onBack,
   onSubmit,
   submitting,
@@ -1427,16 +1479,27 @@ function QuoteStep({
   sqft: number | null;
   material: Material;
   addOns: SimpleAddon[];
+  roofData: RoofData | null;
+  priced: PricedEstimate | null;
+  pipelineLoading: boolean;
+  pipelineError: string | null;
   onBack: () => void;
   onSubmit: () => void;
   submitting: boolean;
   error: string;
 }) {
-  // Build a transparent line-item breakdown so the rep — and the homeowner —
-  // can see why the price is what it is. Itemized estimates dramatically
-  // reduce "is this number real?" objections vs a single bottom-line range.
+  // Pricing source-of-truth — when the Tier C pipeline returned usable
+  // data, the headline + line-item totals come from priceRoofData.
+  // Falls back to the legacy MATERIAL_RATES range when the pipeline
+  // hasn't landed (still loading) or returned source === "none" (every
+  // tier failed). Keeps the wizard navigable in degraded scenarios.
+  const hasPricedV2 = !!(priced && roofData && roofData.source !== "none");
+  const headlineLow = hasPricedV2 ? priced.totalLow : range.low;
+  const headlineHigh = hasPricedV2 ? priced.totalHigh : range.high;
+
+  // Legacy breakdown (used only as fallback when v2 pricing isn't ready).
   const m = MATERIAL_RATES[material];
-  const breakdown = sqft
+  const legacyBreakdown = sqft
     ? [
         {
           label: `${MATERIAL_COPY[material].title} (${sqft.toLocaleString()} sf)`,
@@ -1487,7 +1550,7 @@ function QuoteStep({
             Estimated total
           </div>
           <div className="font-display tabular text-[48px] sm:text-[72px] leading-[0.95] font-semibold tracking-[-0.04em] mt-2 iridescent-text">
-            {fmt(range.low)} <span className="text-white/35 not-italic">–</span> {fmt(range.high)}
+            {fmt(headlineLow)} <span className="text-white/35 not-italic">–</span> {fmt(headlineHigh)}
           </div>
           <div className="text-[12.5px] text-white/55 mt-3 max-w-md">
             Materials + labor + tear-off included. Final pricing requires an on-site inspection.
@@ -1495,13 +1558,68 @@ function QuoteStep({
         </div>
       </div>
 
-      {breakdown.length > 0 && (
+      {/* Tier C — RoofData panels. Customer-variant of DetectedFeaturesPanel
+          shows counts only (no per-facet attribution). The "none" case
+          surfaces a clear message so the customer isn't left wondering
+          why no roof analysis loaded. While the pipeline is still in
+          flight we show nothing here — the legacy range above keeps
+          the wizard usable. */}
+      {hasPricedV2 && roofData && (
+        <>
+          <RoofTotalsCard data={roofData} />
+          <DetectedFeaturesPanel data={roofData} variant="customer" />
+        </>
+      )}
+      {roofData?.source === "none" && !pipelineLoading && (
+        <div className="rounded-lg border bg-amber-50 p-4 text-sm text-amber-900">
+          We couldn&apos;t analyze this address — please double-check the pin or try a different address.
+        </div>
+      )}
+      {pipelineError && !pipelineLoading && (
+        <div className="text-[11.5px] text-white/45">
+          Analysis warning: {pipelineError}
+        </div>
+      )}
+
+      {/* What's in the estimate — Tier C grouped simplifiedItems when
+          the pipeline returned usable data, otherwise legacy per-line
+          breakdown. simplifiedItems collapse per-facet detail into
+          friendly category groups (Tear-off, Shingles, Flashing, etc.)
+          which is the customer-appropriate view. */}
+      {hasPricedV2 && priced.simplifiedItems.length > 0 && (
         <div className="glass-panel p-6 space-y-3">
           <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
             What&apos;s in the estimate
           </div>
           <ul className="divide-y divide-white/[0.06]">
-            {breakdown.map((row, i) => (
+            {priced.simplifiedItems.map((row, i) => (
+              <li
+                key={i}
+                className="flex items-center justify-between gap-3 py-3 text-[13px]"
+              >
+                <span className="text-white/85">{row.group}</span>
+                <span className="font-mono tabular text-white/75 text-[12.5px]">
+                  {row.totalLow === row.totalHigh
+                    ? fmt(row.totalLow)
+                    : `${fmt(row.totalLow)} – ${fmt(row.totalHigh)}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {enabledAddonCount > 0 && (
+            <div className="text-[11.5px] text-white/45 pt-1">
+              {`${enabledAddonCount} upgrade${enabledAddonCount === 1 ? "" : "s"} selected.`}
+            </div>
+          )}
+        </div>
+      )}
+      {!hasPricedV2 && legacyBreakdown.length > 0 && (
+        <div className="glass-panel p-6 space-y-3">
+          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
+            What&apos;s in the estimate
+          </div>
+          <ul className="divide-y divide-white/[0.06]">
+            {legacyBreakdown.map((row, i) => (
               <li
                 key={i}
                 className="flex items-center justify-between gap-3 py-3 text-[13px]"
@@ -1515,9 +1633,6 @@ function QuoteStep({
               </li>
             ))}
           </ul>
-          {/* Empty-upgrades helper text removed alongside the Optional
-              Upgrades section. When upgrades ARE selected (via the rep
-              tool / future re-enable), the count line still surfaces. */}
           {enabledAddonCount > 0 && (
             <div className="text-[11.5px] text-white/45 pt-1">
               {`${enabledAddonCount} upgrade${enabledAddonCount === 1 ? "" : "s"} selected.`}
