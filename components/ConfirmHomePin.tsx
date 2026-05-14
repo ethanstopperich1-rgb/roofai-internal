@@ -100,6 +100,7 @@ export default function ConfirmHomePin({
     pinLatLngRef.current = pinLatLng;
   });
   const [mapReady, setMapReady] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   // Smart auto-correction. While the user orients on the screen, ask
   // Claude vision to identify the primary residence on this parcel.
@@ -142,10 +143,11 @@ export default function ConfirmHomePin({
     if (!hasApiKey) return;
     let cancelled = false;
     (async () => {
-      const google = await loadGoogle();
-      if (cancelled || !mapRef.current) return;
+      try {
+        const google = await loadGoogle();
+        if (cancelled || !mapRef.current) return;
 
-      const map = new google.maps.Map(mapRef.current, {
+        const map = new google.maps.Map(mapRef.current, {
         center: geocodedLatLng,
         zoom: 20,
         mapTypeId: "satellite",
@@ -202,7 +204,12 @@ export default function ConfirmHomePin({
         userDraggedRef.current = true;
       });
 
-      setMapReady(true);
+        setMapReady(true);
+      } catch (err) {
+        if (cancelled) return;
+        console.warn("[confirm-pin] loadGoogle() failed:", err);
+        setLoadError(true);
+      }
     })();
     return () => {
       cancelled = true;
@@ -214,6 +221,18 @@ export default function ConfirmHomePin({
     // subsequent changes go through programmatic marker moves (Task 4).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 6s watchdog — if the map doesn't initialise (loader hangs, slow
+  // network, etc.) within 6 seconds, surface the error state so the
+  // user has an escape rather than being stuck on the loading spinner.
+  useEffect(() => {
+    if (mapReady || loadError) return;
+    if (!hasApiKey) return;
+    const t = setTimeout(() => {
+      if (!mapReady) setLoadError(true);
+    }, 6000);
+    return () => clearTimeout(t);
+  }, [mapReady, loadError, hasApiKey]);
 
   // Background residence-detection. Runs once, after the map is ready
   // (so we have a marker to move). Aborts silently if the user has
@@ -306,9 +325,20 @@ export default function ConfirmHomePin({
       {/* Map fills the available space; bottom bar holds the controls */}
       <div className="flex-1 relative min-h-[320px]">
         <div ref={mapRef} className="absolute inset-0" />
-        {!mapReady && (
+        {!mapReady && !loadError && (
           <div className="absolute inset-0 flex items-center justify-center text-slate-300 text-sm">
             Loading satellite view…
+          </div>
+        )}
+        {loadError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300 text-sm gap-3 px-6 text-center">
+            <p>We couldn&apos;t load the satellite view.</p>
+            <button
+              onClick={() => onConfirm(geocodedLatLng)}
+              className="text-cy-300 underline hover:text-cy-200"
+            >
+              Continue with this address →
+            </button>
           </div>
         )}
         {smartMoved && (
