@@ -336,14 +336,12 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
       const data = (await res.json()) as RoofData;
       if (fetchGenRef.current !== myGen) return; // stale
       setRoofData(data);
-      // Prefer the Tier C Solar-mask / Tier A LiDAR alpha-shape outline
-      // over the legacy resolved polygon when available. The outline is
-      // pixel-accurate where the legacy resolver returns axis-aligned
-      // bboxes or SAM3 approximations. Customer 3D viewer / static map
-      // preview pick this up via roofPolygon — no other plumbing needed.
-      if (data.outlinePolygon && data.outlinePolygon.length >= 3) {
-        setRoofPolygon(data.outlinePolygon);
-      }
+      // Note: we intentionally do NOT setRoofPolygon(data.outlinePolygon)
+      // here. /quote's tier ladder (Tier 1 SAM3 → Tier 2 mask → Tier 3
+      // MS Buildings) drives the displayed polygon, and SAM3 is usually
+      // tighter than the bbox-rotated facets. The Tier C mask outline is
+      // already integrated as a quality-gated fallback inside the tier
+      // ladder below — see the SAM3 quality check.
     } catch (err) {
       if (fetchGenRef.current !== myGen) return;
       setPipelineError(err instanceof Error ? err.message : String(err));
@@ -537,11 +535,13 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
         let pitchDegrees: number | null = null;
         let solarFootprintSqft: number | null = null;
         let solarSegmentSqft: number | null = null;
+        let solarSegmentCount = 0;
         if (solarRes.ok) {
           const data = await solarRes.json();
           pitchDegrees = data.pitchDegrees ?? null;
           solarFootprintSqft = data.buildingFootprintSqft ?? null;
           solarSegmentSqft = data.sqft ?? null;
+          solarSegmentCount = typeof data.segmentCount === "number" ? data.segmentCount : 0;
           resolvedPitch = data.pitch ?? null;
         }
         const slope =
@@ -551,6 +551,9 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
 
         // Tier 1 — Custom SAM3 (with GIS reconciliation built-in server-side)
         let resolvedKind: "eave" | "wall" | null = null;
+        let sam3Footprint: number | null = null;
+        let sam3VertexCount = 0;
+        let sam3Source: string | null = null;
         if (sam3Res?.ok) {
           try {
             const sam3 = await sam3Res.json();
@@ -564,6 +567,9 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
               if (footprintSqft >= 200 && footprintSqft <= 20_000) {
                 resolvedPolygon = poly;
                 resolvedSqft = Math.round(footprintSqft * slope);
+                sam3Footprint = footprintSqft;
+                sam3VertexCount = poly.length;
+                sam3Source = typeof sam3?.source === "string" ? sam3.source : null;
                 // Reconciler returned "footprint-only" / "footprint-occluded"
                 // → the polygon traces the GIS wall footprint (1.06 already
                 // baked into footprintSqft). Other SAM3 sources trace eaves.
@@ -581,6 +587,92 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
             }
           } catch {
             /* fall through to Solar mask */
+          }
+        }
+
+        // Tier 1.5 — SAM3 quality gate. SAM3 sometimes returns a single
+        // simplified rectangle on L-shaped / complex roofs, missing
+        // gables and overhanging into lawn/driveway. When the cheap
+        // signals say SAM3 is suspect, fetch the Solar dataLayers mask
+        // (pixel-accurate, $0.075) and prefer it.
+        //
+        // Suspect signals (ANY):
+        //   • SAM3 area is >30% off from Solar findClosest footprint
+        //     (the two are independent measurements of the same building;
+        //     disagreement is real signal)
+        //   • SAM3 returned ≤5 vertices on a Solar building with ≥3
+        //     facets (over-simplification — real roofs that complex
+        //     have ≥6 polygon vertices)
+        //   • SAM3 source is "footprint-only" / "footprint-occluded"
+        //     (server-side fallback — same as Tier 3 quality)
+        //
+        // Disable with QUOTE_SAM3_MASK_QUALITY_GATE=0. The mask is
+        // additive: we use it only if it returns a valid polygon. If
+        // the gate triggers but mask fails, SAM3 stays.
+        const qualityGateEnabled =
+          process.env.NEXT_PUBLIC_QUOTE_SAM3_MASK_QUALITY_GATE !== "0";
+        if (qualityGateEnabled && resolvedPolygon && sam3Footprint != null) {
+          let suspect = false;
+          let suspectReason = "";
+          if (
+            solarFootprintSqft &&
+            Math.abs(sam3Footprint - solarFootprintSqft) / solarFootprintSqft > 0.30
+          ) {
+            suspect = true;
+            suspectReason = `sam3_area_${Math.round(
+              ((sam3Footprint - solarFootprintSqft) / solarFootprintSqft) * 100,
+            )}pct_off_solar`;
+          }
+          // solarSegmentCount was extracted from solarRes above; we don't
+          // re-fetch /api/solar here.
+          if (!suspect && sam3VertexCount <= 5 && solarSegmentCount >= 3) {
+            suspect = true;
+            suspectReason = `sam3_${sam3VertexCount}vtx_for_${solarSegmentCount}_facets`;
+          }
+          if (
+            !suspect &&
+            (sam3Source === "footprint-only" || sam3Source === "footprint-occluded")
+          ) {
+            suspect = true;
+            suspectReason = `sam3_fallback_source_${sam3Source}`;
+          }
+          if (suspect) {
+            console.log("[telemetry] sam3_suspect_fetching_mask", {
+              address: addr.formatted,
+              reason: suspectReason,
+              sam3Footprint,
+              solarFootprintSqft,
+              sam3VertexCount,
+            });
+            try {
+              const maskRes = await fetch(
+                `/api/solar-mask?lat=${addr.lat}&lng=${addr.lng}`,
+              );
+              if (maskRes.ok) {
+                const mask = await maskRes.json();
+                const poly: Array<{ lat: number; lng: number }> | null =
+                  Array.isArray(mask?.latLng) && mask.latLng.length >= 3
+                    ? mask.latLng
+                    : null;
+                if (poly) {
+                  const maskFootprint = polygonAreaSqftLocal(poly);
+                  if (maskFootprint >= 200 && maskFootprint <= 20_000) {
+                    resolvedPolygon = poly;
+                    resolvedSqft = Math.round(maskFootprint * slope);
+                    resolvedKind = "eave";
+                    console.log("[telemetry] mask_replaced_sam3", {
+                      address: addr.formatted,
+                      sam3Footprint,
+                      maskFootprint,
+                      maskVertexCount: poly.length,
+                      reason: suspectReason,
+                    });
+                  }
+                }
+              }
+            } catch {
+              /* mask soft-fails — keep SAM3 */
+            }
           }
         }
 
@@ -1275,6 +1367,15 @@ function RoofStep({
               onPolygonChanged={onPolygonEdited}
               onClickPick={onClickPick}
               pickingLoading={pickingLoading}
+              // Per-facet outlines from the Tier C pipeline. Reads as
+              // structural lines (ridges, hips, dormers) under the
+              // editable polygon. Only meaningful when ≥2 facets;
+              // single-facet roofs would just duplicate the outline.
+              facetOverlay={
+                roofData && roofData.source !== "none" && roofData.facets.length >= 2
+                  ? roofData.facets.map((f) => f.polygon).filter((p) => p && p.length >= 3)
+                  : null
+              }
             />
             {/* Click-pick re-trace overlay. Fires when the customer
                 hits "Wrong roof?" and taps a new building — the
