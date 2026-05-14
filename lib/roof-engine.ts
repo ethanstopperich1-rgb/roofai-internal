@@ -554,7 +554,7 @@ function complexityMultiplier(c: ComplexityTier): number {
 const SIMPLIFIED_GROUPS: Array<{ name: string; codes: string[] }> = [
   { name: "Materials & shingles", codes: ["RFG ARCH", "RFG 3T", "RFG METAL", "RFG TILE", "RFG WOOD", "RFG MEMBRANE", "RFG STARTER", "RFG RIDG"] },
   { name: "Underlayment & weatherproofing", codes: ["RFG SYNF", "RFG IWS"] },
-  { name: "Flashing & metal", codes: ["RFG DRIP", "RFG VAL", "RFG PIPEFL", "FLASH CHIM", "FLASH SKY", "FLASH DRMR"] },
+  { name: "Flashing & metal", codes: ["RFG DRIP", "RFG VAL", "RFG PIPEFL", "FLASH CHIM", "FLASH SKY", "FLASH DRMR", "FLASH WALL", "FLASH HEAD", "FLASH APRN"] },
   { name: "Tear-off & disposal", codes: ["RFG SHGLR", "RFG DEPSTL"] },
   { name: "Decking repair (allowance)", codes: ["RFG DECK"] },
   { name: "Ventilation", codes: ["RFG RDGV"] },
@@ -745,6 +745,46 @@ export function priceRoofData(data: RoofData, inputs: PricingInputs): PricedEsti
       description: "Dormer step flashing",
       friendlyName: "Dormer step flashing",
       quantity: data.flashing.dormerStepLf,
+      unit: "LF",
+      unitCostLow: f.low, unitCostHigh: f.high,
+      category: "flashing",
+    }));
+  }
+
+  // Tier B wall-to-roof junctions — only populated when the multiview
+  // inspector ran (refinements includes "multiview-obliques"). All three
+  // are zero under Tier C by design.
+  if (data.flashing.wallStepLf > 0 && inputs.serviceType !== "repair") {
+    const f = getMaterialPrice(flashKey);
+    items.push(makeFlatItem({
+      code: "FLASH WALL",
+      description: "Wall-to-roof step flashing (non-dormer)",
+      friendlyName: "Wall step flashing",
+      quantity: data.flashing.wallStepLf,
+      unit: "LF",
+      unitCostLow: f.low, unitCostHigh: f.high,
+      category: "flashing",
+    }));
+  }
+  if (data.flashing.headwallLf > 0 && inputs.serviceType !== "repair") {
+    const f = getMaterialPrice(flashKey);
+    items.push(makeFlatItem({
+      code: "FLASH HEAD",
+      description: "Headwall flashing (top of wall-to-roof junction)",
+      friendlyName: "Headwall flashing",
+      quantity: data.flashing.headwallLf,
+      unit: "LF",
+      unitCostLow: f.low, unitCostHigh: f.high,
+      category: "flashing",
+    }));
+  }
+  if (data.flashing.apronLf > 0 && inputs.serviceType !== "repair") {
+    const f = getMaterialPrice(flashKey);
+    items.push(makeFlatItem({
+      code: "FLASH APRN",
+      description: "Apron flashing (bottom of wall-to-roof junction)",
+      friendlyName: "Apron flashing",
+      quantity: data.flashing.apronLf,
       unit: "LF",
       unitCostLow: f.low, unitCostHigh: f.high,
       category: "flashing",

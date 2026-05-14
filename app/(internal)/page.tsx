@@ -63,6 +63,10 @@ import type {
   EstimateV2,
 } from "@/types/roof";
 import { priceRoofData } from "@/lib/roof-engine";
+import {
+  refineRoofDataViaMultiview,
+  type CapturedMultiView,
+} from "@/lib/sources/multiview-source";
 import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import { FacetList } from "@/components/roof/FacetList";
@@ -134,6 +138,15 @@ function HomePageInner() {
   const [roofData, setRoofData] = useState<RoofData | null>(null);
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
+  // Tier B inspector status — surfaces a "Refining via oblique inspection…"
+  // indicator while the roof-inspector call is in flight. Independent of
+  // pipelineLoading because Tier B is additive and runs after Tier C lands.
+  const [inspectorStatus, setInspectorStatus] = useState<
+    "idle" | "running" | "done" | "skipped"
+  >("idle");
+  // Per-address guard: only run the inspector once per (address × Tier C
+  // RoofData identity) so that minor re-renders don't re-fire the call.
+  const inspectorRanForKeyRef = useRef<string | null>(null);
   // Once-per-address guard so RoofData-driven sqft / complexity seeding
   // doesn't re-stomp rep edits made after the first auto-fill.
   const roofDataAppliedForAddressRef = useRef<string | null>(null);
@@ -540,6 +553,80 @@ function HomePageInner() {
     }
   };
 
+  /**
+   * Tier B — multiview oblique refinement.
+   *
+   * Fires when Roof3DViewer publishes captured top-down + 4 oblique frames.
+   * Sends them along with the current RoofData to /api/roof-inspector;
+   * on success, swaps in the refined RoofData (with wall-step / headwall /
+   * apron flashing now populated). On failure, keeps the Tier C result —
+   * Tier B is additive, not load-bearing.
+   *
+   * Guards:
+   *  - skip if RoofData is missing / degraded
+   *  - skip if already refined (refinements includes "multiview-obliques")
+   *  - skip if rep has edited the polygon (livePolygons set — oblique
+   *    refinement is keyed off the original Tier C facet ids, edited
+   *    polygons don't have facet ids to refine against)
+   *  - dedupe via inspectorRanForKeyRef so a re-capture (e.g. tile reload)
+   *    doesn't re-fire the call
+   */
+  const handleMultiViewCaptured = useCallback(
+    (captured: CapturedMultiView) => {
+      const data = roofData;
+      if (!data || data.source === "none" || data.facets.length === 0) return;
+      if (data.refinements.includes("multiview-obliques")) return;
+      if (livePolygons && livePolygons.length > 0) return;
+      const key = `${data.address.lat.toFixed(5)},${data.address.lng.toFixed(5)}:${data.source}:${data.facets.length}`;
+      if (inspectorRanForKeyRef.current === key) return;
+      inspectorRanForKeyRef.current = key;
+      setInspectorStatus("running");
+      (async () => {
+        try {
+          const { refined, patch, latencyMs } = await refineRoofDataViaMultiview({
+            roofData: data,
+            captured,
+            imageryDate: data.imageryDate,
+          });
+          const didRefine = refined.refinements.includes("multiview-obliques");
+          // Stale-fetch guard: address may have changed during the call.
+          if (
+            address?.lat == null ||
+            address?.lng == null ||
+            address.lat.toFixed(5) !== data.address.lat.toFixed(5) ||
+            address.lng.toFixed(5) !== data.address.lng.toFixed(5)
+          ) {
+            return;
+          }
+          setRoofData(refined);
+          setInspectorStatus(didRefine ? "done" : "skipped");
+          console.log(
+            `[internal] tier-b refinement ${didRefine ? "applied" : "gated/no-op"} (${latencyMs}ms): ` +
+              `facets=${patch.facets?.length ?? 0} ` +
+              `objects=${patch.objects?.length ?? 0} ` +
+              `wallJunctions=${patch.wallJunctions?.length ?? 0}`,
+          );
+        } catch (err) {
+          console.warn("[internal] tier-b refinement skipped:", err);
+          setInspectorStatus("skipped");
+          console.log("[telemetry] tier_b_failed", {
+            address: data.address.formatted,
+            source: data.source,
+            reason: "client_error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          // Don't clear the ref — failed inspector call shouldn't re-fire
+          // on the same RoofData. Rep can re-analyze to force a fresh try.
+        }
+      })();
+    },
+    // address is read inside the async closure via the current React render;
+    // including it in deps causes the callback identity to change on every
+    // address mutation and re-fires the capture effect upstream.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [roofData, livePolygons],
+  );
+
   const runEstimate = async (explicitAddr?: AddressInfo) => {
     // Accept an explicit address from the autocomplete pick so we don't
     // race with React state. Falls back to current state for the
@@ -555,6 +642,8 @@ function HomePageInner() {
     // Reset pipeline state on every address change.
     setRoofData(null);
     setPipelineError(null);
+    setInspectorStatus("idle");
+    inspectorRanForKeyRef.current = null;
     roofDataAppliedForAddressRef.current = null;
     assumptionsTouchedRef.current = false;
 
@@ -1025,8 +1114,23 @@ function HomePageInner() {
                   expectedFootprintSqft={
                     roofData?.totals.totalFootprintSqft ?? null
                   }
+                  onMultiViewCaptured={handleMultiViewCaptured}
                   interactive
                 />
+                {(inspectorStatus === "running" ||
+                  inspectorStatus === "done") &&
+                  roofData &&
+                  roofData.source !== "none" && (
+                    <div
+                      className="absolute bottom-2.5 left-2.5 z-10 chip backdrop-blur-md bg-[#07090d]/65 pointer-events-none"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      {inspectorStatus === "running"
+                        ? "Roof inspector: analyzing obliques…"
+                        : `Roof inspector ✓ (${roofData.refinements.length} refinement${roofData.refinements.length === 1 ? "" : "s"})`}
+                    </div>
+                  )}
               </div>
             ) : (
               // Placeholder keeps the 2-column grid intact while SAM3

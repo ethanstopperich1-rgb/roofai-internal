@@ -31,6 +31,15 @@ interface Props {
    *  callback. Skipped when the rep edited (livePolygons in parent) since
    *  manual edits override AI verification. */
   onMultiViewVerified?: (result: { ok: boolean; confidence: number; reason: string; issues?: string[] }) => void;
+  /** When provided, after the multi-view capture frames are taken, this
+   *  callback receives the same captured top-down + obliques so the parent
+   *  can fire downstream pipelines (Tier B roof-inspector refinement) without
+   *  re-capturing. Fires regardless of polygon-verify outcome — the frames
+   *  themselves are independent of the polygon. */
+  onMultiViewCaptured?: (captured: {
+    topDown: { base64: string; width: number; height: number; halfWidthM: number };
+    obliques: Array<{ base64: string; width: number; height: number; headingDeg: number }>;
+  }) => void;
   /** When true, the polygon outline is NOT drawn on the 3D mesh (used by
    *  the parent to hide the polygon while Claude verifies it — prevents
    *  the rep from seeing flicker as sources race). The polygon data is
@@ -296,6 +305,7 @@ export default function Roof3DViewer({
   polygons,
   polygonSource,
   onMultiViewVerified,
+  onMultiViewCaptured,
   polygonsHidden,
   expectedFootprintSqft,
   imageryDate,
@@ -326,6 +336,8 @@ export default function Roof3DViewer({
   const pivotLngRef = useRef(lng);
   const onVerifiedRef = useRef(onMultiViewVerified);
   onVerifiedRef.current = onMultiViewVerified;
+  const onCapturedRef = useRef(onMultiViewCaptured);
+  onCapturedRef.current = onMultiViewCaptured;
   // Don't re-verify the same polygon on every render. Key by (source +
   // first vertex + length) and only fire once per unique polygon.
   const verifiedPolygonRef = useRef<string | null>(null);
@@ -907,7 +919,10 @@ export default function Roof3DViewer({
       | any
       | null;
     if (!viewer || status !== "ready") return;
-    if (!onVerifiedRef.current) return;
+    // The capture is now shared between two consumers — the legacy polygon
+    // verifier (onMultiViewVerified) and the Tier B roof inspector
+    // (onMultiViewCaptured). Fire if either is wired.
+    if (!onVerifiedRef.current && !onCapturedRef.current) return;
     const Cesium = window.Cesium;
     if (!Cesium) return;
 
@@ -976,6 +991,18 @@ export default function Roof3DViewer({
       // Drop the overlay once the camera is back to the orbit pose; the
       // fetch can run in the background while the rep sees the live view.
       setIsCapturing(false);
+
+      // Publish raw captured frames to any downstream consumer (Tier B
+      // roof inspector). Fires before the verify call so the inspector
+      // can run concurrently — both flows are independent.
+      onCapturedRef.current?.({
+        topDown: captured.topDown,
+        obliques: captured.obliques,
+      });
+
+      // If polygon-verify isn't wired (Tier B-only consumer), we're done
+      // — no polygon to verify, no fetch to make.
+      if (!onVerifiedRef.current) return;
 
       try {
         const res = await fetch("/api/verify-polygon-multiview", {

@@ -9,6 +9,7 @@ import {
   priceRoofData,
   suggestedWastePctTierC,
 } from "@/lib/roof-engine";
+import { mergeRefinement, type InspectorPatch } from "@/lib/sources/multiview-source";
 import type {
   Edge, Facet, PricingInputs, RoofData, RoofObject,
 } from "@/types/roof";
@@ -607,6 +608,128 @@ test("priceRoofData: wasteOverridePct = 0 falls through to data.totals.wastePct"
   const shingleUnd = withUndefined.lineItems.find((it) => it.code === "RFG ARCH")!;
   // 0 should fall through to the suggested 11% waste -> identical to undefined
   assert.equal(shingleZero.quantity, shingleUnd.quantity);
+});
+
+// ---- Tier B: mergeRefinement ----------------------------------------------
+
+function makeTierBBaseline(): RoofData {
+  const f1 = emptyFacet("facet-0", []);
+  f1.areaSqftSloped = 1200;
+  f1.areaSqftFootprint = 1100;
+  f1.pitchDegrees = 22.6;
+  const f2 = emptyFacet("facet-1", []);
+  f2.areaSqftSloped = 800;
+  f2.areaSqftFootprint = 750;
+  f2.pitchDegrees = 18.4;
+  const chimney: RoofObject = {
+    id: "obj-0", kind: "chimney",
+    position: { lat: 28.4815, lng: -81.4720, heightM: 0 },
+    dimensionsFt: { width: 2, length: 3 },
+    facetId: null,
+  };
+  return {
+    address: { formatted: "8450 Oak Park Rd, Orlando FL", lat: 28.4815, lng: -81.4720 },
+    source: "tier-c-solar",
+    refinements: [], confidence: 0.85, imageryDate: "2024-06-01",
+    ageYearsEstimate: null, ageBucket: null,
+    facets: [f1, f2], edges: [], objects: [chimney],
+    flashing: {
+      chimneyLf: 10, skylightLf: 0, dormerStepLf: 0, wallStepLf: 0,
+      headwallLf: 0, apronLf: 0, valleyLf: 0, dripEdgeLf: 0,
+      pipeBootCount: 0, iwsSqft: 0,
+    },
+    totals: {
+      facetsCount: 2, edgesCount: 0, objectsCount: 1,
+      totalRoofAreaSqft: 2000, totalFootprintSqft: 1850, totalSquares: 20,
+      averagePitchDegrees: 21, wastePct: 11, complexity: "moderate",
+      predominantMaterial: null,
+    },
+    diagnostics: { attempts: [], warnings: [], needsReview: [] },
+  };
+}
+
+test("Tier B mergeRefinement: degraded RoofData is returned unchanged", () => {
+  const degraded = makeDegradedRoofData({
+    address: { formatted: "x", lat: 0, lng: 0 },
+    attempts: [],
+  });
+  const patch: InspectorPatch = {
+    facets: [{ id: "f0", pitchDegrees: 30 }],
+    wallJunctions: [{ type: "step-wall", side: "north", lengthFt: 20 }],
+  };
+  const result = mergeRefinement(degraded, patch);
+  // Same identity for degraded — early return guarantees no work was done.
+  assert.equal(result, degraded);
+  assert.equal(result.source, "none");
+});
+
+test("Tier B mergeRefinement: facet pitch + isLowSlope + sloped area recomputed", () => {
+  const base = makeTierBBaseline();
+  const refined = mergeRefinement(base, {
+    facets: [
+      { id: "facet-0", pitchDegrees: 33.7 },  // 8/12, above low-slope threshold
+      { id: "facet-1", pitchDegrees: 11.3 },  // 2.4/12, below low-slope threshold
+    ],
+  });
+  const r0 = refined.facets.find((f) => f.id === "facet-0")!;
+  const r1 = refined.facets.find((f) => f.id === "facet-1")!;
+  assert.equal(r0.pitchDegrees, 33.7);
+  assert.equal(r0.isLowSlope, false);
+  assert.equal(r1.pitchDegrees, 11.3);
+  assert.equal(r1.isLowSlope, true);
+  // areaSqftSloped must be ≥ areaSqftFootprint for both (pitched > flat)
+  assert.ok(r0.areaSqftSloped > r0.areaSqftFootprint);
+  assert.ok(r1.areaSqftSloped >= r1.areaSqftFootprint);
+  // Refinements tagged + confidence bumped capped at 0.95
+  assert.deepEqual(refined.refinements, ["multiview-obliques"]);
+  assert.equal(refined.confidence, 0.95);
+});
+
+test("Tier B mergeRefinement: wall junctions populate flashing fields + add step-wall edges", () => {
+  const base = makeTierBBaseline();
+  const refined = mergeRefinement(base, {
+    wallJunctions: [
+      { type: "step-wall", side: "south", lengthFt: 32 },
+      { type: "headwall", side: "east", lengthFt: 14 },
+      { type: "apron", side: "north", lengthFt: 8 },
+    ],
+  });
+  assert.equal(refined.flashing.wallStepLf, 32);
+  assert.equal(refined.flashing.headwallLf, 14);
+  assert.equal(refined.flashing.apronLf, 8);
+  // All three map to "step-wall" enum edges; empty polylines per the Tier B
+  // locked decision (no 3D geometry from oblique imagery).
+  const newEdges = refined.edges.filter((e) => e.type === "step-wall");
+  assert.equal(newEdges.length, 3);
+  for (const e of newEdges) {
+    assert.deepEqual(e.polyline, []);
+    assert.equal(e.confidence, 0.75);
+  }
+  // priceRoofData now emits FLASH WALL / FLASH HEAD / FLASH APRN line items.
+  const priced = priceRoofData(refined, baselineInputs);
+  assert.ok(priced.lineItems.find((it) => it.code === "FLASH WALL"));
+  assert.ok(priced.lineItems.find((it) => it.code === "FLASH HEAD"));
+  assert.ok(priced.lineItems.find((it) => it.code === "FLASH APRN"));
+});
+
+test("Tier B mergeRefinement: cricket adder is +20% on chimney LF when wide", () => {
+  const base = makeTierBBaseline();
+  const before = base.flashing.chimneyLf;
+  const refinedWithoutCricket = mergeRefinement(base, {
+    wallJunctions: [{ type: "step-wall", side: "north", lengthFt: 10 }],
+  });
+  const refinedWithCricket = mergeRefinement(base, {
+    wallJunctions: [
+      { type: "step-wall", side: "north", lengthFt: 10, needsCricket: true },
+    ],
+  });
+  // Without cricket: chimney LF matches the recomputed perimeter from obj.
+  // With cricket: +20% boost (one cricket / one chimney = 100% fraction × 0.20).
+  // Use the recomputed base (chimney perimeter = 2*(2+3) = 10 LF) so we
+  // assert relative to that rather than the synthetic `before` (10).
+  assert.equal(refinedWithoutCricket.flashing.chimneyLf, 10);
+  assert.equal(refinedWithCricket.flashing.chimneyLf, 12); // 10 * 1.2
+  assert.ok(refinedWithCricket.flashing.chimneyLf > before);
 });
 
 // ---- runner ---------------------------------------------------------------

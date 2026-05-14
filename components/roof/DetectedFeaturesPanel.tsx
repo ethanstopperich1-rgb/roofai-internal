@@ -11,6 +11,12 @@ export function DetectedFeaturesPanel({
   if (data.source === "none") return null;
 
   const counts = countObjects(data.objects);
+  const refinedByObliques = data.refinements.includes("multiview-obliques");
+  // Wall-step / headwall / apron LF are Tier B+ signals — only render
+  // the line when at least one is non-zero so Tier C views aren't cluttered
+  // with three zero rows.
+  const wallTotal =
+    data.flashing.wallStepLf + data.flashing.headwallLf + data.flashing.apronLf;
 
   if (variant === "customer") {
     const lines: string[] = [];
@@ -27,6 +33,16 @@ export function DetectedFeaturesPanel({
             ? lines.join(", ") + " — all factored into your estimate."
             : "Clean roof — no penetrations detected."}
         </p>
+        {wallTotal > 0 && (
+          <p className="mt-1 text-xs text-slate-600">
+            Plus {wallTotal} LF of wall-to-roof flashing.
+          </p>
+        )}
+        {refinedByObliques && (
+          <p className="mt-1 text-[11px] text-emerald-700">
+            ✓ Verified by oblique roof inspection
+          </p>
+        )}
       </div>
     );
   }
@@ -34,7 +50,17 @@ export function DetectedFeaturesPanel({
   // Rep variant — full diagnostics
   return (
     <div className="rounded-lg border bg-white p-4">
-      <h3 className="text-sm font-semibold text-slate-900">Detected features</h3>
+      <div className="flex items-start justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-900">Detected features</h3>
+        {refinedByObliques && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700"
+            title="Pitches, object sizes, and wall-step flashing refined by Claude oblique inspection."
+          >
+            ✓ Inspector
+          </span>
+        )}
+      </div>
       <ul className="mt-2 space-y-1 text-sm text-slate-700">
         <li>
           {data.facets.length} facet{data.facets.length === 1 ? "" : "s"}
@@ -47,6 +73,18 @@ export function DetectedFeaturesPanel({
               {n} × {kind}
             </li>
           ))}
+        {wallTotal > 0 && (
+          <li className="text-emerald-800">
+            Wall-to-roof:{" "}
+            {[
+              data.flashing.wallStepLf > 0 && `step ${data.flashing.wallStepLf} LF`,
+              data.flashing.headwallLf > 0 && `headwall ${data.flashing.headwallLf} LF`,
+              data.flashing.apronLf > 0 && `apron ${data.flashing.apronLf} LF`,
+            ]
+              .filter(Boolean)
+              .join(", ")}
+          </li>
+        )}
       </ul>
       {data.diagnostics.warnings.length > 0 && (
         <div className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900">
