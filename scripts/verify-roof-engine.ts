@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import {
   classifyComplexity,
+  classifyEdges,
   computeFlashing,
   computeTotals,
   suggestedWastePctTierC,
@@ -261,6 +262,97 @@ test("computeTotals: all-null facets -> predominantMaterial null", () => {
   f1.areaSqftSloped = 1000;
   const result = computeTotals([f1], [], []);
   assert.equal(result.predominantMaterial, null);
+});
+
+// ---- classifyEdges --------------------------------------------------------
+
+test("classifyEdges: empty facets -> empty edges", () => {
+  const result = classifyEdges([], null);
+  assert.deepStrictEqual(result, []);
+});
+
+test("classifyEdges: single rectangular facet -> 4 exterior edges, confidence 0.4", () => {
+  const facet = emptyFacet("f1", [
+    { lat: 0.0000, lng: 0.0000 },
+    { lat: 0.0000, lng: 0.0003 },
+    { lat: 0.00027, lng: 0.0003 },
+    { lat: 0.00027, lng: 0.0000 },
+  ]);
+  const result = classifyEdges([facet], null);
+  // 1 facet -> length-ranked eave/rake fallback. All 4 are exterior.
+  assert.equal(result.length, 4);
+  assert.ok(result.every((e) => e.confidence === 0.4));
+  const eaveCount = result.filter((e) => e.type === "eave").length;
+  const rakeCount = result.filter((e) => e.type === "rake").length;
+  assert.equal(eaveCount + rakeCount, 4);
+});
+
+test("classifyEdges: two adjacent facets share one edge -> 1 shared edge typed by bearing", () => {
+  // Two rectangles sharing an east edge (north-south oriented)
+  const fA = emptyFacet("fA", [
+    { lat: 0, lng: 0 },
+    { lat: 0, lng: 0.0003 },
+    { lat: 0.0003, lng: 0.0003 },
+    { lat: 0.0003, lng: 0 },
+  ]);
+  const fB = emptyFacet("fB", [
+    { lat: 0, lng: 0.0003 },
+    { lat: 0, lng: 0.0006 },
+    { lat: 0.0003, lng: 0.0006 },
+    { lat: 0.0003, lng: 0.0003 },
+  ]);
+  // dominantAzimuth = 0 means the dominant axis is north-south. The shared
+  // edge runs north-south (same as axis) -> ridge candidate.
+  const result = classifyEdges([fA, fB], 0);
+  // 8 raw edges, 1 shared pair -> 7 emitted (1 shared + 6 exterior).
+  assert.equal(result.length, 7);
+  const shared = result.filter((e) => e.facetIds.length === 2);
+  assert.equal(shared.length, 1);
+  assert.equal(shared[0].type, "ridge");
+});
+
+test("classifyEdges: shared edge geometry preserved (real lat/lng polyline at heightM=0)", () => {
+  const fA = emptyFacet("fA", [
+    { lat: 0, lng: 0 },
+    { lat: 0, lng: 0.0003 },
+    { lat: 0.0003, lng: 0.0003 },
+    { lat: 0.0003, lng: 0 },
+  ]);
+  const fB = emptyFacet("fB", [
+    { lat: 0, lng: 0.0003 },
+    { lat: 0, lng: 0.0006 },
+    { lat: 0.0003, lng: 0.0006 },
+    { lat: 0.0003, lng: 0.0003 },
+  ]);
+  const result = classifyEdges([fA, fB], 0);
+  const shared = result.find((e) => e.facetIds.length === 2)!;
+  assert.equal(shared.polyline.length, 2);
+  for (const pt of shared.polyline) {
+    assert.equal(pt.heightM, 0);
+    assert.ok(typeof pt.lat === "number");
+    assert.ok(typeof pt.lng === "number");
+  }
+});
+
+test("classifyEdges: null dominantAzimuth + 2+ facets -> synthetic axis from longest exterior edge", () => {
+  // Two facets with a clear shared edge. Pass null dominantAzimuth.
+  // Implementation should reconstruct the axis from the longest exterior
+  // edge instead of falling all the way back to length-ranked assignment.
+  const fA = emptyFacet("fA", [
+    { lat: 0, lng: 0 },
+    { lat: 0, lng: 0.0006 },
+    { lat: 0.0003, lng: 0.0006 },
+    { lat: 0.0003, lng: 0 },
+  ]);
+  const fB = emptyFacet("fB", [
+    { lat: 0, lng: 0.0006 },
+    { lat: 0, lng: 0.0012 },
+    { lat: 0.0003, lng: 0.0012 },
+    { lat: 0.0003, lng: 0.0006 },
+  ]);
+  const result = classifyEdges([fA, fB], null);
+  assert.ok(result.length > 0);
+  assert.ok(result.every((e) => e.confidence === 0.4));
 });
 
 // ---- runner ---------------------------------------------------------------
