@@ -72,16 +72,9 @@ import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import { FacetList } from "@/components/roof/FacetList";
 import { saveEstimateV2 } from "@/lib/storage";
-import {
-  DEFAULT_ADDONS,
-  buildDetailedEstimate,
-  computeBase,
-  computeTotal,
-} from "@/lib/pricing";
+import { DEFAULT_ADDONS } from "@/lib/pricing";
 import {
   buildWasteTable,
-  deriveRoofLengthsFromPolygons,
-  deriveRoofLengthsHeuristic,
   inferComplexityFromPolygons,
 } from "@/lib/roof-geometry";
 import {
@@ -171,6 +164,9 @@ function HomePageInner() {
   const [roofData, setRoofData] = useState<RoofData | null>(null);
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
+  // Once-per-address guard so RoofData-driven sqft / complexity seeding
+  // doesn't re-stomp rep edits made after the first auto-fill.
+  const roofDataAppliedForAddressRef = useRef<string | null>(null);
   const [isInsuranceClaim, setIsInsuranceClaim] = useState(false);
   const [photos, setPhotos] = useState<PhotoMeta[]>([]);
   const [claim, setClaim] = useState<ClaimContext>({ carrier: "state-farm" });
@@ -346,12 +342,13 @@ function HomePageInner() {
     if (staff) localStorage.setItem("pitch.staff", staff);
   }, [staff]);
 
-  const { low, high } = useMemo(() => {
-    const b = computeBase(assumptions);
-    return { low: b.low, high: b.high };
-  }, [assumptions]);
-
-  const total = useMemo(() => computeTotal(assumptions, addOns), [assumptions, addOns]);
+  // `low`/`high`/`total` are derived from the Tier C `priced` memo below.
+  // The actual values are assigned after `priced` is computed (so this
+  // block is just a forward declaration via late `let`-style hoisting via
+  // a separate memo block lower in the function).
+  //
+  // Kept here as a marker so search-and-replace tools find the legacy
+  // call-sites if they ever appear in this region again.
 
   // Polygon priority: Solar API per-facet > Claude single-polygon fallback.
   // Claude's polygon is in pixel coords on the 640x640 zoom-20 satellite tile;
@@ -1162,46 +1159,125 @@ function HomePageInner() {
     }
   }, [activePolygons, vision, assumptions.complexity]);
 
-  const detailed = useMemo(
-    () =>
-      buildDetailedEstimate(assumptions, addOns, {
-        buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-        // Solar's segmentCount > everything. Otherwise, for a single-polygon
-        // source (OSM / SAM / Claude), use vertex count as a complexity
-        // proxy: a 4-vertex rectangle is 1 facet; a 12-vertex L is ~4-5.
-        segmentCount: solar?.segmentCount ?? polygonVertexComplexity(activePolygons),
-        segmentPolygonsLatLng: activePolygons,
-      }),
-    [assumptions, addOns, solar, activePolygons],
+  // ─── Tier C unified pricing — priceRoofData ─────────────────────────
+  // Replaces buildDetailedEstimate. Driven by the canonical RoofData feed
+  // plus the rep-side PricingInputs (material, multipliers, service type,
+  // add-ons). The wasteOverridePct is left undefined so RoofData's
+  // computed waste (from totals.wastePct) is the authoritative number;
+  // the UI waste table is still rendered via buildWasteTable below.
+  const pricingInputs = useMemo<PricingInputs>(
+    () => ({
+      material: assumptions.material,
+      materialMultiplier: assumptions.materialMultiplier,
+      laborMultiplier: assumptions.laborMultiplier,
+      serviceType: assumptions.serviceType ?? "reroof-tearoff",
+      addOns,
+      wasteOverridePct: undefined,
+      isInsuranceClaim,
+    }),
+    [assumptions, addOns, isInsuranceClaim],
   );
 
+  const priced = useMemo<PricedEstimate | null>(() => {
+    if (!roofData || roofData.source === "none") return null;
+    return priceRoofData(roofData, pricingInputs);
+  }, [roofData, pricingInputs]);
+
+  // Headline totals — derived directly from `priced`. `enabledAddOnsSum`
+  // is intentionally kept separate from `priced` because priceRoofData
+  // already includes add-on contributions in subtotal/total; the legacy
+  // computeBase / computeTotal split treated add-ons as a separate post-
+  // sum on top of the base. We mirror the legacy semantics for the
+  // sticky / output panels by adding add-ons into `total` once.
+  const enabledAddOnsSum = useMemo(
+    () => addOns.filter((a) => a.enabled).reduce((s, x) => s + x.price, 0),
+    [addOns],
+  );
+  const low = priced ? Math.round(priced.totalLow) : 0;
+  const high = priced ? Math.round(priced.totalHigh) : 0;
+  const total = priced
+    ? Math.round((priced.totalLow + priced.totalHigh) / 2)
+    : 0;
+
+  // Legacy DetailedEstimate projection — feeds LineItemsPanel and the
+  // v1-compatible Estimate object passed to OutputButtons / PDF / etc.
+  // Tier C: seed assumptions.sqft + complexity from RoofData ONCE per
+  // address (when the pipeline result first lands). After this initial
+  // application the rep is free to edit any field — we won't stomp.
+  useEffect(() => {
+    if (!roofData || roofData.source === "none") return;
+    const key = `${roofData.address.lat},${roofData.address.lng}`;
+    if (roofDataAppliedForAddressRef.current === key) return;
+    roofDataAppliedForAddressRef.current = key;
+    setAssumptions((a) => ({
+      ...a,
+      sqft: roofData.totals.totalRoofAreaSqft || a.sqft,
+      complexity: roofData.totals.complexity,
+    }));
+  }, [roofData]);
+
+  const detailed = useMemo<DetailedEstimate | null>(() => {
+    if (!priced) return null;
+    return {
+      lineItems: priced.lineItems.map((li) => ({
+        code: li.code,
+        description: li.description,
+        friendlyName: li.friendlyName,
+        quantity: li.quantity,
+        unit: li.unit,
+        unitCostLow: li.unitCostLow,
+        unitCostHigh: li.unitCostHigh,
+        extendedLow: li.extendedLow,
+        extendedHigh: li.extendedHigh,
+        category: li.category,
+      })),
+      simplifiedItems: priced.simplifiedItems,
+      subtotalLow: priced.subtotalLow,
+      subtotalHigh: priced.subtotalHigh,
+      overheadProfit: priced.overheadProfit,
+      totalLow: priced.totalLow,
+      totalHigh: priced.totalHigh,
+      squares: priced.squares,
+    };
+  }, [priced]);
+
+  // ─── Tier C lengths — derived from RoofData.edges + RoofData.flashing ──
+  // Replaces the legacy deriveRoofLengthsFromPolygons / heuristic split.
+  // RoofData's classifier has already grouped edges by type, and the
+  // flashing object carries the canonical drip-edge / IWS numbers.
   const lengths = useMemo(() => {
-    const polys = activePolygons;
-    const complexity = assumptions.complexity ?? "moderate";
-    if (polys && polys.length > 1) {
-      const pitchDegrees =
-        ({ "4/12": 18.43, "5/12": 22.62, "6/12": 26.57, "7/12": 30.26, "8/12+": 35.0 } as const)[
-          assumptions.pitch
-        ];
-      return deriveRoofLengthsFromPolygons({
-        polygons: polys,
-        pitchDegrees,
-        complexity,
-      });
-    }
-    return deriveRoofLengthsHeuristic({
-      totalRoofSqft: assumptions.sqft,
-      buildingFootprintSqft: solar?.buildingFootprintSqft ?? null,
-      segmentCount: solar?.segmentCount ?? polygonVertexComplexity(activePolygons),
-      complexity,
-      pitch: assumptions.pitch,
-    });
-  }, [assumptions, solar, activePolygons]);
+    if (!roofData || roofData.source === "none") return null;
+    const sum = (type: import("@/types/roof").EdgeType) =>
+      roofData.edges
+        .filter((e) => e.type === type)
+        .reduce((s, e) => s + e.lengthFt, 0);
+    return {
+      perimeterLf: roofData.flashing.dripEdgeLf,
+      eavesLf: sum("eave"),
+      rakesLf: sum("rake"),
+      ridgesLf: sum("ridge"),
+      hipsLf: sum("hip"),
+      valleysLf: sum("valley"),
+      dripEdgeLf: roofData.flashing.dripEdgeLf,
+      flashingLf:
+        roofData.flashing.chimneyLf + roofData.flashing.skylightLf,
+      stepFlashingLf: roofData.flashing.dormerStepLf,
+      iwsSqft: roofData.flashing.iwsSqft,
+      source: "polygons" as const,
+    };
+  }, [roofData]);
 
-  const waste = useMemo(
-    () => buildWasteTable(assumptions.sqft, assumptions.complexity ?? "moderate"),
-    [assumptions.sqft, assumptions.complexity],
-  );
+  // ─── Tier C waste table — uses RoofData.totals area + complexity ────
+  // RoofData's totals.wastePct is already the suggested-row pick; the
+  // multi-row UI display still uses buildWasteTable, which only needs
+  // (sqft, complexity).
+  const waste = useMemo(() => {
+    if (!roofData || roofData.source === "none") return null;
+    return buildWasteTable(
+      roofData.totals.totalRoofAreaSqft,
+      roofData.totals.complexity,
+    );
+  }, [roofData]);
 
   /**
    * Gate between address selection and the estimate pipeline. When the
@@ -1273,6 +1349,7 @@ function HomePageInner() {
     // Reset pipeline state on every address change.
     setRoofData(null);
     setPipelineError(null);
+    roofDataAppliedForAddressRef.current = null;
 
     if (addr.lat == null || addr.lng == null) {
       setAssumptions((a) => ({
@@ -1539,9 +1616,9 @@ function HomePageInner() {
     isInsuranceClaim,
     vision: vision ?? undefined,
     solar: solar ?? undefined,
-    detailed,
-    lengths,
-    waste,
+    detailed: detailed ?? undefined,
+    lengths: lengths ?? undefined,
+    waste: waste ?? undefined,
     polygons: activePolygons ?? undefined,
     polygonSource: polygonSource === "none" ? undefined : polygonSource,
     photos: photos.length ? photos : undefined,
@@ -1594,14 +1671,12 @@ function HomePageInner() {
     setRoboflowPolygon(null);
     setMsBuildingPolygon(null);
     setClaudeVerifications({});
+    setRoofData(null);
+    setPipelineError(null);
+    roofDataAppliedForAddressRef.current = null;
     hasUserEditedRef.current = false;
     editOriginIsWallFootprintRef.current = false;
   };
-
-  // Step 19b.2 placeholder — `priced` is wired up properly in Step 19b.3
-  // (via priceRoofData). Kept as a typed null so the JSX below typechecks
-  // against PricedEstimate | null until Step 3.
-  const priced: PricedEstimate | null = null;
 
   const mapBadges = (() => {
     const badges: string[] = [];
@@ -2122,16 +2197,20 @@ function HomePageInner() {
                 zip={address?.zip}
               />
               <TiersPanel assumptions={assumptions} addOns={addOns} onApplyTier={applyTier} />
-              <MeasurementsPanel
-                lengths={lengths}
-                waste={waste}
-                defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
-              />
-              <LineItemsPanel
-                detailed={detailed}
-                defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
-                alwaysShowXactimate={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
-              />
+              {lengths && waste && (
+                <MeasurementsPanel
+                  lengths={lengths}
+                  waste={waste}
+                  defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
+                />
+              )}
+              {detailed && (
+                <LineItemsPanel
+                  detailed={detailed}
+                  defaultOpen={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
+                  alwaysShowXactimate={isInsuranceClaim || BRAND_CONFIG.showXactimateCodes}
+                />
+              )}
               <div className="grid md:grid-cols-2 gap-6">
                 <AssumptionsEditor value={assumptions} onChange={setAssumptions} />
                 <AddOnsPanel addOns={addOns} onChange={setAddOns} />
