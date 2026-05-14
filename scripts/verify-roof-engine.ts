@@ -530,6 +530,85 @@ test("priceRoofData: per-facet attribution sums to shingle extended", () => {
   assert.ok(Math.abs(sumAttribLow - shingle.extendedLow) < 0.05);
 });
 
+test("priceRoofData: steep pitch applies only as labor charge, not shingle inflator", () => {
+  const flatFacet = emptyFacet("flat", []);
+  flatFacet.areaSqftSloped = 1000;
+  flatFacet.pitchDegrees = 22.6; // 5/12 — no steep
+  flatFacet.material = "asphalt-architectural";
+
+  const steepFacet = emptyFacet("steep", []);
+  steepFacet.areaSqftSloped = 1000;
+  steepFacet.pitchDegrees = 40; // > 39.8 -> 35% steep
+  steepFacet.material = "asphalt-architectural";
+
+  const makeData = (facets: Facet[]): RoofData => ({
+    address: { formatted: "", lat: 0, lng: 0 },
+    source: "tier-c-solar",
+    refinements: [], confidence: 0.85, imageryDate: null,
+    ageYearsEstimate: null, ageBucket: null,
+    facets, edges: [], objects: [],
+    flashing: {
+      chimneyLf: 0, skylightLf: 0, dormerStepLf: 0, wallStepLf: 0,
+      headwallLf: 0, apronLf: 0, valleyLf: 0, dripEdgeLf: 0,
+      pipeBootCount: 0, iwsSqft: 0,
+    },
+    totals: {
+      facetsCount: facets.length, edgesCount: 0, objectsCount: 0,
+      totalRoofAreaSqft: facets.reduce((s, f) => s + f.areaSqftSloped, 0),
+      totalFootprintSqft: 900,
+      totalSquares: 10, averagePitchDegrees: facets[0]?.pitchDegrees ?? 0,
+      wastePct: 11, complexity: "simple",
+      predominantMaterial: "asphalt-architectural",
+    },
+    diagnostics: { attempts: [], warnings: [], needsReview: [] },
+  });
+
+  const flat = priceRoofData(makeData([flatFacet]), baselineInputs);
+  const steep = priceRoofData(makeData([steepFacet]), baselineInputs);
+
+  const flatShingle = flat.lineItems.find((it) => it.code === "RFG ARCH")!;
+  const steepShingle = steep.lineItems.find((it) => it.code === "RFG ARCH")!;
+  // Shingle line $/SQ must be identical regardless of pitch — steep is
+  // labor-only, not a shingle material inflator.
+  assert.equal(flatShingle.unitCostLow, steepShingle.unitCostLow);
+  assert.equal(flatShingle.unitCostHigh, steepShingle.unitCostHigh);
+  // Steep roof should have an RFG STP labor line; flat roof should not.
+  assert.ok(!flat.lineItems.find((it) => it.code === "RFG STP"));
+  assert.ok(steep.lineItems.find((it) => it.code === "RFG STP"));
+});
+
+test("priceRoofData: wasteOverridePct = 0 falls through to data.totals.wastePct", () => {
+  const facet = emptyFacet("f1", []);
+  facet.areaSqftSloped = 1000;
+  facet.pitchDegrees = 22.6;
+  const data: RoofData = {
+    address: { formatted: "", lat: 0, lng: 0 },
+    source: "tier-c-solar",
+    refinements: [], confidence: 0.85, imageryDate: null,
+    ageYearsEstimate: null, ageBucket: null,
+    facets: [facet], edges: [], objects: [],
+    flashing: {
+      chimneyLf: 0, skylightLf: 0, dormerStepLf: 0, wallStepLf: 0,
+      headwallLf: 0, apronLf: 0, valleyLf: 0, dripEdgeLf: 0,
+      pipeBootCount: 0, iwsSqft: 0,
+    },
+    totals: {
+      facetsCount: 1, edgesCount: 0, objectsCount: 0,
+      totalRoofAreaSqft: 1000, totalFootprintSqft: 900,
+      totalSquares: 10, averagePitchDegrees: 22.6,
+      wastePct: 11, complexity: "simple",
+      predominantMaterial: "asphalt-architectural",
+    },
+    diagnostics: { attempts: [], warnings: [], needsReview: [] },
+  };
+  const withZero = priceRoofData(data, { ...baselineInputs, wasteOverridePct: 0 });
+  const withUndefined = priceRoofData(data, baselineInputs);
+  const shingleZero = withZero.lineItems.find((it) => it.code === "RFG ARCH")!;
+  const shingleUnd = withUndefined.lineItems.find((it) => it.code === "RFG ARCH")!;
+  // 0 should fall through to the suggested 11% waste -> identical to undefined
+  assert.equal(shingleZero.quantity, shingleUnd.quantity);
+});
+
 // ---- runner ---------------------------------------------------------------
 
 let failed = 0;

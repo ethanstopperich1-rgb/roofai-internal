@@ -603,7 +603,12 @@ export function priceRoofData(data: RoofData, inputs: PricingInputs): PricedEsti
   const items: LineItem[] = [];
   const totalSqft = data.totals.totalRoofAreaSqft;
   const totalSquares = totalSqft / 100;
-  const wastePct = inputs.wasteOverridePct ?? data.totals.wastePct;
+  // `??` would treat 0 as a valid override; in this domain a 0% waste is
+  // always a bug (no roofing job has zero cut waste). Same guard as
+  // computeTotals — positivity required for the override to apply.
+  const wastePct = (inputs.wasteOverridePct != null && inputs.wasteOverridePct > 0)
+    ? inputs.wasteOverridePct
+    : data.totals.wastePct;
   const wasteFactor = 1 + wastePct / 100;
 
   // ---- Tear-off ----------------------------------------------------------
@@ -752,14 +757,17 @@ export function priceRoofData(data: RoofData, inputs: PricingInputs): PricedEsti
   let shingleQty = 0;
   let shingleExtLow = 0;
   let shingleExtHigh = 0;
+  // Shingle priced at flat $/SQ — steep-pitch surcharge is a labor-only
+  // adjustment per Xactimate convention (RFG STP line, below). The per-facet
+  // attribution still shows each facet's $ contribution (proportional to
+  // its waste-adjusted sloped area), which is what the rep view consumes.
+  const shingleUnitLow = sh.low * inputs.materialMultiplier;
+  const shingleUnitHigh = sh.high * inputs.materialMultiplier;
   for (const facet of data.facets) {
     const facetSquares = (facet.areaSqftSloped / 100) *
       (inputs.serviceType === "repair" ? 0.15 : wasteFactor);
-    const facetSteep = 1 + steepChargeMultiplier(facet.pitchDegrees);
-    const unitLow = sh.low * inputs.materialMultiplier * facetSteep;
-    const unitHigh = sh.high * inputs.materialMultiplier * facetSteep;
-    const extLow = facetSquares * unitLow;
-    const extHigh = facetSquares * unitHigh;
+    const extLow = facetSquares * shingleUnitLow;
+    const extHigh = facetSquares * shingleUnitHigh;
     facetAttribution.push({
       facetId: facet.id,
       areaSqftSloped: facet.areaSqftSloped,
