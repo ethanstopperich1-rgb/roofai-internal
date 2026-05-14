@@ -1367,15 +1367,14 @@ function RoofStep({
               onPolygonChanged={onPolygonEdited}
               onClickPick={onClickPick}
               pickingLoading={pickingLoading}
-              // Per-facet outlines from the Tier C pipeline. Reads as
-              // structural lines (ridges, hips, dormers) under the
-              // editable polygon. Only meaningful when ≥2 facets;
-              // single-facet roofs would just duplicate the outline.
-              facetOverlay={
-                roofData && roofData.source !== "none" && roofData.facets.length >= 2
-                  ? roofData.facets.map((f) => f.polygon).filter((p) => p && p.length >= 3)
-                  : null
-              }
+              // Per-facet overlay is OFF for now. The original idea was to
+              // render Solar's per-facet polygons as faint structural lines
+              // under the editable polygon — but Solar's findClosest
+              // returns bbox-rotated rectangles, and on a 17-facet hip
+              // roof those overlap into visual chaos. Until we have
+              // pixel-accurate facet outlines from Tier A LiDAR, the
+              // single editable mask polygon is the cleanest UX.
+              facetOverlay={null}
             />
             {/* Click-pick re-trace overlay. Fires when the customer
                 hits "Wrong roof?" and taps a new building — the
