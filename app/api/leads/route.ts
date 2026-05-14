@@ -279,10 +279,24 @@ export async function POST(req: Request) {
             if (body.estimate && typeof body.estimate === "object") {
               const est = body.estimate as Record<string, unknown>;
               const estId = typeof est.id === "string" ? est.id : null;
-              const baseLow =
-                typeof est.baseLow === "number" ? est.baseLow : null;
-              const baseHigh =
-                typeof est.baseHigh === "number" ? est.baseHigh : null;
+              // v2 snapshots have version: 2 and totals under priced.totalLow /
+              // priced.totalHigh. v1 keeps baseLow / baseHigh at the top. Either
+              // way the proposals.total_low / total_high columns are integer,
+              // so we round.
+              let baseLow: number | null = null;
+              let baseHigh: number | null = null;
+              if (est.version === 2 && typeof est.priced === "object" && est.priced) {
+                const priced = est.priced as Record<string, unknown>;
+                if (typeof priced.totalLow === "number") {
+                  baseLow = Math.round(priced.totalLow);
+                }
+                if (typeof priced.totalHigh === "number") {
+                  baseHigh = Math.round(priced.totalHigh);
+                }
+              } else {
+                if (typeof est.baseLow === "number") baseLow = est.baseLow;
+                if (typeof est.baseHigh === "number") baseHigh = est.baseHigh;
+              }
               if (estId && /^[a-z0-9_-]{8,64}$/i.test(estId)) {
                 // generated_by is uuid in prod (FK→users.id), so we leave it
                 // NULL for customer self-served quotes. The distinguishing
