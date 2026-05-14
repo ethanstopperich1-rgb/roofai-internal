@@ -40,6 +40,10 @@ export function loadEstimates(): Estimate[] {
     .map((x) => x.estimate);
 }
 
+// Cap the rolodex to keep localStorage from growing unbounded over time.
+// Matches the pre-Tier-C behavior; same cap covers both v1 and v2 entries.
+const MAX_STORED_ESTIMATES = 200;
+
 /** Save a v2 estimate. New estimates always save as v2. */
 export function saveEstimateV2(e: EstimateV2): void {
   if (typeof window === "undefined") return;
@@ -47,7 +51,7 @@ export function saveEstimateV2(e: EstimateV2): void {
   const updated = [
     e,
     ...all.filter((r) => !isRecord(r) || r.id !== e.id),
-  ];
+  ].slice(0, MAX_STORED_ESTIMATES);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 }
 
@@ -59,7 +63,7 @@ export function saveEstimate(e: Estimate): void {
   const updated = [
     e,
     ...all.filter((r) => !isRecord(r) || r.id !== e.id),
-  ];
+  ].slice(0, MAX_STORED_ESTIMATES);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 }
 
