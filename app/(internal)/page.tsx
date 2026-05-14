@@ -174,6 +174,14 @@ function HomePageInner() {
   const [livePolygons, setLivePolygons] = useState<
     Array<Array<{ lat: number; lng: number }>> | null
   >(null);
+  // SAM3-trace polygon, mirrored from /quote's tier ladder so the rep sees
+  // the same tight outline the customer sees. Fetched in parallel with the
+  // Tier C pipeline; when present, overrides roofData.outlinePolygon /
+  // facets for display. Pricing math still reads from roofData (SAM3
+  // doesn't have per-facet pitch / area), so this is display-only.
+  const [sam3Polygon, setSam3Polygon] = useState<
+    Array<{ lat: number; lng: number }> | null
+  >(null);
   // Tracked via ref so late-arriving SAM doesn't stomp in-progress edits
   // (the sam-refine fetch resolves ~5-10s after OSM, by which point the rep
   // may have already moved vertices on the OSM polygon).
@@ -273,6 +281,10 @@ function HomePageInner() {
     | "none"
   >(() => {
     if (livePolygons && livePolygons.length) return "edited";
+    // When SAM3 returned a polygon, it's the one rendered on the map.
+    // Label the chip "sam3" regardless of the underlying RoofData source
+    // so the badge matches what's actually visible to the rep.
+    if (sam3Polygon && sam3Polygon.length >= 3) return "sam3";
     if (!roofData || roofData.source === "none" || roofData.facets.length === 0) return "none";
     // Map RoofData.source → legacy union for Roof3DViewer / Estimate types:
     //   tier-c-solar  → "solar"   (Solar API photogrammetric facets)
@@ -281,25 +293,29 @@ function HomePageInner() {
     if (roofData.source === "tier-c-solar") return "solar";
     if (roofData.source === "tier-c-vision") return "ai";
     return "sam3";
-  }, [livePolygons, roofData]);
+  }, [livePolygons, sam3Polygon, roofData]);
 
   // sourcePolygons / activePolygons feed MapView + Roof3DViewer + the
-  // legacy Estimate.polygons field. Prefer `roofData.outlinePolygon`
-  // (pixel-accurate Solar mask / LiDAR alpha-shape boundary) when
-  // present — it's strictly tighter than `facets[].polygon` (which for
-  // Tier C is axis-aligned bboxes rotated to dominant azimuth, loose on
-  // L-shapes and non-rectangular roofs). Falls back to the facet union
-  // when the outline is null (vision-only, mask fetch failed,
-  // SOLAR_MASK_OUTLINE=0). livePolygons override after rep edit.
+  // legacy Estimate.polygons field. Priority (highest → lowest):
+  //   1. sam3Polygon — same SAM3 trace /quote's tier ladder uses.
+  //      Shows the rep the SAME polygon the customer sees.
+  //   2. roofData.outlinePolygon — Solar dataLayers mask / LiDAR
+  //      alpha-shape boundary (pixel-accurate fallback).
+  //   3. roofData.facets[].polygon — bbox-rotated rectangles (loose,
+  //      last resort).
+  // livePolygons override everything once the rep edits a vertex.
   const sourcePolygons:
     | Array<Array<{ lat: number; lng: number }>>
     | undefined = useMemo(() => {
+    if (sam3Polygon && sam3Polygon.length >= 3) {
+      return [sam3Polygon];
+    }
     if (!roofData || roofData.source === "none") return undefined;
     if (roofData.outlinePolygon && roofData.outlinePolygon.length >= 3) {
       return [roofData.outlinePolygon];
     }
     return roofData.facets.map((f) => f.polygon);
-  }, [roofData]);
+  }, [sam3Polygon, roofData]);
   const activePolygons = livePolygons ?? sourcePolygons;
   const polygonReady = roofData != null && roofData.source !== "none";
   const renderedSourcePolygons = polygonReady ? sourcePolygons : undefined;
@@ -541,6 +557,36 @@ function HomePageInner() {
     setPendingAddress(addr);
   };
 
+  /** SAM3 polygon fetch — mirrors /quote's Tier 1 in the tier ladder.
+   *  Runs in parallel with the Tier C pipeline. When the response is a
+   *  usable polygon, /internal renders it as the display outline (same
+   *  visible polygon the customer sees on /quote). Pricing math still
+   *  consumes roofData, not this. Failure is soft — display falls back
+   *  to roofData.outlinePolygon (Solar mask) → roofData.facets. */
+  const fetchSam3Polygon = async (addr: AddressInfo, myGen: number) => {
+    if (addr.lat == null || addr.lng == null) return;
+    try {
+      const nocacheSuffix = sam3NoCacheSuffix;
+      const res = await fetch(
+        `/api/sam3-roof?lat=${addr.lat}&lng=${addr.lng}` +
+          `&address=${encodeURIComponent(addr.formatted ?? "")}` +
+          nocacheSuffix,
+        { cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const poly: Array<{ lat: number; lng: number }> | null =
+        Array.isArray(data?.polygon) && data.polygon.length >= 3
+          ? data.polygon
+          : null;
+      if (!poly) return;
+      if (fetchGenRef.current !== myGen) return; // stale — newer fetch won
+      setSam3Polygon(poly);
+    } catch {
+      /* soft-fail — display falls back to roofData */
+    }
+  };
+
   /** Tier C unified pipeline call. Replaces the legacy parallel
    *  Solar/Vision/OSM/MSBuildings/SAM3 fan-out — one fetch, one
    *  canonical RoofData feed for everything downstream. */
@@ -553,6 +599,9 @@ function HomePageInner() {
     const myGen = ++fetchGenRef.current;
     setPipelineLoading(true);
     setPipelineError(null);
+    // Kick off SAM3 in parallel — same source /quote uses, so /internal
+    // shows the same tight polygon the customer sees.
+    fetchSam3Polygon(addr, myGen);
     try {
       const nocacheSuffix = sam3NoCacheSuffix; // "&nocache=1" or ""
       const res = await fetch(
@@ -677,6 +726,7 @@ function HomePageInner() {
     editOriginIsWallFootprintRef.current = false;
     // Reset pipeline state on every address change.
     setRoofData(null);
+    setSam3Polygon(null);
     setPipelineError(null);
     setInspectorStatus("idle");
     inspectorRanForKeyRef.current = null;
