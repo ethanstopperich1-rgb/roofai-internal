@@ -59,7 +59,7 @@ export default function InternalHeader() {
       }}
     >
       <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 h-16 sm:h-20 flex items-center justify-between gap-3">
-        <Link href="/" className="group flex items-center gap-2 min-w-0" aria-label="Voxaris Pitch">
+        <Link href="/rep" className="group flex items-center gap-2 min-w-0" aria-label="Voxaris Pitch">
           <img
             src="/brand/logo-wordmark-alpha.png"
             alt="Voxaris Pitch"
@@ -72,7 +72,7 @@ export default function InternalHeader() {
 
         <NavHeader
           items={[
-            { label: "Estimator", href: "/" },
+            { label: "Estimator", href: "/rep" },
             { label: "History", href: "/history" },
             { label: "Admin", href: "/admin" },
           ]}
