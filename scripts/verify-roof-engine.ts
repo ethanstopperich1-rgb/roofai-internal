@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   classifyComplexity,
   computeFlashing,
+  computeTotals,
   suggestedWastePctTierC,
 } from "@/lib/roof-engine";
 import type { Edge, Facet, RoofObject } from "@/types/roof";
@@ -203,6 +204,47 @@ test("suggestedWastePctTierC: 7 / 11 / 14", () => {
   assert.equal(suggestedWastePctTierC("simple"), 7);
   assert.equal(suggestedWastePctTierC("moderate"), 11);
   assert.equal(suggestedWastePctTierC("complex"), 14);
+});
+
+// ---- computeTotals --------------------------------------------------------
+
+test("computeTotals: empty facets -> all-zero totals", () => {
+  const result = computeTotals([], [], []);
+  assert.equal(result.facetsCount, 0);
+  assert.equal(result.totalRoofAreaSqft, 0);
+  assert.equal(result.averagePitchDegrees, 0);
+  assert.equal(result.complexity, "simple");
+  assert.equal(result.wastePct, 7);
+});
+
+test("computeTotals: area-weighted average pitch + squares rounding", () => {
+  const f1 = emptyFacet("f1", []);
+  f1.pitchDegrees = 20;
+  f1.areaSqftSloped = 1000;
+  const f2 = emptyFacet("f2", []);
+  f2.pitchDegrees = 30;
+  f2.areaSqftSloped = 1000;
+  const result = computeTotals([f1, f2], [], []);
+  assert.equal(result.averagePitchDegrees, 25);
+  assert.equal(result.totalRoofAreaSqft, 2000);
+  // 2000 / 100 = 20 squares, already on a 1/3 boundary
+  assert.equal(result.totalSquares, 20);
+});
+
+test("computeTotals: wasteOverridePct wins over suggested", () => {
+  const result = computeTotals([], [], [], 17);
+  assert.equal(result.wastePct, 17);
+});
+
+test("computeTotals: predominant material is most-area material, ignoring null", () => {
+  const f1 = emptyFacet("f1", []);
+  f1.material = "asphalt-architectural";
+  f1.areaSqftSloped = 1500;
+  const f2 = emptyFacet("f2", []);
+  f2.material = "metal-standing-seam";
+  f2.areaSqftSloped = 500;
+  const result = computeTotals([f1, f2], [], []);
+  assert.equal(result.predominantMaterial, "asphalt-architectural");
 });
 
 // ---- runner ---------------------------------------------------------------

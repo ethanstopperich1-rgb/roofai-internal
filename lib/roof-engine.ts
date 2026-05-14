@@ -1,6 +1,6 @@
 // lib/roof-engine.ts
 import type {
-  ComplexityTier, Edge, Facet, FlashingBreakdown, RoofObject,
+  ComplexityTier, Edge, Facet, FlashingBreakdown, Material, RoofObject, RoofTotals,
 } from "@/types/roof";
 
 /**
@@ -185,4 +185,48 @@ export function classifyComplexity(input: {
 
 export function suggestedWastePctTierC(c: ComplexityTier): number {
   return c === "complex" ? 14 : c === "simple" ? 7 : 11;
+}
+
+export function computeTotals(
+  facets: Facet[],
+  edges: Edge[],
+  objects: RoofObject[],
+  wasteOverridePct?: number,
+): RoofTotals {
+  const totalRoofAreaSqft = facets.reduce((s, f) => s + f.areaSqftSloped, 0);
+  const totalFootprintSqft = facets.reduce((s, f) => s + f.areaSqftFootprint, 0);
+  const totalSquares = Math.ceil((totalRoofAreaSqft / 100) * 3) / 3;
+  const averagePitchDegrees = totalRoofAreaSqft > 0
+    ? facets.reduce((s, f) => s + f.pitchDegrees * f.areaSqftSloped, 0) / totalRoofAreaSqft
+    : 0;
+
+  const complexity = classifyComplexity({ facets, edges, objects });
+  const wastePct = wasteOverridePct ?? suggestedWastePctTierC(complexity);
+
+  // Material consensus by area, ignoring null facets.
+  const materialVotes = new Map<Material | null, number>();
+  for (const f of facets) {
+    materialVotes.set(f.material, (materialVotes.get(f.material) ?? 0) + f.areaSqftSloped);
+  }
+  let predominantMaterial: Material | null = null;
+  let topVote = -1;
+  for (const [mat, area] of materialVotes) {
+    if (mat !== null && area > topVote) {
+      predominantMaterial = mat;
+      topVote = area;
+    }
+  }
+
+  return {
+    facetsCount: facets.length,
+    edgesCount: edges.length,
+    objectsCount: objects.length,
+    totalRoofAreaSqft: Math.round(totalRoofAreaSqft),
+    totalFootprintSqft: Math.round(totalFootprintSqft),
+    totalSquares,
+    averagePitchDegrees: Math.round(averagePitchDegrees * 10) / 10,
+    wastePct,
+    complexity,
+    predominantMaterial,
+  };
 }
