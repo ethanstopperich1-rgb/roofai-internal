@@ -347,7 +347,7 @@ export default function ConfirmHomePin({
             </button>
           </div>
         )}
-        {smartMoved && (
+        {smartMoved && !loadError && (
           <SmartPinToast />
         )}
       </div>
@@ -371,7 +371,10 @@ export default function ConfirmHomePin({
           </p>
           <div className="flex items-center gap-3">
             <button
-              onClick={onCancel}
+              onClick={() => {
+                logPinEvent({ type: "pin_back" });
+                onCancel();
+              }}
               className="text-sm text-slate-400 hover:text-slate-200 transition px-2 py-2"
             >
               ← Back

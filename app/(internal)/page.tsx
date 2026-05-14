@@ -1521,6 +1521,7 @@ function HomePageInner() {
   const reset = () => {
     setAddressText("");
     setAddress(null);
+    setPendingAddress(null);
     setAssumptions(DEFAULT_ASSUMPTIONS);
     setAddOns(DEFAULT_ADDONS);
     setCustomerName("");
@@ -1601,7 +1602,6 @@ function HomePageInner() {
               void runEstimate(finalAddr);
             }}
             onCancel={() => {
-              console.log("[pin]", "pin_back", {});
               setPendingAddress(null);
               setAddress(null);
             }}
