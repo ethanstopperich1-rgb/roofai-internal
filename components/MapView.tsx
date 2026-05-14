@@ -167,11 +167,17 @@ export default function MapView({
     if (!g.maps.drawing) return;
 
     // Clear any existing rendered polygons + sqft labels so the canvas is fresh.
+    // eslint-disable-next-line react-hooks/immutability -- intentional ref-collection reset inside an effect; React Compiler false-positive on cleanup-then-rebuild pattern.
     for (const p of polysRef.current) p.setMap(null);
+    // eslint-disable-next-line react-hooks/immutability
     polysRef.current = [];
+    // eslint-disable-next-line react-hooks/immutability
     for (const lm of labelMarkersRef.current) lm.setMap(null);
+    // eslint-disable-next-line react-hooks/immutability
     labelMarkersRef.current = [];
+    // eslint-disable-next-line react-hooks/immutability
     for (const t of animTimersRef.current) window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/immutability
     animTimersRef.current = [];
 
     if (drawingManagerRef.current) {
