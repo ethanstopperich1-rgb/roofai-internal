@@ -67,8 +67,9 @@ import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import { FacetList } from "@/components/roof/FacetList";
 import { saveEstimateV2 } from "@/lib/storage";
-import { DEFAULT_ADDONS } from "@/lib/pricing";
-import { buildWasteTable } from "@/lib/roof-geometry";
+import { DEFAULT_ADDONS, buildDetailedEstimate } from "@/lib/pricing";
+import { buildWasteTable, inferComplexityFromPolygons } from "@/lib/roof-geometry";
+import type { Pitch } from "@/types/estimate";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
@@ -366,6 +367,37 @@ function HomePageInner() {
     }));
   }, [roofData]);
 
+  // ─── Rollout telemetry: complexity_bucket_crossed ────────────────────
+  // For the first 100 estimates after Tier C rollout, compare the new
+  // (RoofData-derived) complexity bucket against the legacy
+  // polygon-shape inference. If they disagree, log a breadcrumb so we
+  // can audit whether the new bucket lands too high or too low. The
+  // counter caps the WINDOW, not the emission rate — once we've seen
+  // 100 estimates the comparison stops entirely.
+  const complexityDiffKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!roofData || roofData.source === "none") return;
+    const key = `${roofData.address.lat},${roofData.address.lng}`;
+    if (complexityDiffKeyRef.current === key) return;
+    complexityDiffKeyRef.current = key;
+    const COUNT_KEY = "roof_engine_complexity_diff_count";
+    const count = Number(localStorage.getItem(COUNT_KEY) ?? "0");
+    if (count >= 100) return;
+    const newBucket = roofData.totals.complexity;
+    const oldBucket = inferComplexityFromPolygons(
+      roofData.facets.map((f) => f.polygon),
+    );
+    if (oldBucket && oldBucket !== newBucket) {
+      console.log("[telemetry] complexity_bucket_crossed", {
+        address: roofData.address.formatted,
+        oldBucket,
+        newBucket,
+      });
+    }
+    localStorage.setItem(COUNT_KEY, String(count + 1));
+  }, [roofData]);
+
   const detailed = useMemo<DetailedEstimate | null>(() => {
     if (!priced) return null;
     return {
@@ -654,6 +686,53 @@ function HomePageInner() {
     claim,
   ]);
 
+  // ─── Rollout telemetry: pricing_diff_v1_vs_v2 ────────────────────────
+  // For the first 50 saves after Tier C rollout, dual-price the same
+  // estimate with the legacy `buildDetailedEstimate` engine and emit
+  // the delta. This is the headline signal for "did the new pricing
+  // engine drift?" — once 50 samples are in, we stop the dual-pricing
+  // path entirely so it doesn't keep running forever in /internal.
+  // Task 23 will delete buildDetailedEstimate along with the rest of
+  // the legacy engine.
+  const emitPricingDiff = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (!priced || !roofData || roofData.source === "none") return;
+    const COUNT_KEY = "roof_engine_pricing_diff_count";
+    const count = Number(localStorage.getItem(COUNT_KEY) ?? "0");
+    if (count >= 50) return;
+    const avgPitchDeg = roofData.totals.averagePitchDegrees;
+    const pitch: Pitch =
+      avgPitchDeg < 19.4 ? "4/12" :
+      avgPitchDeg < 24.6 ? "5/12" :
+      avgPitchDeg < 28.4 ? "6/12" :
+      avgPitchDeg < 33.0 ? "7/12" : "8/12+";
+    const legacyAssumptions: Assumptions = {
+      ...assumptions,
+      sqft: roofData.totals.totalRoofAreaSqft,
+      pitch,
+    };
+    const legacyOpts = {
+      buildingFootprintSqft: roofData.totals.totalFootprintSqft,
+      segmentCount: roofData.facets.length,
+      segmentPolygonsLatLng: roofData.facets.map((f) => f.polygon),
+    };
+    try {
+      const v1 = buildDetailedEstimate(legacyAssumptions, addOns, legacyOpts);
+      const v2Total = (priced.totalLow + priced.totalHigh) / 2;
+      const v1Total = (v1.totalLow + v1.totalHigh) / 2;
+      const deltaPct = v1Total > 0 ? ((v2Total - v1Total) / v1Total) * 100 : 0;
+      console.log("[telemetry] pricing_diff_v1_vs_v2", {
+        address: (address ?? { formatted: addressText }).formatted,
+        v1Total: Math.round(v1Total),
+        v2Total: Math.round(v2Total),
+        deltaPct: Math.round(deltaPct * 10) / 10,
+      });
+    } catch (err) {
+      console.warn("[telemetry] pricing_diff_v1_vs_v2 failed:", err);
+    }
+    localStorage.setItem(COUNT_KEY, String(count + 1));
+  }, [priced, roofData, assumptions, addOns, address, addressText]);
+
   const applyTier = (tier: ProposalTier) => {
     userSetAssumptions((a) => ({ ...a, material: tier.material }));
     setAddOns((cur) => cur.map((x) => ({ ...x, enabled: tier.includedAddOnIds.includes(x.id) })));
@@ -665,6 +744,7 @@ function HomePageInner() {
     // once the rep is on the breakdown page since v2 requires priced.
     onSave: () => {
       if (!shown) return;
+      emitPricingDiff();
       if (estimateV2) saveEstimateV2(estimateV2);
       else saveEstimate(estimate);
     },
@@ -1166,6 +1246,7 @@ function HomePageInner() {
                   // back to legacy v1 storage only when no RoofData has
                   // landed yet.
                   onSave={() => {
+                    emitPricingDiff();
                     if (estimateV2) saveEstimateV2(estimateV2);
                     else saveEstimate(estimate);
                   }}

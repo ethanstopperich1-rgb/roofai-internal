@@ -11,10 +11,17 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /** Tag a raw estimate row as v1 or v2 (for renderer branching). */
 export function tagEstimate(raw: unknown): LoadedEstimate | null {
   if (!isRecord(raw)) return null;
-  if (raw.version === 2 && isRecord(raw.roofData)) {
-    return { kind: "v2", estimate: raw as unknown as EstimateV2 };
+  const result: LoadedEstimate =
+    raw.version === 2 && isRecord(raw.roofData)
+      ? { kind: "v2", estimate: raw as unknown as EstimateV2 }
+      : { kind: "v1", estimate: raw as unknown as Estimate };
+  if (typeof window !== "undefined") {
+    console.log("[telemetry] estimate_loaded_legacy_vs_v2", {
+      id: result.estimate.id,
+      kind: result.kind,
+    });
   }
-  return { kind: "v1", estimate: raw as unknown as Estimate };
+  return result;
 }
 
 /** Raw load — returns mixed v1/v2 estimates (tagged). */

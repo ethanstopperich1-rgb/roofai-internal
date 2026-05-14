@@ -44,6 +44,15 @@ export async function tierCSolarSource(opts: {
 
   if (!solar || solar.segmentCount === 0) return null;
 
+  if (solar && solar.segmentCount > 0 && !vision) {
+    console.log("[telemetry] vision_failure_tolerated", {
+      address: opts.address.formatted,
+      lat: opts.address.lat,
+      lng: opts.address.lng,
+      reason: "vision returned null (api down, key missing, or polygon empty)",
+    });
+  }
+
   const facets = solarToFacets(solar, vision);
   const edges = classifyEdges(facets, solar.dominantAzimuthDeg);
   const objects = visionPenetrationsToObjects(opts.address, vision);

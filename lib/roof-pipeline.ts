@@ -81,6 +81,24 @@ export async function runRoofPipeline(opts: {
     address: opts.address.formatted,
   });
 
+  const objCounts = primary.objects.reduce((acc, o) => {
+    acc[o.kind] = (acc[o.kind] ?? 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  const totalFlashingLf =
+    primary.flashing.chimneyLf + primary.flashing.skylightLf +
+    primary.flashing.dormerStepLf + primary.flashing.valleyLf +
+    primary.flashing.wallStepLf + primary.flashing.headwallLf +
+    primary.flashing.apronLf;
+  console.log("[telemetry] flashing_detected", {
+    address: opts.address.formatted,
+    chimneys: objCounts.chimney ?? 0,
+    skylights: objCounts.skylight ?? 0,
+    dormers: objCounts.dormer ?? 0,
+    vents: (objCounts.vent ?? 0) + (objCounts.stack ?? 0),
+    totalFlashingLf,
+  });
+
   // Cache successful results only, for 1 hour.
   await setCached("roof-data", opts.address.lat, opts.address.lng, primary, 60 * 60);
   return primary;
