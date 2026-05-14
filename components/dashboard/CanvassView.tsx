@@ -18,7 +18,7 @@ import {
   PhoneOutgoing,
   CircleCheck,
 } from "lucide-react";
-import { fmtDateTime } from "@/lib/dashboard";
+import { fmtDateTime } from "@/lib/dashboard-format";
 import CanvassMap from "./CanvassMap";
 
 /**
