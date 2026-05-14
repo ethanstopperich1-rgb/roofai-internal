@@ -91,6 +91,11 @@ VOLUME_PATH = "/cache/lidar"
     # just burns money and never recovers. The TS adapter handles
     # failure correctly (returns null, pipeline falls through).
     retries=0,
+    # Keep one container warm so demo + customer-facing runs never pay
+    # the ~30-60s cold-start. Worth ~$0.10/hr of idle compute to
+    # guarantee Tier A wins on the first try instead of timing out
+    # while the container boots.
+    min_containers=1,
 )
 def run_extract(request_data: dict) -> dict:
     """Long-running heavy function. Runs the full Tier A pipeline:

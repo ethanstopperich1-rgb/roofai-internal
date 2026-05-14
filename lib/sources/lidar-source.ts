@@ -19,16 +19,19 @@ interface LidarServiceResponse {
   message?: string;
 }
 
-/** Default 30s timeout — Modal warm-call typical ~15s, cold-start can run
- *  ~60s. Override via LIDAR_FETCH_TIMEOUT_MS for slow Modal cold-starts or
- *  alternate hosts (Fly/Railway). Clamped to [5s, 120s].
+/** Default 180s total timeout — Modal warm-call typical ~10-15s, but
+ *  cold-start + region-growing segmentation on a 200k-point cloud can
+ *  push end-to-end past 120s. Override via LIDAR_FETCH_TIMEOUT_MS for
+ *  alternate hosts. Clamped to [5s, 300s] — Vercel's function timeout
+ *  caps total wall time around 300s anyway.
  *  The pipeline orchestrator catches AbortError and falls through. */
 function resolveTimeoutMs(): number {
   const raw = process.env.LIDAR_FETCH_TIMEOUT_MS;
-  if (!raw) return 30_000;
+  const fallback = 180_000;
+  if (!raw) return fallback;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return 30_000;
-  return Math.min(120_000, Math.max(5_000, Math.round(n)));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(300_000, Math.max(5_000, Math.round(n)));
 }
 
 let unconfiguredLogged = false;
