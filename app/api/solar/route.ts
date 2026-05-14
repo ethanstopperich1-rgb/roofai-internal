@@ -76,10 +76,19 @@ export async function GET(req: Request) {
   const cached = await getCached<SolarSummary>("solar", lat, lng);
   if (cached) return NextResponse.json(cached);
 
+  // SOLAR_DETECTED_ARRAYS=1 enables Google's optional `additionalInsights=
+  // DETECTED_ARRAYS` flag, which adds a `detectedArrays` object to the
+  // response when Google has detected existing rooftop PV on the building.
+  // Flag default OFF — costs nothing extra on Solar API but adds payload
+  // size; keep it gated until product asks for it on a rep workflow.
+  const detectedArraysFlag =
+    process.env.SOLAR_DETECTED_ARRAYS === "1"
+      ? "&additionalInsights=DETECTED_ARRAYS"
+      : "";
   const url =
     `https://solar.googleapis.com/v1/buildingInsights:findClosest` +
     `?location.latitude=${lat}&location.longitude=${lng}` +
-    `&requiredQuality=HIGH&key=${apiKey}`;
+    `&requiredQuality=HIGH${detectedArraysFlag}&key=${apiKey}`;
 
   const res = await fetchWithTimeout(url, { cache: "no-store", timeoutMs: 15_000 });
   if (!res.ok) {
@@ -175,6 +184,19 @@ export async function GET(req: Request) {
     buildingCenter,
     maxArrayPanels: stats?.maxArrayPanelsCount ?? null,
     yearlyKwhPotential: stats?.maxSunshineHoursPerYear ?? null,
+    // detectedArrays only present when SOLAR_DETECTED_ARRAYS=1 AND Google
+    // returned a detection block. Defensive null-checks: response shape is
+    // documented but not contract-tested by Google.
+    detectedArrays: (() => {
+      const det = data?.detectedArrays as
+        | { status?: string; latestCaptureDate?: { year?: number; month?: number; day?: number } }
+        | undefined;
+      if (!det || !det.status) return null;
+      return {
+        status: det.status,
+        latestCaptureDate: imageryDateString(det.latestCaptureDate),
+      };
+    })(),
   };
 
   await setCached("solar", lat, lng, summary);

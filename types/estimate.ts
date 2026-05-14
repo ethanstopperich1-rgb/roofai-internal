@@ -126,6 +126,17 @@ export interface SolarSummary {
   buildingCenter?: { lat: number; lng: number } | null;
   maxArrayPanels?: number | null;
   yearlyKwhPotential?: number | null;
+  /** Existing-array detection from Solar API's `additionalInsights=DETECTED_ARRAYS`.
+   *  Populated only when SOLAR_DETECTED_ARRAYS=1 is set on the route and the
+   *  building has a detection. Surfaces a "Existing PV" chip in the rep tool
+   *  so we don't blind-quote a re-roof on a property with active panels.
+   *  Field is OPTIONAL — Tier C consumers must continue to work when null. */
+  detectedArrays?: {
+    /** Solar API enum: "NO_PANELS_FOUND", "PANELS_PRESENT", or unknown variants. */
+    status: string;
+    /** ISO YYYY-MM-DD of latest capture (when present in response). */
+    latestCaptureDate: string | null;
+  } | null;
 }
 
 export type LineItemUnit = "SQ" | "LF" | "EA" | "SF" | "%";
