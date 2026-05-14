@@ -33,6 +33,16 @@ import type {
   Material,
   Pitch,
 } from "@/types/estimate";
+import type {
+  EstimateV2,
+  Material as RoofMaterial,
+  PricedEstimate,
+  PricingInputs,
+  RoofData,
+} from "@/types/roof";
+import { priceRoofData } from "@/lib/roof-engine";
+import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
+import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
 import { BRAND_CONFIG } from "@/lib/branding";
 
 // 3D viewer is heavy (Cesium + 3D Tiles) — lazy-load it so the initial
@@ -188,6 +198,30 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
    *  updates the same row instead of inserting a duplicate. */
   const existingLeadPublicIdRef = useRef<string | null>(null);
 
+  // ─── Tier C unified pipeline (customer-side) ─────────────────────────
+  // Replaces the per-page Solar/SAM3/MS-Buildings/Solar-mask cascade
+  // with a single canonical RoofData feed via /api/roof-pipeline.
+  // Drives RoofTotalsCard + DetectedFeaturesPanel + priceRoofData below.
+  const [roofData, setRoofData] = useState<RoofData | null>(null);
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
+  // Fetch-generation guard — protects against stale responses on rapid
+  // address changes (same pattern used in /internal). Each fetch captures
+  // the counter; a response whose captured myGen no longer matches the
+  // current ref drops its result on the floor.
+  const fetchGenRef = useRef(0);
+  // Persisted estimate id for both v1 + v2 saves — kept stable across
+  // wizard steps so a v2 save on the Quote step lands on the same row
+  // the share link reads from.
+  const estimateIdRef = useRef<string>(
+    `est_${crypto.randomUUID().replace(/-/g, "")}`,
+  );
+  // Customer's explicit material pick — overrides vision-detected and
+  // brand default. Null means "no pick yet, use detection chain".
+  const [customerMaterial, setCustomerMaterial] = useState<Material | null>(
+    null,
+  );
+
   const stepIdx = STEPS.indexOf(step);
 
   // Pricing — uses RoofingCalculator's published low/high installed ranges per
@@ -205,6 +239,86 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
       high: Math.round(baseHigh + tearoffHigh + adds),
     };
   }, [sqft, material, addOns]);
+
+  // ─── Tier C — material selection chain ───────────────────────────────
+  // Customer pick > vision detection (when confidence > 0.6) > brand
+  // default. Drives the priceRoofData call below — the legacy `material`
+  // state above is the customer-visible select; we still feed pricing
+  // through this chain because future revisions may show a customer
+  // an unselectable "detected by vision" hint.
+  const materialFromVision = useMemo<Material | null>(() => {
+    if (!roofData || roofData.confidence <= 0.6) return null;
+    // Narrow the wider RoofData Material set down to the customer-
+    // pickable estimate.ts set. wood-shake / flat-membrane never appear
+    // in /quote's selector — when vision detects one, we fall through
+    // to the brand default rather than priceRoofData throwing a
+    // type-discriminated branch nobody designed for /quote.
+    const v = roofData.totals.predominantMaterial as RoofMaterial | null;
+    if (!v) return null;
+    switch (v) {
+      case "asphalt-3tab":
+      case "asphalt-architectural":
+      case "metal-standing-seam":
+      case "tile-concrete":
+        return v;
+      default:
+        return null;
+    }
+  }, [roofData]);
+  const effectiveMaterial: Material =
+    customerMaterial ?? materialFromVision ?? material ?? "asphalt-architectural";
+
+  const pricingInputs = useMemo<PricingInputs>(
+    () => ({
+      material: effectiveMaterial,
+      materialMultiplier: 1.0,
+      laborMultiplier: 1.0,
+      serviceType: "reroof-tearoff",
+      addOns: addOns.map((a) => ({
+        id: a.id,
+        label: a.label,
+        price: a.price,
+        enabled: a.enabled,
+      })),
+      isInsuranceClaim: false,
+    }),
+    [effectiveMaterial, addOns],
+  );
+
+  const priced = useMemo<PricedEstimate | null>(() => {
+    if (!roofData || roofData.source === "none") return null;
+    return priceRoofData(roofData, pricingInputs);
+  }, [roofData, pricingInputs]);
+
+  /** Tier C unified pipeline call. Replaces the legacy Solar / SAM3 /
+   *  Solar-mask / MS-Buildings cascade — one fetch, one canonical
+   *  RoofData feed for RoofTotalsCard + DetectedFeaturesPanel + pricing.
+   *  Mirrors the fetch-generation guard from /internal so an in-flight
+   *  fetch from an earlier address can't stomp the current one. */
+  const runRoofPipelineFetch = async (addr: AddressInfo) => {
+    if (addr.lat == null || addr.lng == null) return;
+    const myGen = ++fetchGenRef.current;
+    setPipelineLoading(true);
+    setPipelineError(null);
+    try {
+      const res = await fetch(
+        `/api/roof-pipeline?lat=${addr.lat}&lng=${addr.lng}` +
+          `&address=${encodeURIComponent(addr.formatted ?? "")}` +
+          sam3NoCacheSuffix,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(`pipeline ${res.status}`);
+      const data = (await res.json()) as RoofData;
+      if (fetchGenRef.current !== myGen) return; // stale
+      setRoofData(data);
+    } catch (err) {
+      if (fetchGenRef.current !== myGen) return;
+      setPipelineError(err instanceof Error ? err.message : String(err));
+      setRoofData(null);
+    } finally {
+      if (fetchGenRef.current === myGen) setPipelineLoading(false);
+    }
+  };
 
   /** When the lead form is submitted at the hero step:
    *   - Save contact info
@@ -350,6 +464,13 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
     //   Tier 4: Microsoft Buildings polygon × 1.118 (footprint × default
     //           pitch). Last resort before manual entry.
     if (addr.lat != null && addr.lng != null) {
+      // Fire the Tier C unified pipeline in parallel with the legacy
+      // cascade below. We don't await it — the legacy path still drives
+      // `sqft` + `satelliteUrl` for the existing UI; the pipeline result
+      // populates `roofData` for RoofTotalsCard + priceRoofData. Step 4
+      // (refactor) deletes the legacy cascade in favor of pipeline-only.
+      runRoofPipelineFetch(addr);
+
       setLoadingRoof(true);
       try {
         let resolvedSqft: number | null = null;
@@ -858,8 +979,16 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
               setSatelliteUrl(null);
               setRoofPolygon(null);
               setMaterial("asphalt-architectural");
+              setCustomerMaterial(null);
               setAddOns(QUOTE_ADDONS);
               setSubmitError("");
+              // Reset Tier C pipeline state so the next address starts
+              // clean; bump the gen so any in-flight fetch is ignored.
+              fetchGenRef.current++;
+              setRoofData(null);
+              setPipelineError(null);
+              setPipelineLoading(false);
+              estimateIdRef.current = `est_${crypto.randomUUID().replace(/-/g, "")}`;
             }}
           />
         )}
