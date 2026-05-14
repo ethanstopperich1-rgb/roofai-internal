@@ -15,7 +15,10 @@ export const maxDuration = 90;
  *
  *   1. For each watched region (per-office), fetch the trailing 48-hour
  *      MRMS event window via /api/hail-mrms.
- *   2. For each ≥1" event detected, upsert a `storm_events` row
+ *   2. For each ≥0.5" event detected (MIN_HAIL_INCHES — Noland's
+ *      rationale: aged/UV-degraded FL roofs convert on half-inch hail
+ *      where conventional 0.75-1.0" thresholds miss real damage), upsert
+ *      a `storm_events` row
  *      (deduped on office_id × event_date × region_name).
  *   3. For each newly-created storm event, queue a canvass batch by
  *      counting OSM buildings inside the polygon; rows go into
@@ -283,7 +286,10 @@ export async function GET(req: Request) {
           { cache: "no-store", signal: AbortSignal.timeout(25_000) },
         );
         if (canvassRes.ok) {
-          const data = (await canvassRes.json()) as { buildingCount: number };
+          // OSM fallback inserts a single summary row per storm event —
+          // not one row per building. Count the row, not buildingCount,
+          // so newCanvassTargets reflects real DB inserts (honest
+          // telemetry for /api/cron/storm-pulse JSON response).
           const insertRes = await sb.from("canvass_targets").insert({
             office_id: seedOfficeId,
             storm_event_id: upserted.id,
@@ -294,7 +300,7 @@ export async function GET(req: Request) {
             status: "new",
           });
           if (!insertRes.error) {
-            result.newCanvassTargets += data.buildingCount;
+            result.newCanvassTargets += 1;
           }
         }
       } catch (err) {
