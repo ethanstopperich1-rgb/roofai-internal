@@ -1042,6 +1042,19 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
           <RoofStep
             address={address}
             sqft={sqft}
+            // True when the displayed sqft came from the mesh's per-
+            // facet measurements (`roofData.totals.totalRoofAreaSqft`)
+            // and the customer hasn't manually overridden it. Drives
+            // the "Measured from N facets" label vs. "Edit if it
+            // looks off" — without this signal the UI can't honestly
+            // say where the number came from.
+            sqftFromMesh={
+              !sqftTouchedRef.current &&
+              roofData != null &&
+              roofData.source !== "none" &&
+              roofData.facets.length > 0 &&
+              roofData.totals.totalRoofAreaSqft > 0
+            }
             pitch={pitch}
             satelliteUrl={satelliteUrl}
             roofPolygon={roofPolygon}
@@ -1118,15 +1131,40 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
               setSqft(n);
             }}
             onPolygonEdited={(poly) => {
-              sqftTouchedRef.current = true;
               setRoofPolygon(poly);
-              // Recompute sqft from the edited polygon: footprint via
-              // shoelace × slope multiplier from Solar pitch (or 1.118
-              // default for 6/12 when pitch unknown). When the resolved
-              // polygon traces walls (MS Buildings, SAM3 reconciler
-              // substitution), re-apply the 1.06 eave-overhang factor —
-              // otherwise the displayed sqft drops ~6% on the first edit
-              // even when the rep nudged a single vertex.
+
+              // Phase 2 sqft-source fix — the polygon's flat shoelace
+              // area × global pitch is LESS ACCURATE than the per-facet
+              // mesh measurements in `roofData.totals.totalRoofAreaSqft`
+              // (which sums sloped sqft across N facets, each at its own
+              // measured pitch). Previously every polygon vertex nudge
+              // overrode the mesh sqft with this approximation; the user
+              // pointed out the bug.
+              //
+              // New behavior: when a usable mesh exists, the mesh sqft
+              // remains authoritative. Polygon edits update the visual
+              // outline (useful for the "is this the right building?"
+              // confirmation) but DON'T touch sqft. The original "wrong
+              // building" use case is still handled — the user hits
+              // "Wrong roof?" which re-runs the pipeline against the
+              // picked location, refreshing the mesh entirely.
+              const hasUsableMesh =
+                roofData &&
+                roofData.source !== "none" &&
+                roofData.facets.length > 0 &&
+                roofData.totals.totalRoofAreaSqft > 0;
+              if (hasUsableMesh) {
+                // Don't set sqftTouchedRef — the user nudged the polygon,
+                // not the sqft input. If the pipeline later returns a
+                // refined mesh, the seed effect can update sqft normally.
+                return;
+              }
+
+              // No mesh available — fall back to polygon-derived sqft
+              // as the only signal we have. Mark it user-touched so the
+              // seed effect doesn't overwrite if a mesh arrives later
+              // for a substantially different building.
+              sqftTouchedRef.current = true;
               const PITCH_MAP: Record<string, number> = {
                 "4/12": 18.43,
                 "5/12": 22.62,
@@ -1355,6 +1393,7 @@ function Stepper({ current }: { current: number }) {
 function RoofStep({
   address,
   sqft,
+  sqftFromMesh,
   pitch,
   satelliteUrl,
   roofPolygon,
@@ -1370,6 +1409,12 @@ function RoofStep({
 }: {
   address: AddressInfo | null;
   sqft: number | null;
+  /** True iff the displayed sqft came from the per-facet mesh
+   *  measurement (not user-overridden, not polygon-derived). Drives
+   *  the "Measured from N facets" label so the customer knows the
+   *  number reflects real geometry rather than a flat-polygon × global-
+   *  pitch approximation. */
+  sqftFromMesh: boolean;
   pitch: string | null;
   satelliteUrl: string | null;
   roofPolygon: Array<{ lat: number; lng: number }> | null;
@@ -1558,7 +1603,11 @@ function RoofStep({
             <span className="font-mono text-[12px] text-white/55">sq ft</span>
           </div>
           <div className="text-[11.5px] text-white/45 mt-1">
-            {sqft ? "Edit if it looks off" : "Couldn’t auto-measure — enter approximate size"}
+            {sqft
+              ? sqftFromMesh && roofData
+                ? `Measured from ${roofData.totals.facetsCount} roof facets — per-facet pitch + slope`
+                : "Edit if it looks off"
+              : "Couldn’t auto-measure — enter approximate size"}
           </div>
           {/* Sets the customer's expectation that the roof number is bigger
               than their Zillow heated-sqft. */}
