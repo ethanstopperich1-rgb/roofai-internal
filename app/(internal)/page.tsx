@@ -1096,7 +1096,7 @@ function HomePageInner() {
           carrier, customer name, damage notes, add-ons, timeline).
           Hidden until shown=true to avoid presenting it before the rep
           has a property in scope. */}
-      {shown && address?.lat != null && (
+      {shown && !pipelineLoading && address?.lat != null && (
         <VoiceNoteRecorder
           addressText={address.formatted}
           currentSqft={assumptions.sqft}
