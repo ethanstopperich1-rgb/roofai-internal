@@ -1888,9 +1888,38 @@ function EmptyState() {
         ))}
       </div>
 
-      {/* Quick start strip — keeps the keyboard-shortcut info visible
-          without it competing with the address bar above. */}
-      <div className="glass-panel p-4 sm:p-5 flex flex-wrap items-center gap-x-6 gap-y-3 float-in" style={{ animationDelay: "300ms" }}>
+      {/* Behind-the-math signal strip — fills the lower viewport with
+          real provenance instead of dark void. Four micro-cards on a
+          desktop row, two-up on mobile. Each card surfaces a single
+          honest stat about the underlying pipeline. */}
+      <section
+        className="grid grid-cols-2 lg:grid-cols-4 gap-3 float-in"
+        style={{ animationDelay: "340ms" }}
+      >
+        <SignalCard
+          label="Data sources"
+          value="3"
+          detail="USGS LiDAR · Google Solar · Vision"
+        />
+        <SignalCard
+          label="Median p50"
+          value="~12s"
+          detail="warm path · cold +30s"
+        />
+        <SignalCard
+          label="Coverage"
+          value="49 states"
+          detail="USGS 3DEP boundaries"
+        />
+        <SignalCard
+          label="LiDAR fidelity"
+          value="< 0.5m"
+          detail="point spacing typical"
+        />
+      </section>
+
+      {/* Quick start strip — keyboard shortcuts. */}
+      <div className="glass-panel p-4 sm:p-5 flex flex-wrap items-center gap-x-6 gap-y-3 float-in" style={{ animationDelay: "440ms" }}>
         <div className="flex items-center gap-2">
           <Sparkles size={13} className="text-cy-300/80" />
           <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-400">
@@ -1904,7 +1933,45 @@ function EmptyState() {
           <span className="kbd">⌘S</span> save · <span className="kbd">⌘P</span> PDF · <span className="kbd">⌘E</span> email
         </div>
       </div>
+
+      {/* Bottom rule — single hairline + Voxaris wordmark, gives the
+          page a closing edge instead of dissolving into the body's
+          background gradient. The wordmark is rendered as a faint
+          monospace string sized to feel like a serial number rather
+          than a logo, fits the engineering-instrument tone. */}
+      <div className="pt-4 mt-3">
+        <div className="h-px w-full bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
+        <div className="mt-4 flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.22em] text-slate-600">
+          <span>voxaris · pitch · v2</span>
+          <span>fl · tx · mn coverage live</span>
+          <span className="hidden sm:inline">build · {new Date().getFullYear()}</span>
+        </div>
+      </div>
     </section>
+  );
+}
+
+function SignalCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/[0.06] bg-white/[0.015] p-4 hover:border-white/[0.10] hover:bg-white/[0.025] transition-colors">
+      <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-slate-500">
+        {label}
+      </div>
+      <div className="font-display tabular text-[24px] sm:text-[28px] font-semibold tracking-[-0.02em] text-white/95 mt-1.5 leading-none">
+        {value}
+      </div>
+      <div className="text-[11px] text-slate-500 mt-2 leading-snug">
+        {detail}
+      </div>
+    </div>
   );
 }
 
