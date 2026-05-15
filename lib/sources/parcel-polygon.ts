@@ -415,6 +415,30 @@ async function fetchSam3(
       );
       return null;
     }
+    // Reject SAM3's own fallback modes — these aren't real SAM3
+    // traces, they're SAM3 saying "I couldn't see the roof, here's a
+    // GIS footprint instead." The user mandate is SAM3-traced ONLY;
+    // letting these through would silently revert to wrong-shape
+    // polygons covering yards / driveways / neighbors. When SAM3
+    // genuinely fails, the picker should emit synthetic_fallback so
+    // the rep sees the failure rather than a bogus trace.
+    const REJECTED_SOURCES = new Set([
+      "footprint-only",        // SAM3 didn't run; GIS footprint passed through
+      "footprint-occluded",    // SAM3 ran but roof occluded; GIS fallback
+      "osm",                   // OSM raw footprint
+      "osm-centroid-after-solar-drift",
+      "address-solar-drift-fallback",
+      "address-mask-drift-fallback",
+      "solar-mask-centroid",
+      "address",
+    ]);
+    if (data.source && REJECTED_SOURCES.has(data.source)) {
+      console.warn(
+        "sam3: gate=non_sam3_source source=%s vertices=%d latency_ms=%d",
+        data.source, data.polygon.length, Date.now() - t0,
+      );
+      return null;
+    }
     console.log(
       "sam3: gate=success vertices=%d source=%s latency_ms=%d",
       data.polygon.length, data.source ?? "none", Date.now() - t0,

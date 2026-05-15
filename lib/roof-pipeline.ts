@@ -304,6 +304,20 @@ export async function runRoofPipeline(opts: {
 
   primary.diagnostics.attempts = attempts;
 
+  // Override outlinePolygon with the SAM3 trace when the picker landed
+  // a real SAM3 polygon. Without this, MapView renders the union of
+  // facet polygons (which are Solar-derived rotated bboxes) and the
+  // customer sees a Solar-shaped outline even when SAM3 was the
+  // intended polygon source. With SAM3 as the only allowed polygon
+  // tracer (May 2026 architecture), the picker output IS the outline.
+  if (
+    pickerResult.pickerSource === "sam3" &&
+    pickerResult.polygon &&
+    pickerResult.polygon.length >= 3
+  ) {
+    primary.outlinePolygon = pickerResult.polygon;
+  }
+
   // Phase 1 — apply the picker's confidence penalty. Synthetic fallback
   // (no upstream sources resolved) cuts confidence by 0.4; Solar/MS
   // disagreement by 0.15; outbuilding-sized polygon by 0.05.
