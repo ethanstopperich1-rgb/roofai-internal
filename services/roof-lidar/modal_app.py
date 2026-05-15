@@ -52,12 +52,19 @@ image = (
         # SECONDARY tier. Point2Roof (deep-learning, MIT) is now the
         # primary; CGAL kept as backup for when Point2Roof returns no
         # confident output. Image size +~150 MB.
+        #
+        # NOTE: coinor-libscip-dev was removed from Ubuntu Noble (24.04)
+        # — the pdal/pdal:latest image is on Noble. SCIP is the MILP
+        # solver CGAL PolyFit uses for face-selection. Without it,
+        # CGAL PolyFit silently falls through to alpha-shape, which is
+        # already the tier C fallback. Point2Roof (primary) is unaffected.
+        # TODO(post-deploy): build SCIP from source or wire a Noble PPA
+        # if we want CGAL PolyFit as a real secondary tier.
         "libcgal-dev",
         "libgmp-dev",
         "libmpfr-dev",
         "libeigen3-dev",
         "libboost-dev",
-        "coinor-libscip-dev",
         # Point2Roof — needs build tools to compile the vendored
         # pc_util C++/CUDA extension (custom ops for ball_query, FPS,
         # group_points, interpolate, sampling, cluster). nvcc comes
