@@ -37,18 +37,21 @@ requests
 # a single C call. ~30s saved on 100k-point clouds.
 matplotlib
 
-# ─── Phase 2 — CGAL / PolyFit ────────────────────────────────────────
-# CGAL Python bindings — provides Polygonal_surface_reconstruction_3
-# for the watertight roof mesh reconstruction. Requires system
-# libcgal-dev + libgmp-dev + libmpfr-dev + libeigen3-dev + libboost-dev,
-# installed via apt in modal_app.py's image build.
+# ─── Phase 2 — CGAL / PolyFit (DISABLED) ─────────────────────────────
+# CGAL Python bindings WERE used for the PolyFit watertight roof mesh
+# reconstruction (SECONDARY tier, behind Point2Roof primary).
+# Disabled on 2026-05-15: the CGAL pip package has no wheel built for
+# Python 3.12 (max supported = 3.11), and the pdal/pdal:latest base
+# image we use runs Python 3.12. Pip install fails the entire image
+# build trying to resolve a missing wheel.
 #
-# Marked optional with a try-import in regularize_planes.py so the
-# pipeline degrades gracefully to per-plane alpha-shape when CGAL
-# isn't available (local dev w/o the system libs, wheel install issues).
+# Impact: zero. PolyFit was a fallback for cases where Point2Roof
+# returned low confidence; it itself fell back to alpha-shape if
+# CGAL wasn't importable. Removing CGAL just makes that fallback
+# happen at module-import time instead of at first-call time —
+# same final behavior (alpha-shape path).
 #
-# CGAL on PyPI ships pre-built wheels for Linux x64 (Modal's runtime)
-# but NOT for Windows / arm64 — local dev on Mac/Windows hits the
-# fallback path. That's fine; it means the build_facets.py alpha-shape
-# pipeline gets exercised in dev and PolyFit gets exercised in prod.
-CGAL
+# To re-enable: either downgrade the image to Python 3.11, or wait
+# for a CGAL wheel that supports 3.12 (tracked upstream at
+# https://github.com/CGAL/cgal-swig-bindings/issues).
+# CGAL  # ← uncomment when 3.12 wheel ships
