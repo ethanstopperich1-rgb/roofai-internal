@@ -2,14 +2,12 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 #include <vector>
-#include <THC/THC.h>
 #include "group_points_gpu.h"
 
-extern THCState *state;
 
 
 #define CHECK_CUDA(x) do { \
-	  if (!x.type().is_cuda()) { \
+	  if (!x.is_cuda()) { \
 		      fprintf(stderr, "%s must be CUDA tensor at %s:%d\n", #x, __FILE__, __LINE__); \
 		      exit(-1); \
 		    } \
@@ -27,9 +25,9 @@ extern THCState *state;
 int group_points_grad_wrapper_fast(int b, int c, int n, int npoints, int nsample, 
     at::Tensor grad_out_tensor, at::Tensor idx_tensor, at::Tensor grad_points_tensor) {
 
-    float *grad_points = grad_points_tensor.data<float>();
-    const int *idx = idx_tensor.data<int>();
-    const float *grad_out = grad_out_tensor.data<float>();
+    float *grad_points = grad_points_tensor.data_ptr<float>();
+    const int *idx = idx_tensor.data_ptr<int>();
+    const float *grad_out = grad_out_tensor.data_ptr<float>();
 
     group_points_grad_kernel_launcher_fast(b, c, n, npoints, nsample, grad_out, idx, grad_points);
     return 1;
@@ -39,9 +37,9 @@ int group_points_grad_wrapper_fast(int b, int c, int n, int npoints, int nsample
 int group_points_wrapper_fast(int b, int c, int n, int npoints, int nsample, 
     at::Tensor points_tensor, at::Tensor idx_tensor, at::Tensor out_tensor) {
 
-    const float *points = points_tensor.data<float>();
-    const int *idx = idx_tensor.data<int>();
-    float *out = out_tensor.data<float>();
+    const float *points = points_tensor.data_ptr<float>();
+    const int *idx = idx_tensor.data_ptr<int>();
+    float *out = out_tensor.data_ptr<float>();
 
     group_points_kernel_launcher_fast(b, c, n, npoints, nsample, points, idx, out);
     return 1;
@@ -63,11 +61,11 @@ int group_points_grad_wrapper_stack(int B, int M, int C, int N, int nsample,
     CHECK_INPUT(features_batch_cnt_tensor);
     CHECK_INPUT(grad_features_tensor);
 
-    const float *grad_out = grad_out_tensor.data<float>();
-    const int *idx = idx_tensor.data<int>();
-    const int *idx_batch_cnt = idx_batch_cnt_tensor.data<int>();
-    const int *features_batch_cnt = features_batch_cnt_tensor.data<int>();
-    float *grad_features = grad_features_tensor.data<float>();
+    const float *grad_out = grad_out_tensor.data_ptr<float>();
+    const int *idx = idx_tensor.data_ptr<int>();
+    const int *idx_batch_cnt = idx_batch_cnt_tensor.data_ptr<int>();
+    const int *features_batch_cnt = features_batch_cnt_tensor.data_ptr<int>();
+    float *grad_features = grad_features_tensor.data_ptr<float>();
 
     group_points_grad_kernel_launcher_stack(B, M, C, N, nsample, grad_out, idx, idx_batch_cnt, features_batch_cnt, grad_features);
     return 1;
@@ -84,11 +82,11 @@ int group_points_wrapper_stack(int B, int M, int C, int nsample,
     CHECK_INPUT(idx_batch_cnt_tensor);
     CHECK_INPUT(out_tensor);
 
-    const float *features = features_tensor.data<float>();
-    const int *idx = idx_tensor.data<int>();
-    const int *features_batch_cnt = features_batch_cnt_tensor.data<int>();
-    const int *idx_batch_cnt = idx_batch_cnt_tensor.data<int>();
-    float *out = out_tensor.data<float>();
+    const float *features = features_tensor.data_ptr<float>();
+    const int *idx = idx_tensor.data_ptr<int>();
+    const int *features_batch_cnt = features_batch_cnt_tensor.data_ptr<int>();
+    const int *idx_batch_cnt = idx_batch_cnt_tensor.data_ptr<int>();
+    float *out = out_tensor.data_ptr<float>();
 
     group_points_kernel_launcher_stack(B, M, C, nsample, features, features_batch_cnt, idx, idx_batch_cnt, out);
     return 1;

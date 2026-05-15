@@ -1745,18 +1745,11 @@ function HomePageInner() {
             }
           />
 
-          {/* Closing rule — gives the page a defined bottom edge so the
-              filled-out flow doesn't dissolve into a viewport of empty
-              ambient gradient below the Add-Ons / Insights stack. Same
-              hairline + monospace wordmark we use on the empty state. */}
-          <div className="pt-2 mt-1 pb-[120px]">
-            <div className="h-px w-full bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
-            <div className="mt-4 flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.22em] text-slate-600">
-              <span>voxaris · pitch · v2</span>
-              <span className="hidden sm:inline">measurement · pricing · proposal</span>
-              <span>build · {new Date().getFullYear()}</span>
-            </div>
-          </div>
+          {/* Spacer so the EstimateSticky footer doesn't overlap the
+              InsightsPanel above. Was previously a wordmark/closing-rule
+              region; removed per design feedback — it read as an awkward
+              "page is ending here" message instead of a sign-off. */}
+          <div className="pb-[120px]" aria-hidden />
         </>
       )}
     </div>
@@ -1959,19 +1952,6 @@ function EmptyState() {
         </div>
       </div>
 
-      {/* Bottom rule — single hairline + Voxaris wordmark, gives the
-          page a closing edge instead of dissolving into the body's
-          background gradient. The wordmark is rendered as a faint
-          monospace string sized to feel like a serial number rather
-          than a logo, fits the engineering-instrument tone. */}
-      <div className="pt-4 mt-3">
-        <div className="h-px w-full bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
-        <div className="mt-4 flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.22em] text-slate-600">
-          <span>voxaris · pitch · v2</span>
-          <span>fl · tx · mn coverage live</span>
-          <span className="hidden sm:inline">build · {new Date().getFullYear()}</span>
-        </div>
-      </div>
     </section>
   );
 }
