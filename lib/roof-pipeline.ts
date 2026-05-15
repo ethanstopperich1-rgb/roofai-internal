@@ -3,7 +3,11 @@ import type { RoofData, RoofDiagnostics } from "@/types/roof";
 import { makeDegradedRoofData } from "@/lib/roof-engine";
 import { tierCSolarSource } from "@/lib/sources/solar-source";
 import { tierCVisionSource } from "@/lib/sources/vision-source";
-import { tierALidarSource } from "@/lib/sources/lidar-source";
+// tierALidarSource removed from active path — retired 2026-05-15.
+// SAM3 polygon (with Solar mask fallback) feeds Solar's findClosest
+// segments as the authoritative facet decomposition. Modal LiDAR
+// service stays deployed; this import can be restored if/when a
+// verification tier comes back.
 import { getCached, setCached } from "@/lib/cache";
 import { fetchSolarRoofMask } from "@/lib/solar-mask";
 import { resolveBaseUrl } from "@/lib/base-url";
@@ -252,11 +256,20 @@ export async function runRoofPipeline(opts: {
     });
   }
 
-  // Tier A is registered as the highest-priority source, but its adapter
-  // returns null when LIDAR_SERVICE_URL is unset — so the pipeline degrades
-  // cleanly to Tier C on deploys that don't have the Modal service wired.
+  // Source cascade (post-retire-Tier-A):
+  //   1. Solar API segments — authoritative plane decomposition.
+  //      Per-plane pitch, azimuth, sloped + footprint area.
+  //   2. Vision fallback — pure-image Tier C used when Solar 404s
+  //      (rural / no-coverage addresses).
+  //
+  // Tier A LiDAR was retired on 2026-05-15 — the rep tool now uses
+  // SAM3 for the outline polygon (primary) with Solar mask as
+  // fallback, then Solar's findClosest segments[] drive the
+  // authoritative facet breakdown (pitch / azimuth / area / edges).
+  // The Modal LiDAR service stays deployed for future re-introduction
+  // as an optional verification layer, but it's no longer in the
+  // pipeline cascade.
   const sources: Array<{ name: string; fn: RoofSource }> = [
-    { name: "tier-a-lidar", fn: tierALidarSource },
     { name: "tier-c-solar", fn: tierCSolarSource },
     { name: "tier-c-vision", fn: tierCVisionSource },
   ];
@@ -318,21 +331,13 @@ export async function runRoofPipeline(opts: {
     });
   }
 
-  // Cross-source baseline: when Tier A wins, capture what Tier C Solar
-  // said about the same roof so the UI can show a measurement-agreement
-  // trust signal. The Solar hint was already fetched for the parcel
-  // polygon — re-use it rather than firing another request.
-  if (primary.source === "tier-a-lidar" && solarHint) {
-    primary.crossSourceBaseline = {
-      solar: {
-        sqft: solarHint.sqft,
-        pitchDegrees: solarHint.pitchDegrees,
-        segmentCount: solarHint.segmentCount,
-        imageryDate: solarHint.imageryDate,
-        imageryQuality: solarHint.imageryQuality,
-      },
-    };
-  }
+  // crossSourceBaseline was previously populated when Tier A LiDAR
+  // won the cascade — captured Solar's same-address numbers for a
+  // "two methods agree" trust signal. Tier A retired 2026-05-15;
+  // Solar is now the authoritative measurement source, so there's
+  // no longer a second method to cross-check against. Field stays
+  // on RoofData (additive optional) for future re-introduction of
+  // a verification tier.
 
   const latencyMs = Date.now() - startedAt;
   console.log("[roof-pipeline] pipeline_source_picked", {
@@ -425,19 +430,15 @@ export async function runRoofPipelineCompare(opts: {
   const finalParcelPolygon = pickerResult.polygon;
   const imageryDate = solarHint?.imageryDate ?? null;
 
-  // Fire both Tier A and Tier C in parallel. We track each independently so
-  // a failure in one doesn't poison the other. Tier-A typically takes
-  // 5-25s warm, 30-90s cold; Tier-C typically 1-3s. Total wall time = max,
-  // not sum.
-  const lidarStart = Date.now();
+  // Post-Tier-A-retirement: this is now a Solar-only run with
+  // Vision as the fallback. The function name + return shape are
+  // preserved so existing callers (/api/roof-pipeline?compare=1
+  // and /quote) keep working, but `lidar` is always null and
+  // `agreement.bothPresent` is always false. We'll reintroduce a
+  // real cross-source layer once SAM2 lands and we have an
+  // independent plane / area path to verify Solar against.
   const solarStart = Date.now();
-  const [lidarSettled, solarSettled] = await Promise.allSettled([
-    tierALidarSource({
-      address: opts.address,
-      requestId,
-      parcelPolygon: finalParcelPolygon ?? undefined,
-      imageryDate,
-    }),
+  const solarSettled = await Promise.allSettled([
     tierCSolarSource({
       address: opts.address,
       requestId,
@@ -445,18 +446,14 @@ export async function runRoofPipelineCompare(opts: {
       imageryDate,
     }),
   ]);
-  const lidar =
-    lidarSettled.status === "fulfilled" ? lidarSettled.value : null;
-  const lidarLatency = lidar ? Date.now() - lidarStart : null;
+  const lidar: RoofData | null = null;
+  const lidarLatency: number | null = null;
   const solar =
-    solarSettled.status === "fulfilled" ? solarSettled.value : null;
+    solarSettled[0].status === "fulfilled" ? solarSettled[0].value : null;
   const solarLatency = solar ? Date.now() - solarStart : null;
 
-  // Vision fallback only fires when BOTH primary sources failed — keeps
-  // cost/latency low and avoids cluttering the cross-compare with a
-  // third measurement that has lower confidence than either.
   let vision: RoofData | null = null;
-  if (!lidar && !solar) {
+  if (!solar) {
     try {
       vision = await tierCVisionSource({
         address: opts.address,
@@ -469,64 +466,32 @@ export async function runRoofPipelineCompare(opts: {
     }
   }
 
-  // Pick primary: highest confidence, LiDAR breaks ties (matches the
-  // original serial-pipeline priority of "LiDAR wins when both succeed").
   let primary: RoofData;
-  if (lidar && solar) {
-    primary = lidar.confidence >= solar.confidence ? lidar : solar;
-  } else if (lidar) {
-    primary = lidar;
-  } else if (solar) {
+  if (solar) {
     primary = solar;
   } else if (vision) {
     primary = vision;
   } else {
     const attempts: RoofDiagnostics["attempts"] = [
-      { source: "tier-a-lidar", outcome: "failed-error", reason: "no result" },
       { source: "tier-c-solar", outcome: "failed-error", reason: "no result" },
       { source: "tier-c-vision", outcome: "failed-error", reason: "no result" },
     ];
     primary = makeDegradedRoofData({ address: opts.address, attempts });
   }
 
-  // Cross-source baseline on primary, like the serial pipeline does.
-  if (primary.source === "tier-a-lidar" && solarHint) {
-    primary.crossSourceBaseline = {
-      solar: {
-        sqft: solarHint.sqft,
-        pitchDegrees: solarHint.pitchDegrees,
-        segmentCount: solarHint.segmentCount,
-        imageryDate: solarHint.imageryDate,
-        imageryQuality: solarHint.imageryQuality,
-      },
-    };
-  }
+  // crossSourceBaseline intentionally left untouched on `primary` —
+  // the field stays on RoofData for future re-introduction of a
+  // verification tier (likely SAM2-derived areas vs Solar plane
+  // decomposition once Phase 2 lands).
 
-  // Agreement metrics — useful for both the UI cross-check chip AND
-  // continuous monitoring of "where do our two sources diverge."
+  // Agreement metrics — degenerate to "no second method" until
+  // SAM2 / a new verification tier lands. Shape preserved so
+  // existing UI consumers (MeasurementVerification) keep working.
   const agreement = {
-    bothPresent: !!(lidar && solar),
-    sqftDeltaPct:
-      lidar && solar
-        ? Math.abs(
-            lidar.totals.totalRoofAreaSqft - solar.totals.totalRoofAreaSqft,
-          ) /
-          Math.max(
-            lidar.totals.totalRoofAreaSqft,
-            solar.totals.totalRoofAreaSqft,
-            1,
-          )
-        : null,
-    pitchDeltaDegrees:
-      lidar && solar
-        ? Math.abs(
-            lidar.totals.averagePitchDegrees - solar.totals.averagePitchDegrees,
-          )
-        : null,
-    facetCountDelta:
-      lidar && solar
-        ? Math.abs(lidar.totals.facetsCount - solar.totals.facetsCount)
-        : null,
+    bothPresent: false,
+    sqftDeltaPct: null as number | null,
+    pitchDeltaDegrees: null as number | null,
+    facetCountDelta: null as number | null,
   };
 
   const totalLatency = Date.now() - startedAt;
