@@ -85,13 +85,45 @@ export default function RoofRenderer({
   const active = sources.find((s) => s.key === activeKey) ?? sources[0];
 
   // Facet selection state. activeFacetId === null = no selection (default).
-  // Click a facet → see its pitch, azimuth, sqft in a side card. Click
-  // outside or hit X to clear.
+  // Click a quad → see its matched pitch / azimuth / sqft in the inspector.
   const [activeFacetId, setActiveFacetId] = useState<string | null>(null);
   const [hoverFacetId, setHoverFacetId] = useState<string | null>(null);
-  const activeFacet = active?.data.facets.find((f) => f.id === activeFacetId) ?? null;
 
-  if (!active) return null;
+  // Choose the BEST outline across both sources — this stays stable
+  // across the LiDAR/Solar toggle so the building shell doesn't reshape
+  // when the user flips sources. Heuristic: prefer the outline with
+  // the most vertices in the [8, 40] range (more detail without
+  // dataLayers-mask noise); fall back to whichever exists.
+  const bestOutline = useMemo(() => {
+    const candidates = [lidar?.outlinePolygon, solar?.outlinePolygon, data.outlinePolygon];
+    const valid = candidates
+      .filter(
+        (p): p is Array<{ lat: number; lng: number }> =>
+          Array.isArray(p) && p.length >= 3,
+      )
+      .sort((a, b) => {
+        const aScore = a.length >= 8 && a.length <= 40 ? a.length + 1000 : a.length;
+        const bScore = b.length >= 8 && b.length <= 40 ? b.length + 1000 : b.length;
+        return bScore - aScore;
+      });
+    return valid[0] ?? null;
+  }, [lidar, solar, data]);
+
+  // Compute the projected scene at the parent level (was previously
+  // inside RoofScene's useMemo) so the inspector can look up the
+  // active quad's data — the source of truth is now the generated
+  // quad, not the raw source facet.
+  const projected = useMemo(
+    () =>
+      active
+        ? projectRoof(active.data, { outlineOverride: bestOutline })
+        : null,
+    [active, bestOutline],
+  );
+  const activeQuad =
+    projected?.roofQuads.find((q) => q.id === activeFacetId) ?? null;
+
+  if (!active || !projected) return null;
 
   return (
     <div
@@ -110,7 +142,7 @@ export default function RoofRenderer({
         <color attach="background" args={["#05070a"]} />
         <fog attach="fog" args={["#05070a", 60, 180]} />
         <RoofScene
-          data={active.data}
+          projected={projected}
           activeFacetId={activeFacetId}
           hoverFacetId={hoverFacetId}
           onFacetClick={setActiveFacetId}
@@ -142,12 +174,14 @@ export default function RoofRenderer({
       )}
       <BlueprintLegend data={active.data} />
       <BlueprintCorner />
-      {/* Facet inspector — slides in from the right when a facet is
+      {/* Facet inspector — slides in from the right when a quad is
           clicked. Shows pitch (in /12 + degrees), azimuth (cardinal +
-          degrees), sloped area, footprint area, and material guess. */}
-      {activeFacet && (
+          degrees), and sloped area. Inherits source-facet sqft when
+          the quad matched a source facet; falls back to estimating
+          sqft from the quad's 4 corners otherwise. */}
+      {activeQuad && (
         <FacetInspector
-          facet={activeFacet}
+          quad={activeQuad}
           sourceLabel={active.label}
           onClose={() => setActiveFacetId(null)}
         />
@@ -234,20 +268,18 @@ function AgreementChip({
 }
 
 function RoofScene({
-  data,
+  projected,
   activeFacetId,
   hoverFacetId,
   onFacetClick,
   onFacetHover,
 }: {
-  data: RoofData;
+  projected: Projected;
   activeFacetId: string | null;
   hoverFacetId: string | null;
   onFacetClick: (id: string | null) => void;
   onFacetHover: (id: string | null) => void;
 }) {
-  const projected = useMemo(() => projectRoof(data), [data]);
-
   return (
     <>
       {/* Lighting — soft hemisphere + two directional fills. Tier-A blue
@@ -285,23 +317,37 @@ function RoofScene({
         />
       )}
 
-      {/* Facets at correct pitch + azimuth. Click to inspect; hover to
-          highlight. The 3D scene swallows clicks on facets but lets
-          background clicks bubble — wrap the meshes in a click-empty
-          group that clears the selection. */}
+      {/* Roof mesh — generated from the building outline as a frustum
+          (inset-polygon hip approximation). Each outline edge produces
+          one quad facet that slopes inward + upward to a "ridge polygon"
+          inset 35% toward the centroid. Each generated quad is
+          color-matched to the closest source-data facet by azimuth,
+          inheriting its pitch / id / color / material so the inspector
+          click flow still works. This replaces the previous per-facet
+          render which produced overlapping bbox-rotated rectangles that
+          didn't tile the roof. */}
       <group onPointerMissed={() => onFacetClick(null)}>
-        {projected.facets.map((f) => (
-          <FacetMesh
-            key={f.id}
-            facet={f}
-            isActive={activeFacetId === f.id}
-            isHover={hoverFacetId === f.id}
+        {projected.roofQuads.map((q) => (
+          <RoofQuad
+            key={q.id}
+            quad={q}
+            isActive={activeFacetId === q.id}
+            isHover={hoverFacetId === q.id}
             onClick={() =>
-              onFacetClick(activeFacetId === f.id ? null : f.id)
+              onFacetClick(activeFacetId === q.id ? null : q.id)
             }
-            onHover={(over) => onFacetHover(over ? f.id : null)}
+            onHover={(over) => onFacetHover(over ? q.id : null)}
           />
         ))}
+        {/* Ridge cap — flat polygon on top of the frustum that fills
+            the inset polygon. Without this, you can see through the
+            roof from above. */}
+        {projected.ridgePolygon.length >= 3 && (
+          <RidgeCap
+            polygon={projected.ridgePolygon}
+            height={projected.ridgeHeight + projected.eaveHeight}
+          />
+        )}
       </group>
 
       {/* Edge polylines from LiDAR topology, color-coded by classification. */}
@@ -387,76 +433,154 @@ interface Facet3D {
   outlineColor: string;
 }
 
-function FacetMesh({
-  facet,
+// ─── Generated roof quad (frustum approach) ──────────────────────────
+//
+// Each quad is one slope of the generated frustum hip-roof — defined by
+// 4 corner points in scene meters (already at correct y heights). We
+// build a BufferGeometry with 2 triangles, color it by the matched
+// source-facet azimuth/pitch, and outline it for the blueprint feel.
+
+interface RoofQuad3D {
+  /** Stable id — `sourceFacetId` when matched, else `quad-<i>`. */
+  id: string;
+  /** 4 corners in scene coords, ordered: eaveA, eaveB, ridgeB, ridgeA.
+   *  eave corners sit at y=eaveHeight; ridge corners at y=eave+rise. */
+  corners: [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3];
+  color: string;
+  outlineColor: string;
+  pitchDegrees: number;
+  azimuthDeg: number;
+  /** The original source facet this quad represents (for the inspector). */
+  sourceFacet: Facet | null;
+}
+
+function RoofQuad({
+  quad,
   isActive,
   isHover,
   onClick,
   onHover,
 }: {
-  facet: Facet3D;
+  quad: RoofQuad3D;
   isActive: boolean;
   isHover: boolean;
   onClick: () => void;
   onHover: (over: boolean) => void;
 }) {
-  const ref = useRef<THREE.Mesh>(null);
-  const geom = useMemo(() => new THREE.ShapeGeometry(facet.shape), [facet.shape]);
-  // Selection / hover visual: brighten + cyan outline when selected,
-  // gentle emissive bump on hover. Subtle but unmistakable.
+  const geom = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    const [a, b, c, d] = quad.corners;
+    // Two triangles forming the quad: (a,b,c) and (a,c,d). Winding
+    // matches a quad with outward normal facing up-and-out.
+    const positions = new Float32Array([
+      a.x, a.y, a.z,
+      b.x, b.y, b.z,
+      c.x, c.y, c.z,
+      a.x, a.y, a.z,
+      c.x, c.y, c.z,
+      d.x, d.y, d.z,
+    ]);
+    g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    g.computeVertexNormals();
+    return g;
+  }, [quad.corners]);
+
+  const outlineGeom = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    const [a, b, c, d] = quad.corners;
+    // Closed loop a → b → c → d → a as line segments.
+    const positions = new Float32Array([
+      a.x, a.y, a.z, b.x, b.y, b.z,
+      b.x, b.y, b.z, c.x, c.y, c.z,
+      c.x, c.y, c.z, d.x, d.y, d.z,
+      d.x, d.y, d.z, a.x, a.y, a.z,
+    ]);
+    g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    return g;
+  }, [quad.corners]);
+
   const emissive = isActive ? "#22d3ee" : isHover ? "#1e3a52" : "#000000";
   const emissiveIntensity = isActive ? 0.4 : isHover ? 0.2 : 0;
-  const outlineColor = isActive ? "#22d3ee" : facet.outlineColor;
+  const outlineColor = isActive ? "#22d3ee" : quad.outlineColor;
+
   return (
-    // Outer group — positioned at the facet's centroid in scene coords.
-    <group position={[facet.centroidX, facet.centroidY, facet.centroidZ]}>
-      {/* Middle group — yaw (azimuth) around Y. Compass-aligned. */}
-      <group rotation-y={facet.azimuthRad}>
-        {/* Inner group — flatten ShapeGeometry from the XY plane onto
-            the XZ plane (-π/2 around X) and additionally tilt by the
-            roof pitch around the local X axis. Composing this way keeps
-            the down-slope direction aligned with the azimuth yaw above
-            instead of getting tangled in Euler-angle order. */}
-        <group rotation-x={-Math.PI / 2 + facet.pitchRad}>
-          <mesh
-            ref={ref}
-            geometry={geom}
-            onClick={(e) => {
-              e.stopPropagation();
-              onClick();
-            }}
-            onPointerOver={(e) => {
-              e.stopPropagation();
-              onHover(true);
-              document.body.style.cursor = "pointer";
-            }}
-            onPointerOut={() => {
-              onHover(false);
-              document.body.style.cursor = "";
-            }}
-          >
-            <meshStandardMaterial
-              color={facet.color}
-              side={THREE.DoubleSide}
-              metalness={0.1}
-              roughness={0.65}
-              transparent
-              opacity={isActive ? 0.98 : 0.92}
-              emissive={emissive}
-              emissiveIntensity={emissiveIntensity}
-            />
-          </mesh>
-          {/* Crisp blueprint outline. */}
-          <lineSegments>
-            <edgesGeometry args={[geom]} />
-            <lineBasicMaterial
-              color={outlineColor}
-              linewidth={isActive ? 2 : 1}
-            />
-          </lineSegments>
-        </group>
-      </group>
+    <group onPointerMissed={undefined}>
+      <mesh
+        geometry={geom}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          onHover(true);
+          document.body.style.cursor = "pointer";
+        }}
+        onPointerOut={() => {
+          onHover(false);
+          document.body.style.cursor = "";
+        }}
+      >
+        <meshStandardMaterial
+          color={quad.color}
+          side={THREE.DoubleSide}
+          metalness={0.1}
+          roughness={0.65}
+          transparent
+          opacity={isActive ? 0.98 : 0.92}
+          emissive={emissive}
+          emissiveIntensity={emissiveIntensity}
+        />
+      </mesh>
+      <lineSegments geometry={outlineGeom}>
+        <lineBasicMaterial
+          color={outlineColor}
+          linewidth={isActive ? 2 : 1}
+        />
+      </lineSegments>
     </group>
+  );
+}
+
+// ─── Ridge cap (flat top of the frustum) ─────────────────────────────
+
+function RidgeCap({
+  polygon,
+  height,
+}: {
+  polygon: THREE.Vector2[];
+  height: number;
+}) {
+  const geom = useMemo(() => {
+    const shape = new THREE.Shape(polygon);
+    return new THREE.ShapeGeometry(shape);
+  }, [polygon]);
+  return (
+    <>
+      <mesh
+        geometry={geom}
+        // ShapeGeometry sits in XY plane; rotate -π/2 around X to lay
+        // it flat on the XZ plane, then raise to the ridge height.
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, height, 0]}
+      >
+        <meshStandardMaterial
+          color="#1a1f28"
+          metalness={0.05}
+          roughness={0.85}
+          side={THREE.DoubleSide}
+          transparent
+          opacity={0.95}
+        />
+      </mesh>
+      <lineSegments
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, height + 0.01, 0]}
+      >
+        <edgesGeometry args={[geom]} />
+        <lineBasicMaterial color="#3a5c7a" transparent opacity={0.7} />
+      </lineSegments>
+    </>
   );
 }
 
@@ -569,21 +693,27 @@ function BlueprintLegend({ data }: { data: RoofData }) {
 // ─── Facet inspector overlay ──────────────────────────────────────────
 
 function FacetInspector({
-  facet,
+  quad,
   sourceLabel,
   onClose,
 }: {
-  facet: Facet;
+  quad: RoofQuad3D;
   sourceLabel: string;
   onClose: () => void;
 }) {
-  const pitchRise = Math.round(12 * Math.tan((facet.pitchDegrees * Math.PI) / 180));
-  const cardinal = azimuthCardinal(facet.azimuthDeg);
-  const facetIndex = facet.id.replace(/^facet-?/i, "") || facet.id;
+  const pitchDeg = quad.pitchDegrees;
+  const pitchRise = Math.round(12 * Math.tan((pitchDeg * Math.PI) / 180));
+  const cardinal = azimuthCardinal(quad.azimuthDeg);
+  // Sqft: prefer the matched source facet's sloped area when available;
+  // fall back to computing from the quad's 4 corners (trapezoid area /
+  // cos(pitch) for sloped sqft).
+  const slopedSqft =
+    quad.sourceFacet?.areaSqftSloped ?? quadSlopedSqft(quad);
+  const footprintSqft =
+    quad.sourceFacet?.areaSqftFootprint ?? quadFootprintSqft(quad);
+  const facetIndex = quad.id.replace(/^(facet-?|quad-?)/i, "") || quad.id;
   return (
     <div className="absolute top-[52px] right-3 z-20 w-[260px] rounded-2xl border border-cyan-400/25 bg-black/80 backdrop-blur-md text-white shadow-2xl overflow-hidden">
-      {/* Header strip — cyan accent line under the title to match the
-          selected facet's outline color in the 3D scene. */}
       <div className="px-4 py-2.5 border-b border-white/[0.06] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-1 h-3 bg-cyan-400 rounded-full" />
@@ -593,6 +723,7 @@ function FacetInspector({
             </div>
             <div className="text-[10px] text-white/45 font-mono mt-0.5">
               {sourceLabel} source
+              {quad.sourceFacet ? "" : " · estimated"}
             </div>
           </div>
         </div>
@@ -606,26 +737,48 @@ function FacetInspector({
         </button>
       </div>
       <div className="p-4 space-y-3">
-        <Row label="Pitch" value={`${pitchRise}/12 (${facet.pitchDegrees.toFixed(1)}°)`} />
-        <Row label="Azimuth" value={`${cardinal} (${Math.round(facet.azimuthDeg)}°)`} />
+        <Row label="Pitch" value={`${pitchRise}/12 (${pitchDeg.toFixed(1)}°)`} />
+        <Row label="Azimuth" value={`${cardinal} (${Math.round(quad.azimuthDeg)}°)`} />
         <Row
           label="Sloped area"
-          value={`${Math.round(facet.areaSqftSloped).toLocaleString()} sqft`}
+          value={`${Math.round(slopedSqft).toLocaleString()} sqft`}
         />
         <Row
           label="Footprint"
-          value={`${Math.round(facet.areaSqftFootprint).toLocaleString()} sqft`}
+          value={`${Math.round(footprintSqft).toLocaleString()} sqft`}
         />
         <Row
           label="Low slope"
-          value={facet.isLowSlope ? "Yes (<2/12)" : "No"}
+          value={pitchDeg < 9.46 ? "Yes (<2/12)" : "No"}
         />
-        {facet.material && (
-          <Row label="Material" value={prettyMaterial(facet.material)} />
+        {quad.sourceFacet?.material && (
+          <Row label="Material" value={prettyMaterial(quad.sourceFacet.material)} />
         )}
       </div>
     </div>
   );
+}
+
+/** Sloped sqft from a quad's 4 scene-meter corners. Triangulates into
+ *  2 triangles and sums their areas in 3D, then converts m² → sqft. */
+function quadSlopedSqft(quad: RoofQuad3D): number {
+  const [a, b, c, d] = quad.corners;
+  const triArea = (p: THREE.Vector3, q: THREE.Vector3, r: THREE.Vector3) => {
+    const u = new THREE.Vector3().subVectors(q, p);
+    const v = new THREE.Vector3().subVectors(r, p);
+    return new THREE.Vector3().crossVectors(u, v).length() / 2;
+  };
+  const m2 = triArea(a, b, c) + triArea(a, c, d);
+  return m2 * 10.7639;
+}
+
+/** Footprint sqft: same area but projected to the XZ plane. */
+function quadFootprintSqft(quad: RoofQuad3D): number {
+  const flat = quad.corners.map((c) => new THREE.Vector2(c.x, c.z));
+  const triArea2 = (p: THREE.Vector2, q: THREE.Vector2, r: THREE.Vector2) =>
+    Math.abs((q.x - p.x) * (r.y - p.y) - (r.x - p.x) * (q.y - p.y)) / 2;
+  const m2 = triArea2(flat[0], flat[1], flat[2]) + triArea2(flat[0], flat[2], flat[3]);
+  return m2 * 10.7639;
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -672,7 +825,13 @@ function BlueprintCorner() {
 // ─── Projection: lat/lng → scene meters ──────────────────────────────
 
 interface Projected {
-  facets: Facet3D[];
+  /** One quad per building-outline edge — see generateFrustumRoof. */
+  roofQuads: RoofQuad3D[];
+  /** Inset polygon at ridge height — caps off the top of the frustum
+   *  so you can't see through the roof from above. */
+  ridgePolygon: THREE.Vector2[];
+  /** Height (above eave) of the ridge polygon. */
+  ridgeHeight: number;
   edges: Edge3D[];
   objects: Object3D[];
   footprint: THREE.Vector2[];
@@ -680,7 +839,16 @@ interface Projected {
   sceneSize: number;
 }
 
-function projectRoof(data: RoofData): Projected {
+function projectRoof(
+  data: RoofData,
+  opts: {
+    /** Override outline polygon (lat/lng). Used by cross-compare mode
+     *  to render a consistent building shell across both source toggles
+     *  — we pick the best outline from LiDAR + Solar once and pass it
+     *  to every render, so flipping the source doesn't reshape the wall. */
+    outlineOverride?: Array<{ lat: number; lng: number }> | null;
+  } = {},
+): Projected {
   const lat0 = data.address.lat;
   const lng0 = data.address.lng;
   const M_PER_DEG_LAT = 111_320;
@@ -697,59 +865,15 @@ function projectRoof(data: RoofData): Projected {
   const eaveHeight = 2.6;
 
   let maxRange = 0;
-
-  // Facets
-  const facets: Facet3D[] = [];
+  // Pass-through over source facets to compute sceneSize (for camera /
+  // grid sizing). We DON'T render these directly — the visible roof is
+  // generated from the outline below.
   for (const f of data.facets) {
     if (!f.polygon || f.polygon.length < 3) continue;
-    // Project lat/lng → scene coords (x_scene east meters, z_scene
-    // south meters — note the negation in toScene).
-    const ptsScene = f.polygon.map((v) => {
+    for (const v of f.polygon) {
       const [x, z] = toScene(v.lat, v.lng);
       maxRange = Math.max(maxRange, Math.hypot(x, z));
-      return [x, z] as [number, number];
-    });
-    const cx = ptsScene.reduce((s, p) => s + p[0], 0) / ptsScene.length;
-    const cz = ptsScene.reduce((s, p) => s + p[1], 0) / ptsScene.length;
-
-    // CRITICAL BUG FIX: the Shape's vertices MUST be local to the
-    // centroid. Previously they were absolute scene coords, which then
-    // got translated AGAIN by (cx, cz) when we positioned the parent
-    // group — doubling every facet's distance from origin (= the
-    // "facets scattered in 3D" symptom in the screenshots).
-    //
-    // We also negate the local-z (= shape-y) because ShapeGeometry is
-    // built in the XY plane, and we rotate it by -π/2 around X to lay
-    // it flat — that rotation takes shape-Y → -scene-Z. Pre-negating
-    // keeps the polygon's compass orientation correct after flatten.
-    const pts2dLocal = ptsScene.map(
-      ([x, z]) => new THREE.Vector2(x - cx, -(z - cz)),
-    );
-    const shape = new THREE.Shape(pts2dLocal);
-
-    const pitchRad = (f.pitchDegrees * Math.PI) / 180;
-    // Compass azimuth runs clockwise from north; Three.js Y-rotation is
-    // right-hand counterclockwise. Flip sign to match.
-    const azimuthRad = -(((f.azimuthDeg ?? 0) * Math.PI) / 180);
-
-    // Uniform centroid height — sit each facet a small constant above
-    // the wall top. The pitch tilt naturally lifts the up-slope edge
-    // and drops the down-slope edge; the OLD code added a per-facet
-    // `radius * tan(pitch) * 0.35` lift which was what threw outlying
-    // facets into the sky.
-    const cy = eaveHeight + 0.25;
-
-    facets.push({
-      id: f.id,
-      shape,
-      centroidX: cx,
-      centroidY: cy,
-      centroidZ: cz,
-      pitchRad,
-      azimuthRad,
-      color: colorForAzimuth(f.azimuthDeg ?? 0, f.pitchDegrees),
-      outlineColor: outlineForPitch(f.pitchDegrees),
-    });
+    }
   }
 
   // Edges. Ridges/hips/valleys ride at the ridge plane (higher than
@@ -759,12 +883,12 @@ function projectRoof(data: RoofData): Projected {
   // This gets the visual reading right without needing per-vertex
   // heights from the source data.
   const edges: Edge3D[] = [];
-  const ridgeHeight = eaveHeight + 1.5;
+  const edgeRidgeHeight = eaveHeight + 1.5;
   for (const e of data.edges) {
     if (!e.polyline || e.polyline.length < 2) continue;
     const isRidgeLike =
       e.type === "ridge" || e.type === "hip" || e.type === "valley";
-    const defaultY = isRidgeLike ? ridgeHeight : eaveHeight + 0.05;
+    const defaultY = isRidgeLike ? edgeRidgeHeight : eaveHeight + 0.05;
     const points = e.polyline.map((v) => {
       const [x, z] = toScene(v.lat, v.lng);
       const y = v.heightM > 0 ? eaveHeight + v.heightM : defaultY;
@@ -802,11 +926,18 @@ function projectRoof(data: RoofData): Projected {
     });
   }
 
-  // Footprint — prefer the LiDAR / Solar outlinePolygon (tight), fall
+  // Footprint — prefer the cross-source outlineOverride (best across
+  // LiDAR + Solar), else this source's own outlinePolygon, else fall
   // back to the union of facet polygons' bounding hull.
   let footprint: THREE.Vector2[] = [];
-  if (data.outlinePolygon && data.outlinePolygon.length >= 3) {
-    footprint = data.outlinePolygon.map((v) => {
+  const outlineSource =
+    opts.outlineOverride && opts.outlineOverride.length >= 3
+      ? opts.outlineOverride
+      : data.outlinePolygon && data.outlinePolygon.length >= 3
+        ? data.outlinePolygon
+        : null;
+  if (outlineSource) {
+    footprint = outlineSource.map((v) => {
       const [x, z] = toScene(v.lat, v.lng);
       return new THREE.Vector2(x, z);
     });
@@ -822,14 +953,210 @@ function projectRoof(data: RoofData): Projected {
     footprint = convexHull(all);
   }
 
+  // Generate the visible roof from the outline. One quad per outline
+  // edge, each matched to the closest source-data facet by azimuth so
+  // colors / pitch / inspector ids carry through.
+  const { roofQuads, ridgePolygon, ridgeHeight } = generateFrustumRoof({
+    footprint,
+    sourceFacets: data.facets,
+    eaveHeight,
+  });
+
   return {
-    facets,
+    roofQuads,
+    ridgePolygon,
+    ridgeHeight,
     edges,
     objects,
     footprint,
     eaveHeight,
     sceneSize: Math.max(15, maxRange),
   };
+}
+
+// ─── Frustum roof generator ──────────────────────────────────────────
+//
+// Treats the building outline as the eave line and generates one quad
+// per outline edge. Each quad slopes inward + upward to a "ridge
+// polygon" inset 35% toward the building centroid. The ridge polygon
+// is filled with a flat cap (RidgeCap component).
+//
+// This is a "mansard hip" approximation — for a true hip roof, the
+// ridge would collapse to a line (or to single points for square
+// buildings). For most residential outlines it reads as a proper roof
+// without needing a straight-skeleton algorithm. L-shaped and
+// rectangular outlines both produce coherent results.
+//
+// Each generated quad is matched to the closest source-data facet by
+// azimuth, inheriting its pitch (for slope steepness) and its id
+// (so the FacetInspector still pops the source-data details on click).
+
+const RIDGE_INSET_FRAC = 0.35;
+
+function generateFrustumRoof(opts: {
+  footprint: THREE.Vector2[];
+  sourceFacets: Facet[];
+  eaveHeight: number;
+}): {
+  roofQuads: RoofQuad3D[];
+  ridgePolygon: THREE.Vector2[];
+  ridgeHeight: number;
+} {
+  const { footprint, sourceFacets, eaveHeight } = opts;
+  if (footprint.length < 3) {
+    return { roofQuads: [], ridgePolygon: [], ridgeHeight: 0 };
+  }
+
+  // Centroid of the building outline.
+  const fx = footprint.reduce((s, p) => s + p.x, 0) / footprint.length;
+  const fy = footprint.reduce((s, p) => s + p.y, 0) / footprint.length;
+
+  // Inset polygon — each vertex pulled `RIDGE_INSET_FRAC` toward the
+  // centroid. This is the "ridge polygon" — top of the frustum.
+  const inset = footprint.map(
+    (v) =>
+      new THREE.Vector2(
+        v.x + RIDGE_INSET_FRAC * (fx - v.x),
+        v.y + RIDGE_INSET_FRAC * (fy - v.y),
+      ),
+  );
+
+  // Average pitch across source facets — used as a fallback when the
+  // azimuth-match doesn't return a facet. Weighted by sloped area so
+  // small noisy facets don't dominate.
+  let totalArea = 0;
+  let weightedPitch = 0;
+  for (const f of sourceFacets) {
+    const a = f.areaSqftSloped || 0;
+    totalArea += a;
+    weightedPitch += (f.pitchDegrees || 0) * a;
+  }
+  const avgPitchDeg = totalArea > 0 ? weightedPitch / totalArea : 22; // 22° ≈ 5/12
+
+  // For each outline edge, generate a quad facet.
+  const roofQuads: RoofQuad3D[] = [];
+  let maxRidgeLift = 0;
+  for (let i = 0; i < footprint.length; i++) {
+    const next = (i + 1) % footprint.length;
+    const eaveA = footprint[i];
+    const eaveB = footprint[next];
+    const ridgeA = inset[i];
+    const ridgeB = inset[next];
+
+    // Edge direction + outward normal. The outward normal is the
+    // perpendicular to the edge, pointing AWAY from the centroid.
+    const ex = eaveB.x - eaveA.x;
+    const ey = eaveB.y - eaveA.y;
+    const edgeLen = Math.hypot(ex, ey);
+    if (edgeLen < 0.01) continue;
+    // Edge midpoint
+    const mx = (eaveA.x + eaveB.x) / 2;
+    const my = (eaveA.y + eaveB.y) / 2;
+    // Two candidate normals — pick the one pointing AWAY from centroid.
+    const nx1 = -ey / edgeLen;
+    const ny1 = ex / edgeLen;
+    const outwardSign =
+      (mx + nx1 - fx) * (mx + nx1 - fx) + (my + ny1 - fy) * (my + ny1 - fy) >
+      (mx - fx) * (mx - fx) + (my - fy) * (my - fy)
+        ? 1
+        : -1;
+    const nx = nx1 * outwardSign;
+    const ny = ny1 * outwardSign;
+    // Compass azimuth from outward normal. Scene-x = east, scene-z
+    // (= our shape-y, positive southward). Compass 0 = north (-z),
+    // 90 = east (+x), 180 = south (+z), 270 = west (-x).
+    const azimuthDeg = scenenormalToCompass(nx, ny);
+
+    // Match this quad to the closest source-data facet by azimuth.
+    const matched = findClosestFacetByAzimuth(sourceFacets, azimuthDeg);
+    const pitchDeg = matched?.pitchDegrees ?? avgPitchDeg;
+
+    // Compute the rise from eave to ridge for this quad. The inset
+    // distance (perpendicular from eave to ridge edge) times tan(pitch).
+    const insetDist = pointToSegmentDistance(ridgeA, eaveA, eaveB);
+    const rise = insetDist * Math.tan((pitchDeg * Math.PI) / 180);
+    maxRidgeLift = Math.max(maxRidgeLift, rise);
+
+    const ridgeY = eaveHeight + rise;
+    const corners: [
+      THREE.Vector3,
+      THREE.Vector3,
+      THREE.Vector3,
+      THREE.Vector3,
+    ] = [
+      new THREE.Vector3(eaveA.x, eaveHeight, eaveA.y),
+      new THREE.Vector3(eaveB.x, eaveHeight, eaveB.y),
+      new THREE.Vector3(ridgeB.x, ridgeY, ridgeB.y),
+      new THREE.Vector3(ridgeA.x, ridgeY, ridgeA.y),
+    ];
+
+    roofQuads.push({
+      id: matched?.id ?? `quad-${i}`,
+      corners,
+      color: colorForAzimuth(azimuthDeg, pitchDeg),
+      outlineColor: outlineForPitch(pitchDeg),
+      pitchDegrees: pitchDeg,
+      azimuthDeg,
+      sourceFacet: matched,
+    });
+  }
+
+  return {
+    roofQuads,
+    ridgePolygon: inset,
+    ridgeHeight: maxRidgeLift,
+  };
+}
+
+/** Compass azimuth (clockwise from north, degrees) for a 2D scene
+ *  normal (x_east, y_south_meters). */
+function scenenormalToCompass(nx: number, ny: number): number {
+  // Scene-x = east, scene-z = our `ny` here (positive southward).
+  // Compass:  0 = north (-z), 90 = east (+x), 180 = south (+z), 270 = west (-x).
+  // atan2(east_component, north_component) → 0 when pointing north.
+  // east_component = nx, north_component = -ny.
+  const rad = Math.atan2(nx, -ny);
+  const deg = (rad * 180) / Math.PI;
+  return (deg + 360) % 360;
+}
+
+/** Find the source-data facet whose azimuth is closest to `targetDeg`
+ *  on the compass circle. Returns null when no facets are available. */
+function findClosestFacetByAzimuth(
+  facets: Facet[],
+  targetDeg: number,
+): Facet | null {
+  if (facets.length === 0) return null;
+  let best: Facet | null = null;
+  let bestDelta = Infinity;
+  for (const f of facets) {
+    let d = Math.abs((f.azimuthDeg ?? 0) - targetDeg) % 360;
+    if (d > 180) d = 360 - d;
+    if (d < bestDelta) {
+      bestDelta = d;
+      best = f;
+    }
+  }
+  return best;
+}
+
+/** Perpendicular distance from point P to segment AB. */
+function pointToSegmentDistance(
+  p: THREE.Vector2,
+  a: THREE.Vector2,
+  b: THREE.Vector2,
+): number {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const lenSq = abx * abx + aby * aby;
+  if (lenSq < 1e-9) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = Math.max(
+    0,
+    Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq),
+  );
+  const closeX = a.x + t * abx;
+  const closeY = a.y + t * aby;
+  return Math.hypot(p.x - closeX, p.y - closeY);
 }
 
 // Andrew's monotone chain. Small util — only used as the fallback when
