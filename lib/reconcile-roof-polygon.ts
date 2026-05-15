@@ -21,7 +21,12 @@
  * so footprint × 1.06 approximates the roof outline before pitch.
  */
 
-import { polygonAreaSqft, polygonIoU, polygonIsNearAddress } from "./polygon";
+import {
+  polygonAreaSqft,
+  polygonIntersection,
+  polygonIoU,
+  polygonIsNearAddress,
+} from "./polygon";
 // Phase 1 migration — was `./microsoft-buildings` (Nashville TSV impl);
 // new path points at the Azure + 3-tier-cached module. Preserves the
 // MS-Buildings-only semantics this consumer expects (rural fallback in
@@ -379,6 +384,64 @@ export async function reconcileRoofPolygon(
     };
   }
   if (!iouTrusted && areaRatio > SAM3_AREA_RATIO_MAX) {
+    // Option A — geometric clip. When SAM3 over-traces (likely included
+    // yard/driveway/pool deck) but GIS has a plausible residential
+    // building outline (800-20k sqft) AND SAM3 overlaps it meaningfully
+    // (iou ≥ MIN_CLIP_IOU), intersect the two polygons. SAM3 ∩ GIS
+    // keeps SAM3's vertex resolution where it agrees with GIS and
+    // trims the over-trace creep. Result is labeled source:"sam3"
+    // so the picker accepts it.
+    //
+    // Jupiter case: SAM3 = 15,950 sqft (yard included), OSM = 4,021
+    // sqft (correct building), IoU = 0.25, areaRatio = 3.97. The
+    // intersection produces ~4,021 sqft with SAM3's edge fidelity.
+    //
+    // Skip when gisLooksLikeLot already fired (Oak Park) — that path
+    // returned earlier with the raw SAM3 polygon.
+    const MIN_CLIP_IOU = 0.10;
+    const GIS_TRUSTABLE_MIN_SQFT = 800;
+    const GIS_TRUSTABLE_MAX_SQFT = 20_000;
+    const SAM3_OVERTRACE_RATIO = 2.0;
+    const overtraceClippable =
+      areaRatio > SAM3_OVERTRACE_RATIO &&
+      iou >= MIN_CLIP_IOU &&
+      gisSqft >= GIS_TRUSTABLE_MIN_SQFT &&
+      gisSqft <= GIS_TRUSTABLE_MAX_SQFT;
+    if (overtraceClippable) {
+      const clipped = polygonIntersection(sam3Polygon!, gis.polygon);
+      if (clipped && clipped.length >= 3) {
+        const clippedSqft = polygonAreaSqft(clipped);
+        if (
+          clippedSqft >= GIS_TRUSTABLE_MIN_SQFT &&
+          clippedSqft <= GIS_TRUSTABLE_MAX_SQFT
+        ) {
+          console.log(
+            "reconcile: over-trace clipped — SAM3 ∩ GIS produced bounded polygon",
+            {
+              sam3Sqft: Math.round(sam3Sqft),
+              gisSqft: Math.round(gisSqft),
+              clippedSqft: Math.round(clippedSqft),
+              iou: iou.toFixed(2),
+              gisSource: gis.source,
+            },
+          );
+          return {
+            polygon: clipped,
+            footprintSqft: Math.round(clippedSqft),
+            source: "sam3",
+            reason: `SAM3 over-traced ${(areaRatio * 100).toFixed(0)}% of footprint; clipped to GIS intersection (${Math.round(clippedSqft)} sqft from ${Math.round(sam3Sqft)})`,
+            diagnostics: {
+              sam3Sqft,
+              gisSqft,
+              areaRatio,
+              iou,
+              gisSource: gis.source,
+              sam3CentroidNearAddress,
+            },
+          };
+        }
+      }
+    }
     return {
       polygon: gis.polygon,
       footprintSqft: Math.round(gisSqft * EAVE_OVERHANG_FACTOR),

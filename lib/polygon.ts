@@ -128,6 +128,88 @@ export function polygonIoU(
 }
 
 /**
+ * Geometric intersection of two lat/lng polygons. Returns the largest
+ * ring of the resulting MultiPolygon as a lat/lng polygon, or null
+ * when the polygons don't overlap.
+ *
+ * Used by the SAM3 reconciler to clip an over-traced SAM3 polygon
+ * back to the bounds of a trusted GIS footprint. SAM3 ∩ GIS keeps
+ * SAM3's vertex resolution where the two polygons agree and trims
+ * the yard/driveway/pool-deck creep where SAM3 wandered.
+ *
+ * Projection / un-projection round-trip uses the same flat-earth
+ * approximation as polygonIoU above — sub-cm accurate at parcel
+ * scale, fast enough to run inline in the pipeline hot path.
+ */
+export function polygonIntersection(
+  a: Array<{ lat: number; lng: number }>,
+  b: Array<{ lat: number; lng: number }>,
+): Array<{ lat: number; lng: number }> | null {
+  if (!a || a.length < 3 || !b || b.length < 3) return null;
+
+  // Same flat-earth projection as polygonIoU — centroid-derived
+  // origin for numerical stability with polygon-clipping's
+  // floating-point intersection.
+  const allPts = [...a, ...b];
+  const cLat = allPts.reduce((s, p) => s + p.lat, 0) / allPts.length;
+  const cLng = allPts.reduce((s, p) => s + p.lng, 0) / allPts.length;
+  const cosLat = Math.cos((cLat * Math.PI) / 180);
+  const M_PER_DEG_LAT = 111_320;
+
+  const project = (
+    poly: Array<{ lat: number; lng: number }>,
+  ): Array<[number, number]> => {
+    const ring: Array<[number, number]> = poly.map((v) => [
+      (v.lng - cLng) * M_PER_DEG_LAT * cosLat,
+      (v.lat - cLat) * M_PER_DEG_LAT,
+    ]);
+    ring.push(ring[0]);
+    return ring;
+  };
+
+  const unproject = (
+    ring: Array<[number, number]>,
+  ): Array<{ lat: number; lng: number }> => {
+    return ring.map(([x, y]) => ({
+      lat: cLat + y / M_PER_DEG_LAT,
+      lng: cLng + x / (M_PER_DEG_LAT * cosLat),
+    }));
+  };
+
+  let inter: ReturnType<typeof polygonClipping.intersection>;
+  try {
+    inter = polygonClipping.intersection([project(a)], [project(b)]);
+  } catch {
+    return null;
+  }
+  if (!inter || inter.length === 0) return null;
+
+  // polygon-clipping returns MultiPolygon. Pick the largest outer
+  // ring across all polygons (ignore holes — they're inner cutouts
+  // and we want a single boundary for the on-screen outline).
+  let bestRing: Array<[number, number]> | null = null;
+  let bestArea = 0;
+  for (const polygon of inter) {
+    if (!polygon || polygon.length === 0) continue;
+    const outer = polygon[0]; // first ring is outer
+    let sum = 0;
+    for (let i = 0; i < outer.length - 1; i++) {
+      sum += outer[i][0] * outer[i + 1][1] - outer[i + 1][0] * outer[i][1];
+    }
+    const area = Math.abs(sum) / 2;
+    if (area > bestArea) {
+      bestArea = area;
+      bestRing = outer as Array<[number, number]>;
+    }
+  }
+  if (!bestRing || bestArea === 0) return null;
+
+  // Drop the closing duplicate vertex polygon-clipping adds.
+  const open = bestRing.slice(0, -1);
+  return unproject(open);
+}
+
+/**
  * Coverage validator: does this polygon cover enough of the building
  * footprint to plausibly be "the whole roof" — and not WAY MORE than
  * the building (i.e., traced into the yard / fence perimeter)?
