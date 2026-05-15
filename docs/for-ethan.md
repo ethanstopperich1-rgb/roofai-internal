@@ -1,5 +1,12 @@
 # For Ethan — Tier A + B + C Handoff
 
+> ⚠️ **STALE — written 2026-05-14, before Phases F / 1 / 2 / 3 + Point2Roof
+> + the renderer rewrite shipped.** For current state see
+> [next-steps.md](next-steps.md), which is the live document. The body
+> below describes pipeline architecture that has since been substantially
+> rewritten (Tier A LiDAR is now CGAL-PolyFit + Point2Roof, not the
+> alpha-shape-only path described here).
+
 **Date:** 2026-05-14
 **Status:** All three tiers shipped to `main`. Next estimate you run will exercise the new pipeline end-to-end.
 **Latest commits:**

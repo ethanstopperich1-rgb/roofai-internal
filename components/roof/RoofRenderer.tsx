@@ -592,7 +592,7 @@ function BlueprintLegend({ data }: { data: RoofData }) {
     <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between text-white pointer-events-none">
       <div className="space-y-0.5">
         <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-cyan-300/80">
-          ✓ Measured · USGS LiDAR
+          ✓ Measured · {sourceLabel(data.source)}
         </div>
         <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/40">
           confidence {Math.round((data.confidence ?? 0) * 100)}%
@@ -627,6 +627,27 @@ function BlueprintLegend({ data }: { data: RoofData }) {
  *  the real-mesh path (Point2Roof), amber for the synthetic
  *  fallback (Point2Roof unavailable or never wired up), slate for
  *  Solar tier-C (frustum mode but not a failure mode). */
+/** Map RoofData.source → user-facing measurement-provenance label.
+ *  Used by the BlueprintLegend "✓ Measured · ..." header so the chip
+ *  honestly reflects which dataset the rendered geometry came from
+ *  instead of hardcoding "USGS LiDAR" regardless of which source the
+ *  user has toggled to. */
+function sourceLabel(source: RoofData["source"]): string {
+  switch (source) {
+    case "tier-a-lidar":
+      return "USGS LiDAR";
+    case "tier-b-multiview":
+      return "Multiview refinement";
+    case "tier-c-solar":
+      return "Google Solar";
+    case "tier-c-vision":
+      return "Aerial vision";
+    case "none":
+    default:
+      return "approximate";
+  }
+}
+
 function meshSourceLabel(source: string | null | undefined): {
   text: string;
   toneClass: string;
