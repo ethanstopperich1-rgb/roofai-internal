@@ -112,10 +112,9 @@ def fetch_lidar_for_bbox(
     # Now reproject lng/lat → local AEQD meter frame centered on the
     # parcel. Same frame downstream stages (isolate_roof, segment_planes,
     # build_facets) expect: x = meters east, y = meters north, z = meters.
-    local_crs = pyproj.CRS.from_proj4(
-        f"+proj=aeqd +lat_0={lat} +lon_0={lng} +ellps=WGS84 +units=m",
-    )
-    to_local = pyproj.Transformer.from_crs("EPSG:4326", local_crs, always_xy=True)
+    # See coord_frame.py for the shared transformer contract.
+    from coord_frame import make_wgs84_to_aeqd  # noqa: PLC0415
+    to_local = make_wgs84_to_aeqd(lat, lng)
     xs, ys = to_local.transform(src_lng, src_lat)
     xyz = np.column_stack([xs, ys, src_z])
 

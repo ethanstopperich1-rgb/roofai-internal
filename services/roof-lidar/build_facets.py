@@ -6,7 +6,7 @@ the RoofData Facet[] structure:
 
   - polygon: alpha-shape boundary of the inlier point projection onto
     the plane, simplified via Douglas-Peucker (0.2m tolerance), then
-    reprojected back to lat/lng.
+    reprojected back to lat/lng via the AEQD inverse transformer.
   - pitchDegrees: from the plane normal (angle from vertical).
   - azimuthDeg: from the plane normal projected onto horizontal.
   - areaSqftSloped: shoelace area of the polygon in plane coordinates.
@@ -14,10 +14,21 @@ the RoofData Facet[] structure:
   - isLowSlope: pitchDegrees < 18.43° (4/12 threshold).
 
 Coordinate convention:
-  - LAS xyz is treated as ENU meters (x=East, y=North, z=Up) for the
-    bbox around the address centroid. The conversion back to lat/lng
-    uses a cheap planar approximation accurate to sub-meter at
-    sub-km bbox sizes.
+  - LAS xyz is in local AEQD meters (x=East, y=North, z=Up) per the
+    contract in coord_frame.py. The AEQD CRS is parcel-centered at
+    (center_lat, center_lng), so X and Y are meters east/north of
+    that origin. We convert the per-facet polygon back to lat/lng
+    via pyproj's inverse AEQD transformer — exact round-trip, no
+    flat-earth approximation.
+
+Phase F: this module previously used a cheap-flat-earth approximation
+(M_PER_DEG_LAT × cos(lat)) to invert the AEQD frame. That worked
+numerically for sub-km parcels (sub-cm error) but bypassed pyproj,
+so any upstream change to the AEQD origin or projection would have
+silently desynced the polygon vertices from the source LiDAR
+returns. The current implementation goes through coord_frame's
+inverse transformer, which uses the same proj4 string as the
+forward transform in pull_lidar.py — round-trip is exact.
 """
 
 from __future__ import annotations
@@ -28,8 +39,6 @@ import uuid
 from typing import Any
 
 log = logging.getLogger(__name__)
-
-M_PER_DEG_LAT = 111_320.0
 
 
 def build_facets_from_planes(
@@ -44,11 +53,12 @@ def build_facets_from_planes(
     except ImportError as err:
         raise RuntimeError(f"numpy missing: {err}") from err
 
-    if center_lat == 0:
-        raise ValueError("center_lat required for ENU conversion")
+    from coord_frame import make_aeqd_to_wgs84  # noqa: PLC0415
 
-    cos_lat = math.cos(math.radians(center_lat))
-    m_per_deg_lng = M_PER_DEG_LAT * cos_lat
+    if center_lat == 0:
+        raise ValueError("center_lat required for AEQD inverse conversion")
+
+    aeqd_to_wgs84 = make_aeqd_to_wgs84(center_lat, center_lng)
 
     facets: list[dict[str, Any]] = []
     for idx, plane in enumerate(planes):
@@ -75,16 +85,13 @@ def build_facets_from_planes(
         if len(boundary_2d) < 3:
             continue
 
-        # Convert ENU meters → lat/lng.
-        # We treat LAS X as longitude-meters-from-center and Y as
-        # latitude-meters-from-center.
-        # TODO(post-deploy): if LAS isn't reprojected to WGS84 upstream
-        # this conversion is wrong; chain through pyproj before this stage.
+        # Convert AEQD meters → WGS84 lat/lng via the shared inverse
+        # transformer. The transformer expects (x_east, y_north) and
+        # returns (lng, lat) because we built it with always_xy=True.
         polygon_latlng: list[dict[str, float]] = []
         for x, y in boundary_2d:
-            d_lng = x / m_per_deg_lng
-            d_lat = y / M_PER_DEG_LAT
-            polygon_latlng.append({"lat": center_lat + d_lat, "lng": center_lng + d_lng})
+            lng_v, lat_v = aeqd_to_wgs84.transform(x, y)
+            polygon_latlng.append({"lat": float(lat_v), "lng": float(lng_v)})
 
         # Areas
         area_sqm = _shoelace_area_m(boundary_2d)
