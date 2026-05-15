@@ -250,6 +250,45 @@ def health() -> dict:
     }
 
 
+@app.function(image=image, timeout=60, gpu="T4")
+@modal.fastapi_endpoint(method="GET")
+def pc_util_smoke() -> dict:
+    """One-shot validation that the Point2Roof pc_util CUDA extension
+    actually loads and launches kernels at runtime — not just that it
+    compiled at image-build time. Returns:
+      { ok: true, idx_sum: int, idx_nonzero_count: int, ... }   on success
+      { ok: false, stage: "import" | "kernel", err: str }       on failure
+    Hit this once after a Point2Roof-affecting deploy to verify the
+    extension is wired correctly. Costs ~$0.001 per call (T4 for ~2s)."""
+    out: dict = {"torch_version": None, "cuda_available": False}
+    try:
+        import torch  # noqa: PLC0415
+        out["torch_version"] = torch.__version__
+        out["cuda_available"] = bool(torch.cuda.is_available())
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "stage": "torch_import", "err": f"{type(e).__name__}: {e}", **out}
+    try:
+        import pc_util  # noqa: PLC0415, F401
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "stage": "pc_util_import", "err": f"{type(e).__name__}: {e}", **out}
+    try:
+        xyz = torch.randn(1, 100, 3).cuda()
+        new_xyz = torch.randn(1, 10, 3).cuda()
+        idx = torch.zeros(1, 10, 16, dtype=torch.int32).cuda()
+        # Python binding is `ball_query_wrapper` — pybind11 m.def() in
+        # pointnet2_api.cpp strips the `_fast` suffix from the C++ name.
+        pc_util.ball_query_wrapper(1, 100, 10, 0.2, 16, new_xyz, xyz, idx)
+        return {
+            "ok": True,
+            "idx_sum": int(idx.sum().item()),
+            "idx_shape": list(idx.shape),
+            "idx_nonzero_count": int((idx != 0).sum().item()),
+            **out,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "stage": "kernel_launch", "err": f"{type(e).__name__}: {e}", **out}
+
+
 if __name__ == "__main__":
     # `python modal_app.py` runs the FastAPI app locally for dev w/o Modal.
     import uvicorn
