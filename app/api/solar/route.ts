@@ -85,10 +85,25 @@ export async function GET(req: Request) {
     process.env.SOLAR_DETECTED_ARRAYS === "1"
       ? "&additionalInsights=DETECTED_ARRAYS"
       : "";
+  // requiredQuality floor — Google Solar API returns one of four
+  // imagery quality tiers: HIGH > MEDIUM > LOW > BASE. Setting this
+  // to HIGH (the previous value) rejected every address where Google
+  // only has MEDIUM or LOW quality photogrammetry — a significant
+  // self-imposed coverage gap, especially for rural-suburban FL
+  // (Jupiter, Hobe Sound, Tequesta, Stuart, anywhere Google's flown
+  // less-dense imagery). Lowering to LOW pulls in roughly 3-4x more
+  // addresses; our confidence-tier mapping in lib/sources/solar-source.ts
+  // already demotes the customer-facing confidence chip when the
+  // returned imageryQuality is MEDIUM (0.70) or LOW (0.55) instead
+  // of HIGH (0.85), so the lower-precision data shows up labeled
+  // honestly rather than as a top-tier result.
+  // Floor at LOW (not BASE) — BASE responses are usually empty/
+  // unusable for plane decomposition.
+  const requiredQuality = process.env.SOLAR_REQUIRED_QUALITY ?? "LOW";
   const url =
     `https://solar.googleapis.com/v1/buildingInsights:findClosest` +
     `?location.latitude=${lat}&location.longitude=${lng}` +
-    `&requiredQuality=HIGH${detectedArraysFlag}&key=${apiKey}`;
+    `&requiredQuality=${requiredQuality}${detectedArraysFlag}&key=${apiKey}`;
 
   const res = await fetchWithTimeout(url, { cache: "no-store", timeoutMs: 15_000 });
   if (!res.ok) {
