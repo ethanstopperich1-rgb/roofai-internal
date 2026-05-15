@@ -288,15 +288,56 @@ export async function reconcileRoofPolygon(
   // Wrong-building check #2 — IoU floor. The centroid check can pass
   // when SAM3 traced a small neighbor whose edge happens to be within
   // 15m of the address (e.g. dense urban / suburban lots). But IoU=0
-  // with the GIS footprint means the polygons describe geometrically
-  // different buildings, regardless of centroid distance or area ratio.
-  // Always reject in that case.
-  if (iou < ZERO_OVERLAP_IOU) {
+  // with the GIS footprint can mean two very different things:
+  //   a) Genuinely different buildings (SAM3 picked wrong)
+  //   b) OSM tagged the entire parcel/lot as `building=*` instead of
+  //      the actual building footprint — common on suburban/rural FL
+  //      lots. SAM3 traces the 5,000 sqft house inside a 77,000 sqft
+  //      lot polygon → IoU 0 because OSM's polygon is 13× larger →
+  //      reconciler used to reject SAM3 and trust the bogus OSM lot.
+  //
+  // Heuristic discriminator: if SAM3's centroid is near the address
+  // AND GIS area is implausibly large for a residential building
+  // (> 15,000 sqft is a strong tell — the largest residential US
+  // home is ~22k sqft; OSM lot polygons routinely hit 30-80k+ sqft
+  // for typical suburban parcels), trust SAM3. The OSM polygon is
+  // mislabeled, not SAM3 wrong.
+  const GIS_IMPLAUSIBLE_RESIDENTIAL_SQFT = 15_000;
+  const gisLooksLikeLot =
+    gisSqft > GIS_IMPLAUSIBLE_RESIDENTIAL_SQFT &&
+    sam3CentroidNearAddress &&
+    sam3Sqft >= 800 &&        // SAM3 produced a residential-sized trace
+    sam3Sqft <= 20_000;        // not commercial-scale either
+  if (iou < ZERO_OVERLAP_IOU && !gisLooksLikeLot) {
     return {
       polygon: gis.polygon,
       footprintSqft: Math.round(gisSqft * EAVE_OVERHANG_FACTOR),
       source: "footprint-occluded",
       reason: `SAM3 has IoU ${iou.toFixed(2)} with GIS footprint (different buildings); using GIS footprint × ${EAVE_OVERHANG_FACTOR}`,
+      diagnostics: {
+        sam3Sqft,
+        gisSqft,
+        areaRatio,
+        iou,
+        gisSource: gis.source,
+        sam3CentroidNearAddress,
+      },
+    };
+  }
+  if (iou < ZERO_OVERLAP_IOU && gisLooksLikeLot) {
+    // OSM "building" polygon is actually the lot. SAM3 wins.
+    // Don't fall through to the rest of the reconciler — the
+    // area-ratio gate below would reject SAM3 for being 7-10% of
+    // a lot-sized "footprint" too.
+    console.log(
+      "reconcile: gisLooksLikeLot — trusting SAM3 over GIS lot polygon",
+      { sam3Sqft: Math.round(sam3Sqft), gisSqft: Math.round(gisSqft), gisSource: gis.source },
+    );
+    return {
+      polygon: sam3Polygon!,
+      footprintSqft: Math.round(sam3Sqft),
+      source: "sam3",
+      reason: `SAM3 trusted: GIS source=${gis.source} returned ${Math.round(gisSqft)} sqft (parcel-sized, not building); SAM3 traced ${Math.round(sam3Sqft)} sqft`,
       diagnostics: {
         sam3Sqft,
         gisSqft,
@@ -317,7 +358,11 @@ export async function reconcileRoofPolygon(
   const iouTrusted = iou >= TRUSTED_IOU_THRESHOLD;
 
   // Area-ratio gate (only when IoU isn't strong enough on its own).
-  if (!iouTrusted && areaRatio < SAM3_AREA_RATIO_MIN) {
+  // Same lot-misidentification escape: if GIS is implausibly large
+  // for a residential footprint AND SAM3 traced a residential-sized
+  // building near the address, GIS is the lot, not the house —
+  // trust SAM3 instead of rejecting it for being "too small."
+  if (!iouTrusted && areaRatio < SAM3_AREA_RATIO_MIN && !gisLooksLikeLot) {
     return {
       polygon: gis.polygon,
       footprintSqft: Math.round(gisSqft * EAVE_OVERHANG_FACTOR),
