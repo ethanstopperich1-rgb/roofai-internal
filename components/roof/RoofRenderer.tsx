@@ -380,9 +380,13 @@ function RoofScene({
 interface RoofQuad3D {
   /** Stable id — `sourceFacetId` when matched, else `quad-<i>`. */
   id: string;
-  /** 4 corners in scene coords, ordered: eaveA, eaveB, ridgeB, ridgeA.
-   *  eave corners sit at y=eaveHeight; ridge corners at y=eave+rise. */
-  corners: [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3];
+  /** Polygon vertices in scene coords. The previous 4-corner type
+   *  (frustum mode) was [eaveA, eaveB, ridgeB, ridgeA]. With the
+   *  Point2Roof real-mesh path landed, this is now a general N-vertex
+   *  polygon — real measured facets can be triangles, quads, or
+   *  arbitrary planar polygons. Triangulated via centroid fan in
+   *  RoofQuad's BufferGeometry build. */
+  corners: THREE.Vector3[];
   color: string;
   outlineColor: string;
   pitchDegrees: number;
@@ -406,33 +410,52 @@ function RoofQuad({
 }) {
   const geom = useMemo(() => {
     const g = new THREE.BufferGeometry();
-    const [a, b, c, d] = quad.corners;
-    // Two triangles forming the quad: (a,b,c) and (a,c,d). Winding
-    // matches a quad with outward normal facing up-and-out.
-    const positions = new Float32Array([
-      a.x, a.y, a.z,
-      b.x, b.y, b.z,
-      c.x, c.y, c.z,
-      a.x, a.y, a.z,
-      c.x, c.y, c.z,
-      d.x, d.y, d.z,
-    ]);
-    g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const verts = quad.corners;
+    if (verts.length < 3) {
+      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(), 3));
+      return g;
+    }
+    // Centroid-fan triangulation — works for any convex polygon and
+    // is acceptable for slightly-concave roof facets (artifacts at
+    // concave corners are barely visible at typical orbit angles).
+    // For the frustum case this produces 4 triangles (vs the old
+    // hand-built 2 triangles) — same visual, slightly more cost,
+    // worth the consistency.
+    const cx = verts.reduce((s, v) => s + v.x, 0) / verts.length;
+    const cy = verts.reduce((s, v) => s + v.y, 0) / verts.length;
+    const cz = verts.reduce((s, v) => s + v.z, 0) / verts.length;
+    const positions: number[] = [];
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i];
+      const b = verts[(i + 1) % verts.length];
+      positions.push(cx, cy, cz, a.x, a.y, a.z, b.x, b.y, b.z);
+    }
+    g.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(positions), 3),
+    );
     g.computeVertexNormals();
     return g;
   }, [quad.corners]);
 
   const outlineGeom = useMemo(() => {
     const g = new THREE.BufferGeometry();
-    const [a, b, c, d] = quad.corners;
-    // Closed loop a → b → c → d → a as line segments.
-    const positions = new Float32Array([
-      a.x, a.y, a.z, b.x, b.y, b.z,
-      b.x, b.y, b.z, c.x, c.y, c.z,
-      c.x, c.y, c.z, d.x, d.y, d.z,
-      d.x, d.y, d.z, a.x, a.y, a.z,
-    ]);
-    g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const verts = quad.corners;
+    if (verts.length < 2) {
+      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(), 3));
+      return g;
+    }
+    // Closed-loop line segments around the polygon boundary.
+    const positions: number[] = [];
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i];
+      const b = verts[(i + 1) % verts.length];
+      positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    }
+    g.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(positions), 3),
+    );
     return g;
   }, [quad.corners]);
 
@@ -759,10 +782,21 @@ function projectRoof(
   // we synthesize a building shell at a believable height.
   const eaveHeight = 2.6;
 
+  // Detect which render path will run. Needed UP HERE so the edges
+  // loop below (and several other branches) can gate their behavior
+  // on whether the mesh is real (Point2Roof) or synthetic (frustum).
+  const hasRealMesh =
+    data.meshSource === "point2roof" &&
+    data.facets.length > 0 &&
+    data.facets.some((f) =>
+      f.polygon.some((v) => typeof v.heightM === "number"),
+    );
+
   let maxRange = 0;
   // Pass-through over source facets to compute sceneSize (for camera /
-  // grid sizing). We DON'T render these directly — the visible roof is
-  // generated from the outline below.
+  // grid sizing). We DON'T render these directly in the frustum path —
+  // the visible roof is generated from the outline below. In the real-
+  // mesh path we DO render them directly (via projectFromRealFacets).
   for (const f of data.facets) {
     if (!f.polygon || f.polygon.length < 3) continue;
     for (const v of f.polygon) {
@@ -771,26 +805,30 @@ function projectRoof(
     }
   }
 
-  // Edges. Ridges/hips/valleys ride at the ridge plane (higher than
-  // eaves/rakes). Without 3D edge data (Tier C) we approximate:
-  //   - ridge / hip / valley → ridge height (eave + 1.5m)
-  //   - eave / rake / step-wall → eave height
-  // This gets the visual reading right without needing per-vertex
-  // heights from the source data.
+  // Edges. With the synthetic frustum mesh, source-data ridge/hip/
+  // valley polylines DON'T align with the rendered geometry — the
+  // frustum's ridge is a PCA-derived single line; real source ridges
+  // can be wherever the measurements put them. Drawing both produces
+  // the "red/orange floating lines that don't match the mesh" the
+  // user flagged.
+  //
+  // Rule going forward: render source-data edges ONLY when the mesh
+  // came from the same source (Point2Roof, where every edge IS a
+  // face boundary by construction). For the frustum path, suppress
+  // them — the mesh's own outline already shows the silhouette.
+  //
+  // Eave / rake / step-wall edges are ALWAYS suppressed since the
+  // wall extrusion was removed and they'd float at eave height with
+  // nothing connecting them to the ground.
   const edges: Edge3D[] = [];
   const edgeRidgeHeight = eaveHeight + 1.5;
+  const renderSourceRidges = hasRealMesh;
   for (const e of data.edges) {
     if (!e.polyline || e.polyline.length < 2) continue;
     const isRidgeLike =
       e.type === "ridge" || e.type === "hip" || e.type === "valley";
-    // Phase 2 visual cleanup — suppress eave / rake / step-wall edge
-    // polylines. Since the wall extrusion was removed, these edges
-    // ride at the eave plane with nothing below them, so they read
-    // as floating green rectangles around the perimeter. The roof
-    // mesh's own outline already shows the eave silhouette. Ridge /
-    // hip / valley edges still render because they sit higher up
-    // and communicate real structural detail.
     if (!isRidgeLike) continue;
+    if (!renderSourceRidges) continue;
     const defaultY = edgeRidgeHeight;
     const points = e.polyline.map((v) => {
       const [x, z] = toScene(v.lat, v.lng);
@@ -856,14 +894,30 @@ function projectRoof(
     footprint = convexHull(all);
   }
 
-  // Generate the visible roof from the outline. One quad per outline
-  // edge, each matched to the closest source-data facet by azimuth so
-  // colors / pitch / inspector ids carry through.
-  const { roofQuads, ridgePolygon, ridgeHeight } = generateFrustumRoof({
-    footprint,
-    sourceFacets: data.facets,
-    eaveHeight,
-  });
+  // Decide which roof-generation path runs:
+  //
+  //   • REAL MESH (Point2Roof) — when data.meshSource === "point2roof"
+  //     AND at least one facet's polygon has heightM (= the Python side
+  //     emitted real 3D measurements, not just 2D lat/lng). Each facet
+  //     becomes its own RoofQuad with its actual measured polygon
+  //     vertices. Multi-wing roofs render correctly because we're not
+  //     forcing a single-ridge approximation.
+  //
+  //   • SYNTHETIC FRUSTUM (everything else) — outline-based PCA hip
+  //     approximation. Frustum is the universal fallback whenever the
+  //     real mesh isn't available (Solar tier-C, alpha-shape fallback,
+  //     Point2Roof failure, missing heightM).
+  const { roofQuads, ridgePolygon, ridgeHeight } = hasRealMesh
+    ? projectFromRealFacets({
+        facets: data.facets,
+        toScene,
+        eaveHeight,
+      })
+    : generateFrustumRoof({
+        footprint,
+        sourceFacets: data.facets,
+        eaveHeight,
+      });
 
   return {
     roofQuads,
@@ -1101,12 +1155,7 @@ function generateFrustumRoof(opts: {
       (Math.atan2(ridgeHeight, Math.max(insetDist, 0.01)) * 180) / Math.PI;
     const pitchDeg = matched?.pitchDegrees ?? geometricPitchDeg;
 
-    const corners: [
-      THREE.Vector3,
-      THREE.Vector3,
-      THREE.Vector3,
-      THREE.Vector3,
-    ] = [
+    const corners: THREE.Vector3[] = [
       new THREE.Vector3(eaveA.x, eaveHeight, eaveA.y),
       new THREE.Vector3(eaveB.x, eaveHeight, eaveB.y),
       new THREE.Vector3(ridgeB.x, ridgeY, ridgeB.y),
@@ -1128,6 +1177,72 @@ function generateFrustumRoof(opts: {
     roofQuads,
     ridgePolygon: inset,
     ridgeHeight,
+  };
+}
+
+/** Project Point2Roof real-mesh facets directly into the scene.
+ *
+ *  This is the Phase 2 mesh path the user asked for: instead of
+ *  generating a synthetic single-ridge hip from the outline, each
+ *  source facet becomes its own roof quad with vertices at their
+ *  measured 3D positions (lat/lng → scene XZ, heightM → scene Y).
+ *
+ *  Requirements (caller verifies these before calling):
+ *    - data.meshSource === "point2roof"
+ *    - At least some facets have heightM populated
+ *
+ *  Behavior on missing heightM for individual vertices: defaults to
+ *  the eave height. The wrapper normalizes Z to "above eave" so 0
+ *  means the eave corner; positive values rise to the ridge.
+ *  Mixed-heightM polygons would produce a partially-flat facet
+ *  which is wrong but is at least visible — better than crashing.
+ *
+ *  No PCA, no inset polygon, no ridge synthesis. The roof topology
+ *  comes from the source data exactly as measured. Adjacent facets
+ *  share their boundary vertices because Point2Roof's wireframe has
+ *  shared edges by construction.
+ */
+function projectFromRealFacets(opts: {
+  facets: Facet[];
+  toScene: (lat: number, lng: number) => [number, number];
+  eaveHeight: number;
+}): {
+  roofQuads: RoofQuad3D[];
+  ridgePolygon: THREE.Vector2[];
+  ridgeHeight: number;
+} {
+  const { facets, toScene, eaveHeight } = opts;
+  const roofQuads: RoofQuad3D[] = [];
+  let maxRidgeY = 0;
+
+  for (const f of facets) {
+    if (!f.polygon || f.polygon.length < 3) continue;
+    const verts: THREE.Vector3[] = f.polygon.map((v) => {
+      const [x, z] = toScene(v.lat, v.lng);
+      // heightM is measured above the LOCAL eave (set by the Python
+      // wrapper). Add eaveHeight so it sits at the right scene Y.
+      const y = eaveHeight + (typeof v.heightM === "number" ? v.heightM : 0);
+      maxRidgeY = Math.max(maxRidgeY, y);
+      return new THREE.Vector3(x, y, z);
+    });
+    roofQuads.push({
+      id: f.id,
+      corners: verts,
+      // Color + outline still derived from the facet's azimuth /
+      // pitch so the visual palette stays consistent across both
+      // mesh paths.
+      color: colorForAzimuth(f.azimuthDeg ?? 0, f.pitchDegrees ?? 0),
+      outlineColor: outlineForPitch(f.pitchDegrees ?? 0),
+      pitchDegrees: f.pitchDegrees ?? 0,
+      azimuthDeg: f.azimuthDeg ?? 0,
+      sourceFacet: f,
+    });
+  }
+
+  return {
+    roofQuads,
+    ridgePolygon: [], // not applicable — no synthesized ridge polygon
+    ridgeHeight: Math.max(0, maxRidgeY - eaveHeight),
   };
 }
 

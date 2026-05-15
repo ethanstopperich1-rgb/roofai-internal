@@ -1,0 +1,114 @@
+name: Deploy Modal LiDAR Service
+
+# Two trigger modes:
+#
+#   1. workflow_dispatch (MANUAL via GitHub UI Actions tab):
+#      Use this for one-off deploys, the first Point2Roof
+#      activation, post-rollback re-deploys, or whenever you
+#      explicitly want the image rebuilt. The dispatcher can pick
+#      which Modal environment to target.
+#
+#   2. push to main, ONLY when services/roof-lidar/** changed
+#      (or this workflow file itself). Avoids rebuilding the
+#      ~2 GB CUDA + CGAL image on every unrelated UI commit. The
+#      path filter is the cost control — without it, every typo
+#      fix in app/quote/page.tsx would trigger a ~5-min image
+#      rebuild that costs Modal compute.
+#
+# Required GitHub Secrets (set in repo Settings → Secrets):
+#   MODAL_TOKEN_ID     — from `modal token new` (ak-...)
+#   MODAL_TOKEN_SECRET — from `modal token new` (as-...)
+#
+# The Modal CLI reads these from environment variables; the
+# workflow exports them before calling `modal deploy`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Modal environment'
+        required: true
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - staging
+  push:
+    branches: [main]
+    paths:
+      - 'services/roof-lidar/**'
+      - '.github/workflows/deploy-modal.yml'
+
+concurrency:
+  # One Modal deploy at a time — sequential pushes won't race each
+  # other's image builds. `cancel-in-progress: false` because the
+  # in-flight deploy IS the deploy we want; cancelling halfway
+  # leaves the Modal app in an unknown state.
+  group: deploy-modal-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: modal deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # CUDA toolkit + pc_util build can be slow
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Modal CLI
+        run: |
+          pip install --upgrade pip
+          pip install modal
+
+      - name: Verify Modal auth + show app info
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          modal config show || true
+          modal app list || true
+
+      - name: Deploy voxaris-roof-lidar
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          # workflow_dispatch passes `environment`; push triggers
+          # default to `main`.
+          MODAL_ENVIRONMENT: ${{ inputs.environment || 'main' }}
+        run: |
+          cd services/roof-lidar
+          echo "Deploying voxaris-roof-lidar to Modal environment=$MODAL_ENVIRONMENT"
+          modal deploy modal_app.py
+
+      - name: Sanity-check deployed endpoints
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          cd services/roof-lidar
+          # List the deployed app's endpoints so the workflow run
+          # shows the URLs the Next.js side needs.
+          modal app list | grep -i voxaris || true
+
+      - name: Emit deploy summary
+        if: always()
+        run: |
+          echo "## Modal Deploy Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- App: \`voxaris-roof-lidar\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Triggered by: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "After deploy verify:" >> $GITHUB_STEP_SUMMARY
+          echo "1. \`/api/lidar-health\` returns \`state: configured\`" >> $GITHUB_STEP_SUMMARY
+          echo "2. First estimate logs show \`regularize+point2roof: N facets\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. \`[polyfit-failure]\` lines (if any) reveal which" >> $GITHUB_STEP_SUMMARY
+          echo "   reconstruction tier won per address" >> $GITHUB_STEP_SUMMARY
