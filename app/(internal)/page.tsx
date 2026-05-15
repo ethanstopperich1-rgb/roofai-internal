@@ -46,7 +46,7 @@ import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
 import SectionHeader from "@/components/SectionHeader";
 import PhotoUploadPanel from "@/components/PhotoUploadPanel";
-import ImageryStormBanner from "@/components/ImageryStormBanner";
+// ImageryStormBanner removed — see note in render section.
 import VoiceNoteRecorder, { type VoiceNoteResult } from "@/components/VoiceNoteRecorder";
 import CarrierClaimPanel from "@/components/CarrierClaimPanel";
 import SupplementAnalyzerPanel from "@/components/SupplementAnalyzerPanel";
@@ -1463,12 +1463,14 @@ function HomePageInner() {
               measurements already shown in the Measurements panel. */}
 
           {/* ═══ 03 QUALITY & COMPLIANCE ═══════════════════════════════ */}
-          {/* Section header only when there's actually something to show
-              (carrier claim, storm correlation, outline warning, or size
-              mismatch). Otherwise we'd render a "03 Quality" header above
-              an empty region. */}
-          {(isInsuranceClaim ||
-            (polygonReady && polygonSource !== "none")) && (
+          {/* Section header only renders when there's actual section body
+              to wrap. After ImageryStormBanner was removed, the only
+              remaining tenants of this section are the carrier-claim
+              panels (gated by isInsuranceClaim). When the rep hasn't
+              toggled the claim mode, the section ghosts entirely
+              instead of leaving an "02 Quality & compliance" header
+              floating over empty space. */}
+          {isInsuranceClaim && (
             <SectionHeader
               index={2}
               title="Quality & compliance"
@@ -1511,12 +1513,11 @@ function HomePageInner() {
             />
           )}
 
-          {/* ─── Imagery × storm correlation (multi-temporal) ──────────── */}
-          <ImageryStormBanner
-            imageryDate={roofData?.imageryDate ?? null}
-            lat={address?.lat}
-            lng={address?.lng}
-          />
+          {/* ImageryStormBanner intentionally removed — the "roof scan
+              may underweight damage" warning surfaced on every
+              post-imagery storm and read as a hedge rather than a
+              signal. Same data is now carried by RecentStormCard in the
+              right rail without the apologetic framing. */}
 
           {/* OutlineQualityWarning intentionally dropped in Tier C —
               its source/Claude-verifier model is gone now that RoofData
