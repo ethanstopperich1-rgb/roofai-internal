@@ -1,54 +1,103 @@
+/**
+ * GET /api/microsoft-building?lat=..&lng=..
+ *
+ * @deprecated Phase 1 shim around `lib/sources/ms-buildings.ts`.
+ *
+ * This route was the original Nashville-scoped MS Buildings endpoint
+ * (backed by a local TSV blob). The implementation has been replaced
+ * by the Azure-based three-tier-cached `lib/sources/ms-buildings.ts`,
+ * but the HTTP contract here is preserved BYTE-IDENTICAL so the four
+ * known consumers continue working unchanged:
+ *
+ *   - app/quote/page.tsx                 (customer tier ladder)
+ *   - app/dashboard/estimate/page.tsx    (rep tier ladder)
+ *   - scripts/eval-truth.ts              (eval harness)
+ *   - lib/reconcile-roof-polygon.ts      (server-side; will migrate
+ *                                         to direct import in Phase 1.5)
+ *
+ * Phase 1.5 removes this route after the four consumers migrate to
+ * /api/parcel-polygon. See tracking issue:
+ *   "Phase 1.5: Migrate tier ladders to /api/parcel-polygon, remove
+ *    /api/microsoft-building"
+ *
+ * IMPORTANT semantic contract: this route ONLY calls the MS Buildings
+ * tier (fetchMsBuildingsOnly). It does NOT fall back to Solar / OSM —
+ * doing so would silently change tier-ladder behavior in consumers
+ * which expect "give me the MS Buildings polygon for this address, or
+ * 404 if MS doesn't have one."
+ *
+ * Response shapes (preserved from the legacy impl):
+ *
+ *   200 success:
+ *     {
+ *       polygon: [{lat, lng}, ...],
+ *       source:  "microsoft-buildings",
+ *       contained: boolean
+ *     }
+ *
+ *   404 no-coverage:
+ *     {
+ *       error: "no_coverage",
+ *       message: "No Microsoft Building Footprint near this address."
+ *     }
+ *
+ * Deprecation telemetry: every call logs the caller IP + referer +
+ * user-agent so Phase 1.5 can verify whether the four known consumers
+ * are actually the only callers (or surface forgotten internal tools).
+ */
+
 import { NextResponse } from "next/server";
 import { rateLimit } from "@/lib/ratelimit";
-import { fetchMicrosoftBuildingPolygon, type MicrosoftBuildingResult } from "@/lib/microsoft-buildings";
-import { getCached, setCached } from "@/lib/cache";
+import { fetchMsBuildingsOnly } from "@/lib/sources/ms-buildings";
 
 export const runtime = "nodejs";
 export const maxDuration = 15;
 
-/**
- * GET /api/microsoft-building?lat=..&lng=..
- *
- * Microsoft Building Footprints lookup — open-data building polygons
- * extracted from satellite imagery via ML, covering rural areas where
- * OSM has no coverage. ODbL license.
- *
- * Currently scoped to the Nashville metro bbox (lat 35.7-36.2,
- * lng -86.9 to -86.3). Returns 404 outside that bbox; expand by editing
- * scripts/build-ms-buildings-tn.ts and re-running the build.
- *
- * Cached server-side per lat/lng for 6h.
- */
 export async function GET(req: Request) {
   const __rl = await rateLimit(req, "standard");
   if (__rl) return __rl;
-  const { searchParams } = new URL(req.url);
-  const lat = Number(searchParams.get("lat"));
-  const lng = Number(searchParams.get("lng"));
+
+  // Phase 1 deprecation telemetry. One-line warn per call so the
+  // failure corpus can attribute future surprise callers without
+  // adding structured-logging dependencies.
+  const url = new URL(req.url);
+  console.warn(
+    "[deprecated] /api/microsoft-building called",
+    JSON.stringify({
+      ip:
+        req.headers.get("x-forwarded-for") ??
+        req.headers.get("x-real-ip") ??
+        "unknown",
+      referer: req.headers.get("referer") ?? "none",
+      userAgent: (req.headers.get("user-agent") ?? "none").slice(0, 200),
+      query: url.search,
+    }),
+  );
+
+  const lat = Number(url.searchParams.get("lat"));
+  const lng = Number(url.searchParams.get("lng"));
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return NextResponse.json({ error: "lat & lng required" }, { status: 400 });
   }
 
-  const cached = await getCached<MicrosoftBuildingResult | null>("ms-buildings", lat, lng);
-  if (cached !== null) {
-    if (cached === undefined) {
-      return NextResponse.json(
-        { error: "no_coverage", message: "No Microsoft Building Footprint near this address." },
-        { status: 404 },
-      );
-    }
-    return NextResponse.json(cached);
-  }
-
-  const result = await fetchMicrosoftBuildingPolygon({ lat, lng });
+  const result = await fetchMsBuildingsOnly({ lat, lng });
   if (!result) {
-    await setCached<MicrosoftBuildingResult | null>("ms-buildings", lat, lng, null);
     return NextResponse.json(
-      { error: "no_coverage", message: "No Microsoft Building Footprint near this address." },
+      {
+        error: "no_coverage",
+        message: "No Microsoft Building Footprint near this address.",
+      },
       { status: 404 },
     );
   }
 
-  await setCached("ms-buildings", lat, lng, result);
-  return NextResponse.json(result);
+  // Byte-identical response shape: polygon + source + contained ONLY.
+  // The richer fields (areaSqft, fetchedAt, etc.) the new module knows
+  // about are intentionally stripped — see Phase 1 design doc for the
+  // contract preservation rationale.
+  return NextResponse.json({
+    polygon: result.polygon,
+    source: result.source,
+    contained: result.contained,
+  });
 }

@@ -1,0 +1,11 @@
+{
+  "release": "2025-06-15",
+  "source_url_base": "https://minedbuildings.blob.core.windows.net/global-buildings",
+  "dataset_links_csv": "https://minedbuildings.blob.core.windows.net/global-buildings/dataset-links.csv",
+  "notes": [
+    "This is the MS Buildings release the prewarm script + cold-tier",
+    "fetcher will pull from. Bumping this value is a deliberate PR —",
+    "never auto-bumped. After bump, re-run scripts/prewarm_ms_buildings.py",
+    "to repopulate the Modal volume with the new release's tiles."
+  ]
+}

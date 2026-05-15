@@ -141,3 +141,59 @@ export async function setCached<T>(
 export function isPersistentCacheActive(): boolean {
   return getRedis() !== null;
 }
+
+// ─── Arbitrary-key variants ────────────────────────────────────────────
+//
+// The lat/lng-keyed `getCached`/`setCached` above is the right primitive
+// for per-address lookups, but some data tiers are keyed differently —
+// e.g. MS Buildings' warm cache is per-quadkey-16, not per-address. These
+// helpers expose the same in-memory + Redis backing under arbitrary keys.
+// All keys get the `pitch:` prefix to avoid cross-tenant collisions when
+// the Upstash instance is shared.
+
+function rawKey(suffix: string): string {
+  return `pitch:${suffix}`;
+}
+
+export async function getCachedByKey<T>(suffix: string): Promise<T | null> {
+  const k = rawKey(suffix);
+  const hit = STORE.get(k);
+  if (hit) {
+    if (Date.now() > hit.expiresAt) {
+      STORE.delete(k);
+    } else {
+      return hit.value as T;
+    }
+  }
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const value = (await redis.get(k)) as T | null;
+    if (value != null) {
+      STORE.set(k, { value, expiresAt: Date.now() + DEFAULT_TTL_MS });
+    }
+    return value;
+  } catch (err) {
+    console.warn(`[cache] redis.get failed for ${k}:`, err);
+    return null;
+  }
+}
+
+export async function setCachedByKey<T>(
+  suffix: string,
+  value: T,
+  ttlSeconds?: number,
+): Promise<void> {
+  const ttlMs = ttlSeconds != null ? ttlSeconds * 1000 : DEFAULT_TTL_MS;
+  const k = rawKey(suffix);
+  STORE.set(k, { value, expiresAt: Date.now() + ttlMs });
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.set(k, value as unknown, {
+      ex: ttlSeconds ?? 60 * 60 * 6,
+    });
+  } catch (err) {
+    console.warn(`[cache] redis.set failed for ${k}:`, err);
+  }
+}

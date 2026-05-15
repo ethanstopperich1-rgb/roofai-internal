@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "release": "2025-06-15",
+  "metros": [
+    {
+      "name": "Orlando",
+      "client_tags": ["voxaris-orlando"],
+      "counties": ["Orange", "Seminole", "Osceola", "Lake", "Volusia"],
+      "bounds": {
+        "min_lat": 28.34, "max_lat": 29.39,
+        "min_lng": -81.96, "max_lng": -80.78
+      },
+      "quadkeys_z9": [
+        "032231022",
+        "032231023",
+        "032231032",
+        "032231033"
+      ]
+    },
+    {
+      "name": "Tampa",
+      "client_tags": ["voxaris-tampa"],
+      "counties": ["Hillsborough", "Pinellas", "Pasco", "Polk"],
+      "bounds": {
+        "min_lat": 27.58, "max_lat": 28.66,
+        "min_lng": -82.85, "max_lng": -81.20
+      },
+      "quadkeys_z9": [
+        "032231020",
+        "032231021",
+        "032231030",
+        "032231031"
+      ]
+    },
+    {
+      "name": "Jacksonville",
+      "client_tags": ["voxaris-jacksonville"],
+      "counties": ["Duval", "Clay", "Nassau", "St. Johns"],
+      "bounds": {
+        "min_lat": 30.00, "max_lat": 30.70,
+        "min_lng": -82.00, "max_lng": -81.30
+      },
+      "quadkeys_z9": [
+        "032223111",
+        "032223113"
+      ]
+    },
+    {
+      "name": "Florida Panhandle (Stratus)",
+      "client_tags": ["stratus-panhandle"],
+      "counties": [
+        "Bay", "Walton", "Okaloosa", "Santa Rosa",
+        "Escambia", "Leon", "Gulf", "Franklin"
+      ],
+      "bounds": {
+        "min_lat": 29.50, "max_lat": 31.00,
+        "min_lng": -87.60, "max_lng": -84.50
+      },
+      "quadkeys_z9": [
+        "032212333",
+        "032213222",
+        "032213223",
+        "032213230"
+      ]
+    }
+  ],
+  "notes": [
+    "Quadkeys are z=9 (~76km tiles). The prewarm script fetches each",
+    "listed quadkey and writes it to the Modal volume so runtime",
+    "lookups don't pay an Azure cold-fetch on first hit per address.",
+    "",
+    "TO ADD A NEW METRO:",
+    "  1. Append an entry with counties + bounds + computed quadkeys_z9",
+    "  2. Run: modal run scripts.prewarm_ms_buildings",
+    "  3. Open PR. The CI check (scripts/check-prewarm-manifest.ts) will",
+    "     fail if the Modal volume manifest doesn't contain all the new",
+    "     metro's quadkeys yet.",
+    "",
+    "Computing z=9 quadkeys: use the latLngToQuadkey helper in",
+    "lib/sources/ms-buildings.ts with zoom=9, OR Microsoft's Bing tile",
+    "system reference at",
+    "https://learn.microsoft.com/en-us/bingmaps/articles/bing-maps-tile-system."
+  ]
+}
