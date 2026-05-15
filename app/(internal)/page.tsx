@@ -1217,49 +1217,34 @@ function HomePageInner() {
 
       {!shown && <EmptyState />}
 
-      {/* In-flight progress strip — replaces the previous full-screen
-          "Analyzing roof" overlay. Was blocking the entire page for 30-60s
-          while Tier A ran; rep had no signal beyond a spinner and the
-          actual page sections (Property, Estimate) had nothing to look at.
-          New approach: the page renders sections IMMEDIATELY when shown
-          flips true, each with its own inline loading state. This strip
-          surfaces just enough context — which tier is computing right now
-          and a shimmer-bar — so the rep knows work is happening without
-          being locked out of the rest of the UI. */}
+      {/* In-flight progress strip — single line, just the headline copy
+          and a pulsing dot. No address, no live/cancellable meta — per
+          the request to keep the loading state focused on one thing
+          ("Measuring multiple sources…"). The rest of the page is
+          gated below so the rep never sees partially-loaded data
+          peeking out from underneath the strip. */}
       {pipelineLoading && shown && (
         <div
-          className="relative overflow-hidden rounded-2xl border border-cy-300/15 bg-cy-300/[0.025] px-5 py-3.5 stagger-in"
+          className="relative overflow-hidden rounded-2xl border border-cy-300/15 bg-cy-300/[0.025] px-5 py-4 stagger-in"
           aria-live="polite"
           role="status"
         >
           <div className="absolute inset-x-0 top-0 h-px overflow-hidden">
             <div className="h-px w-1/3 bg-gradient-to-r from-transparent via-cy-300 to-transparent animate-shimmer" />
           </div>
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3 min-w-0">
-              <span className="relative flex h-2 w-2 flex-shrink-0">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cy-300 opacity-60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-cy-300" />
-              </span>
-              <div className="min-w-0">
-                <div className="text-[12.5px] font-medium text-slate-100 truncate">
-                  {!roofData
-                    ? "Measuring roof from multiple sources…"
-                    : "Finalizing estimate…"}
-                </div>
-                <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-cy-300/75 mt-0.5">
-                  {address?.formatted ?? "—"}
-                </div>
-              </div>
-            </div>
-            <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-slate-500 hidden sm:block">
-              live · cancellable
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="relative flex h-2 w-2 flex-shrink-0">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cy-300 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-cy-300" />
+            </span>
+            <div className="text-[13.5px] font-medium text-slate-100 truncate">
+              Measuring multiple sources…
             </div>
           </div>
         </div>
       )}
 
-      {shown && (
+      {shown && !pipelineLoading && (
         <>
           {/* ═══ 01 PROPERTY — satellite + photogrammetric 3D ═══════════ */}
           <SectionHeader

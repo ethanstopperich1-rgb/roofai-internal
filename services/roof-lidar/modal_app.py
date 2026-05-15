@@ -125,6 +125,19 @@ image = (
         "apt-get update",
     )
     .apt_install("cuda-toolkit-12-6")
+    # Reinstall pdal AFTER cuda-toolkit. The NVIDIA apt source's
+    # apt-get update step bumped the base image's libpdalcpp from
+    # .so.20 to a newer ABI; the pdal pip binding (installed above)
+    # is hard-linked against .so.20 and now fails at import-time with:
+    #   ImportError: libpdalcpp.so.20: cannot open shared object file
+    # `pip install --force-reinstall --no-cache-dir` re-links the
+    # binding against whatever libpdalcpp the post-update apt left
+    # in /usr/local. Tier A was returning failed-coverage on every
+    # address until this fix — Modal's worker was crashing at
+    # `import pdal` before the EPT fetch even started.
+    .run_commands(
+        "pip install --force-reinstall --no-cache-dir 'pdal>=3.5'",
+    )
     .add_local_dir(".", "/app", copy=True)
     .workdir("/app")
     # Build the Point2Roof pc_util CUDA extension. The build is
