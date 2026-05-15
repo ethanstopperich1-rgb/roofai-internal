@@ -43,7 +43,13 @@ export default function InternalHeader() {
     pathname === "/methodology" ||
     pathname === "/login" ||
     pathname === "/storms" ||
-    pathname.startsWith("/storms/");
+    pathname.startsWith("/storms/") ||
+    // /estimate is the PUBLIC mirror of the rep estimator — same UI as
+    // `/`, but shareable without auth. Hiding the staff nav here keeps
+    // the surface unauthenticated-clean (no 401 traps from clicking
+    // ESTIMATOR / HISTORY / ADMIN tabs).
+    pathname === "/estimate" ||
+    pathname.startsWith("/estimate/");
   if (isCustomerRoute || isDashboardRoute || isLegalOrPublicMarketingRoute) return null;
 
   return (
