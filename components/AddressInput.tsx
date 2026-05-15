@@ -160,7 +160,10 @@ export default function AddressInput({ onSelect, onSubmit, value, onChange }: Pr
         <div
           className="absolute left-0 right-0 top-full mt-2 z-[100] rounded-2xl overflow-hidden shadow-2xl float-in border border-white/10"
           style={{
-            background: "rgba(11,14,20,0.96)",
+            // Solid ink-900 fill so capability cards / EmptyState content
+            // behind the hero can't bleed through. Previous 0.96 alpha
+            // showed faint card outlines under the suggestions list.
+            background: "rgba(8,10,15,0.995)",
             backdropFilter: "blur(28px) saturate(160%)",
             WebkitBackdropFilter: "blur(28px) saturate(160%)",
             boxShadow:

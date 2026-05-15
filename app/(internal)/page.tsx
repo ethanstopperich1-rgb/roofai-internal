@@ -1099,12 +1099,16 @@ function HomePageInner() {
       )}
 
       {/* ─── Hero / address bar ─────────────────────────────────────── */}
-      {/* No overflow-hidden here so the autocomplete dropdown can extend
-          past the section's bottom edge. The gradient blob below uses
-          isolation: isolate to keep its rounded-3xl clipping local. */}
+      {/* z-30 on the hero so the address autocomplete dropdown (z-[100]
+          INSIDE this section) stacks above the EmptyState capability
+          cards below. Previous version used `isolation: isolate` which
+          trapped the dropdown inside the hero's stacking context — the
+          cards below were bleeding through visually. The glass-panel-hero
+          CSS already clips its own ::before/::after gradient via
+          border-radius + overflow on the ::pseudo layers, so the
+          isolation guard wasn't actually load-bearing. */}
       <section
-        className="glass-panel-hero p-5 sm:p-7 md:p-9 relative"
-        style={{ isolation: "isolate" }}
+        className="glass-panel-hero p-5 sm:p-7 md:p-9 relative z-30"
       >
         {/* Top strip — dynamic progress stepper on the left, rep meta
             (name input + New) on the right. The stepper used to be a
