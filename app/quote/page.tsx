@@ -1570,34 +1570,121 @@ function RoofStep({
             </div>
           ) : null}
         </div>
-        <div className="glass-panel p-5">
-          <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
-            Roof pitch
-          </div>
-          <div className="font-display tabular text-[32px] font-semibold tracking-[-0.02em] mt-2 text-white/95">
-            {pitch ?? "6/12"}
-            {!pitch && (
-              <span className="ml-2 text-[12px] font-mono uppercase tracking-[0.12em] text-amber align-middle">
-                assumed
-              </span>
-            )}
-          </div>
-          {/* Be explicit when the pitch couldn't be measured. Earlier
-              the label was "Estimated — confirmed at on-site quote",
-              which sounds like it was measured. The truth is we
-              defaulted to 6/12 (~26.6°) when Solar didn't return one,
-              and the range silently used that for slope math. Saying
-              so directly is the honest fix; widening the range to
-              absorb the uncertainty is the next step. */}
-          <div className="text-[11.5px] text-white/45 mt-1">
-            {pitch
-              ? "Auto-detected from satellite imagery"
-              : "We couldn't measure pitch from the imagery — using a 6/12 assumption. Final pitch confirmed on-site."}
-          </div>
-        </div>
+        <PerFacetPitchPanel roofData={roofData} fallbackPitch={pitch} />
       </div>
 
       <NavButtons onBack={onBack} onNext={onNext} disabled={!sqft} />
+    </div>
+  );
+}
+
+/** Per-facet pitch panel. Replaces the old single-pitch display with a
+ *  breakdown that reflects the truth: pricing already uses per-facet
+ *  pitch (priceRoofData loops over data.facets and applies pitch-
+ *  specific labor multipliers), so the customer should see that the
+ *  measurement is per-facet, not a flat average.
+ *
+ *  Layout:
+ *    - Lead line: range "Y/12 – Z/12" (or single value when all facets agree)
+ *    - Below: per-facet list (top 4 by area; "+N more" when more exist)
+ *    - Trust line: "Pricing applies pitch per facet — steep slopes
+ *      surface as a labor adder in your estimate."
+ */
+function PerFacetPitchPanel({
+  roofData,
+  fallbackPitch,
+}: {
+  roofData: RoofData | null;
+  fallbackPitch: string | null;
+}) {
+  // No measurement yet — keep the original "assumed" fallback so the
+  // wizard still shows something while the pipeline is in flight.
+  if (!roofData || roofData.source === "none" || roofData.facets.length === 0) {
+    return (
+      <div className="glass-panel p-5">
+        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
+          Roof pitch
+        </div>
+        <div className="font-display tabular text-[32px] font-semibold tracking-[-0.02em] mt-2 text-white/95">
+          {fallbackPitch ?? "6/12"}
+          {!fallbackPitch && (
+            <span className="ml-2 text-[12px] font-mono uppercase tracking-[0.12em] text-amber align-middle">
+              assumed
+            </span>
+          )}
+        </div>
+        <div className="text-[11.5px] text-white/45 mt-1">
+          {fallbackPitch
+            ? "Auto-detected from satellite imagery"
+            : "We couldn’t measure pitch from the imagery — using a 6/12 assumption. Final pitch confirmed on-site."}
+        </div>
+      </div>
+    );
+  }
+
+  const facets = roofData.facets.filter((f) => (f.areaSqftSloped ?? 0) > 0);
+  const pitchRise = (deg: number) =>
+    Math.max(0, Math.round(12 * Math.tan((deg * Math.PI) / 180)));
+  // Per-facet pitch in /12 — group by rise so 4.1° and 4.4° both read 1/12.
+  const pitches = facets.map((f) => pitchRise(f.pitchDegrees));
+  const minRise = Math.min(...pitches);
+  const maxRise = Math.max(...pitches);
+
+  // Top-area facets for the breakdown list.
+  const top = [...facets]
+    .sort((a, b) => b.areaSqftSloped - a.areaSqftSloped)
+    .slice(0, 4);
+  const remaining = facets.length - top.length;
+
+  return (
+    <div className="glass-panel p-5">
+      <div className="flex items-baseline justify-between">
+        <div className="text-[11px] font-mono uppercase tracking-[0.14em] text-white/55">
+          Roof pitch
+        </div>
+        <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-cy-300/70">
+          {facets.length} facets · per facet
+        </div>
+      </div>
+      <div className="font-display tabular text-[32px] font-semibold tracking-[-0.02em] mt-2 text-white/95">
+        {minRise === maxRise ? `${minRise}/12` : `${minRise}–${maxRise}/12`}
+      </div>
+      <div className="text-[11.5px] text-white/45 mt-1">
+        Measured per facet across the roof — steepest and shallowest shown above.
+      </div>
+
+      {/* Per-facet rows — top 4 by area. Customer-friendly, no IDs. */}
+      <div className="mt-4 pt-3 border-t border-white/[0.06] space-y-1.5">
+        {top.map((f, i) => {
+          const rise = pitchRise(f.pitchDegrees);
+          return (
+            <div
+              key={f.id}
+              className="flex items-center justify-between text-[11.5px]"
+            >
+              <span className="text-white/55 font-mono tabular">
+                Facet {i + 1}
+              </span>
+              <span className="text-white/85 tabular">
+                {rise}/12{" "}
+                <span className="text-white/40">
+                  · {Math.round(f.areaSqftSloped).toLocaleString()} sqft
+                </span>
+              </span>
+            </div>
+          );
+        })}
+        {remaining > 0 && (
+          <div className="text-[11px] text-white/40 pt-1">
+            + {remaining} more facet{remaining === 1 ? "" : "s"}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 text-[11px] text-white/45 leading-relaxed">
+        Pricing applies pitch <span className="text-white/70">per facet</span> —
+        steep slopes surface as a labor adder in your estimate.
+      </div>
     </div>
   );
 }
