@@ -94,6 +94,21 @@ export async function tierCSolarSource(opts: {
   const flashing = computeFlashing(facets, edges, objects);
   const totals = computeTotals(facets, edges, objects);
 
+  // Footprint correction — Solar's `wholeRoofStats.groundAreaMeters2`
+  // (surfaced as `solar.buildingFootprintSqft`) is the authoritative
+  // building footprint from Google's photogrammetric building model.
+  // Our per-facet polygons are rotated bboxes, so summing them gives
+  // a footprint that's distorted on L-shapes/hips/triangles. When
+  // Solar has the wholeRoof number, override the summed-rectangle
+  // total. The per-facet `areaSqftFootprint` stays accurate enough
+  // for per-facet pricing; only the TOTAL needs the correction.
+  if (
+    solar.buildingFootprintSqft != null &&
+    solar.buildingFootprintSqft > 0
+  ) {
+    totals.totalFootprintSqft = solar.buildingFootprintSqft;
+  }
+
   const confidence =
     solar.imageryQuality === "HIGH" ? 0.85 :
     solar.imageryQuality === "MEDIUM" ? 0.70 :
