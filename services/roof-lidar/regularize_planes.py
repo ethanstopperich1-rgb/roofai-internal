@@ -8,31 +8,38 @@ watertight 3D roof mesh whose facets SHARE EDGES by construction.
 This is the actual fix for the "scattered polygon confetti" visual
 that motivated the whole upgrade.
 
-Pipeline (when CGAL bindings are available):
+Pipeline (in order of attempt):
   1. Plane regularization — snap near-parallel planes to parallel,
-     near-orthogonal to orthogonal, coplanar to coplanar. Pure Python
-     pass (no CGAL needed) that runs first regardless of PolyFit
-     availability. Even without PolyFit it improves downstream
-     per-plane alpha-shape output.
-  2. PolyFit reconstruction — feeds the regularized planes + point
-     cloud into CGAL's Polygonal_surface_reconstruction_3, which
-     generates candidate faces by pairwise plane intersection and
-     uses integer programming (SCIP solver) to select an optimal
-     watertight subset.
-  3. Mesh → facet conversion — convert the watertight mesh into the
-     Facet[] structure consumed by the rest of the pipeline. Each
-     facet inherits its area, pitch, azimuth from the mesh face.
+     near-orthogonal to orthogonal. Pure Python; runs first
+     regardless of which downstream reconstruction tier succeeds.
 
-Failure modes (CGAL not installed, PolyFit returns no mesh,
+  2a. Point2Roof (PRIMARY, MIT-licensed):
+      Deep-learning end-to-end roof reconstruction vendored from
+      Li-Li-Whu/Point2Roof. Takes a normalized point cloud, predicts
+      keypoints (corners) + edges (wireframe), then post-processes
+      into closed polygon facets via cycle detection. Requires CUDA;
+      degrades gracefully when CUDA is unavailable or inference fails.
+
+  2b. CGAL PolyFit (SECONDARY, GPL):
+      Polygonal_surface_reconstruction_3 — generates candidate faces
+      by pairwise plane intersection and uses integer programming
+      (SCIP solver) to select an optimal watertight subset. Kept as
+      a backup tier because of its GPL license and IP-solver latency
+      (5-30s on complex roofs).
+
+  3. Facet[] conversion — both 2a and 2b emit per-facet records
+     matching types/roof.ts schema (polygon, pitch, azimuth, area).
+
+Failure modes (CUDA absent, model load failed, PolyFit unavailable,
 degenerate input):
   - regularize_and_reconstruct returns `None` with a structured
     failure record. The api.py caller falls back to
-    build_facets.build_facets_from_planes (the current alpha-shape
-    pipeline).
+    build_facets.build_facets_from_planes (the alpha-shape pipeline).
 
-This is a Phase 2 binary contract per the user-approved design:
-  PolyFit success  → meshSource = "polyfit",  watertight mesh
-  PolyFit failure  → meshSource = "frustum-fallback",  alpha-shape
+Binary contract per the user-approved Phase 2 design:
+  Point2Roof success → meshSource = "point2roof", real wireframe facets
+  PolyFit success    → meshSource = "polyfit",    watertight mesh
+  Both fail          → meshSource = "frustum-fallback", alpha-shape
 
 Failures are logged with full input context (point count, plane
 count, plane normals, footprint dimensions) for the 2-4 week review
@@ -103,12 +110,14 @@ def regularize_and_reconstruct(
     Returns: (facets, diagnostics)
       facets       — list of Facet[] dicts matching types/roof.ts
                      (same shape as build_facets.build_facets_from_planes)
-                     OR None when PolyFit failed; api.py falls back.
+                     OR None when reconstruction failed; api.py falls back.
       diagnostics  — always returned. Includes:
-                     mesh_source: "polyfit" | "regularize_only" | "failed"
+                     mesh_source: "point2roof" | "polyfit"
+                                | "regularize_only" | "failed"
                      failure_reason: str | null
                      failure_context: structured input snapshot
-                     timings: { regularize_ms, polyfit_ms, build_facets_ms }
+                     timings: { regularize_ms, point2roof_ms, polyfit_ms,
+                                total_ms }
     """
     t_start = time.time()
     diagnostics: dict[str, Any] = {
@@ -139,7 +148,41 @@ def regularize_and_reconstruct(
     diagnostics["timings"]["regularize_ms"] = int((time.time() - t_reg) * 1000)
     diagnostics["regularized_plane_count"] = len(reg_planes)
 
-    # 2. PolyFit reconstruction (optional — falls back when CGAL absent).
+    # 2a. Point2Roof reconstruction (primary path — MIT-licensed deep
+    #     learning model). Vendored in services/roof-lidar/vendor/
+    #     point2roof/. Requires CUDA-enabled Modal worker; returns
+    #     None on any failure so the chain falls through cleanly.
+    t_p2r = time.time()
+    p2r_result = None
+    try:
+        from point2roof_wrapper import reconstruct as p2r_reconstruct  # noqa: PLC0415
+
+        p2r_result = p2r_reconstruct(
+            points_xyz,
+            center_lat=center_lat,
+            center_lng=center_lng,
+        )
+    except Exception as err:  # noqa: BLE001
+        log.warning("Point2Roof wrapper raised: %s", err)
+        diagnostics["failure_context"]["point2roof_error"] = str(err)
+    diagnostics["timings"]["point2roof_ms"] = int((time.time() - t_p2r) * 1000)
+
+    if p2r_result is not None and len(p2r_result) > 0:
+        diagnostics["mesh_source"] = "point2roof"
+        diagnostics["output_facet_count"] = len(p2r_result)
+        # Post-PolyFit small-flat-top filter applies to Point2Roof output
+        # too — same HVAC/skylight/solar-array-top failure modes.
+        facets = _drop_small_flat_tops(p2r_result)
+        diagnostics["output_facet_count_after_filter"] = len(facets)
+        diagnostics["timings"]["total_ms"] = int((time.time() - t_start) * 1000)
+        log.info(
+            "regularize+point2roof: %d facets out (%d ms)",
+            len(facets), diagnostics["timings"]["total_ms"],
+        )
+        return facets, diagnostics
+
+    # 2b. CGAL PolyFit reconstruction (secondary — falls back when
+    #     Point2Roof returned None or CGAL is absent).
     t_poly = time.time()
     polyfit_result = _try_polyfit(
         reg_planes,
@@ -150,8 +193,8 @@ def regularize_and_reconstruct(
     diagnostics["timings"]["polyfit_ms"] = int((time.time() - t_poly) * 1000)
 
     if polyfit_result is None:
-        # PolyFit unavailable / failed — diagnostics already filled in
-        # by _try_polyfit. Caller falls back to build_facets.
+        # Both Point2Roof and PolyFit failed/unavailable. Diagnostics
+        # already filled. Caller falls back to build_facets.
         diagnostics["timings"]["total_ms"] = int((time.time() - t_start) * 1000)
         _log_failure(diagnostics)
         return None, diagnostics

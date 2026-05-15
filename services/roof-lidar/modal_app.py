@@ -49,39 +49,52 @@ image = (
         "libjpeg-dev",
         "libpng-dev",
         # Phase 2 — CGAL + dependencies for the PolyFit reconstruction
-        # pipeline. CGAL needs GMP (multi-precision integers), MPFR
-        # (multi-precision floats), Eigen (linear algebra), and Boost
-        # as transitive C++ deps. CGAL's Python bindings install via
-        # the `CGAL` pip package (requirements.txt) but the native
-        # libs MUST be present at import time.
-        #
-        # Image size impact: ~150 MB added (~12-15s extra cold-build).
-        # Acceptable per the Phase 2 design — Modal cold start was
-        # already ~30s; ~45s total is within the user-facing
-        # progress-indicator budget.
+        # SECONDARY tier. Point2Roof (deep-learning, MIT) is now the
+        # primary; CGAL kept as backup for when Point2Roof returns no
+        # confident output. Image size +~150 MB.
         "libcgal-dev",
         "libgmp-dev",
         "libmpfr-dev",
         "libeigen3-dev",
         "libboost-dev",
-        # SCIP solver — used by PolyFit's integer programming face
-        # selection step. The `coinor-libscip-dev` Debian package
-        # ships a usable build; alternatively the Python `pyscipopt`
-        # package bundles its own SCIP but is heavier (~300 MB).
-        # Keeping the apt path for now.
         "coinor-libscip-dev",
+        # Point2Roof — needs build tools to compile the vendored
+        # pc_util C++/CUDA extension (custom ops for ball_query, FPS,
+        # group_points, interpolate, sampling, cluster). nvcc comes
+        # from the CUDA toolkit installed alongside torch.
+        "build-essential",
+        "ninja-build",
     )
     # PDAL Python bindings — package is `pdal` on PyPI (different from
     # conda's `python-pdal`). The official pdal/pdal Docker image has
     # the native libs in /usr/local; this binds them to Python.
     .pip_install("pdal>=3.5")
     .pip_install_from_requirements("requirements.txt")
-    # Modal 1.0+ renamed copy_local_dir → add_local_dir. The new method
-    # defaults to runtime mount (faster iteration); we pass copy=True
-    # so the .py files land in the image layer and subsequent FastAPI
-    # imports / @app.function decorators see them at build time.
+    # Point2Roof — install PyTorch with CUDA support BEFORE building
+    # pc_util so the extension build sees the right torch + nvcc paths.
+    # The base pdal/pdal image doesn't ship CUDA dev tools by default,
+    # but torch's wheels include the runtime; for nvcc we pull the
+    # cuda-toolkit. Pinning torch to a version known to build cleanly
+    # with the pc_util sources from the vendored Point2Roof snapshot.
+    .pip_install(
+        "torch==2.1.2",
+        "torchvision==0.16.2",
+        extra_index_url="https://download.pytorch.org/whl/cu121",
+    )
+    .apt_install("cuda-toolkit-12-1")
     .add_local_dir(".", "/app", copy=True)
     .workdir("/app")
+    # Build the Point2Roof pc_util CUDA extension. The build is
+    # ~20-40s; runs once at image build, output is bundled into the
+    # image layer. If the build fails (CUDA version mismatch, missing
+    # nvcc), the build doesn't abort the image — pc_util import fails
+    # at runtime, point2roof_wrapper logs the failure, and the
+    # pipeline falls back to PolyFit / alpha-shape.
+    .run_commands(
+        "cd /app/vendor/point2roof/pc_util && "
+        "TORCH_CUDA_ARCH_LIST='7.5;8.0;8.6' python setup.py install || "
+        "echo 'WARN: pc_util build failed — Point2Roof tier will fall through'",
+    )
 )
 
 app = modal.App("voxaris-roof-lidar")
@@ -99,24 +112,16 @@ VOLUME_PATH = "/cache/lidar"
     image=image,
     volumes={VOLUME_PATH: lidar_cache_volume},
     timeout=900,  # 15 min — covers cold 360MB LAZ download + processing
-    # Memory headroom for point clouds. Empirical: 1 tile @ 450k raw
-    # points = ~1.2GB after laspy.read + pyproj reproject + open3d
-    # PointCloud copy. Plane segmentation on 200k filtered points peaks
-    # at ~3.5GB total. The previous 4GB ceiling SIGKILL'd consistently.
-    # 16GB gives 4x headroom for commercial parcels (500k+ points).
     memory=16384,
-    # CPU-only — YOLO inference is small enough to not need GPU for the
-    # n-model on 1280x1280 ortho renders.
     cpu=2.0,
-    # No automatic retries on failure. Tier A is expected to fall
-    # through to Tier C when it can't measure; retrying an OOM 10x
-    # just burns money and never recovers. The TS adapter handles
-    # failure correctly (returns null, pipeline falls through).
+    # Point2Roof inference requires CUDA. T4 is the cheapest Modal GPU
+    # that runs PyTorch CUDA — ~$0.59/hr active. With a 5-15s warm
+    # estimate and ~30s warm-container hold, marginal cost per estimate
+    # is ~$0.001-0.005. Acceptable for the accuracy gain. When CUDA
+    # is unavailable (e.g. local-dev), the wrapper logs and falls
+    # through to the CGAL PolyFit / alpha-shape tiers — no failure.
+    gpu="T4",
     retries=0,
-    # Keep one container warm so demo + customer-facing runs never pay
-    # the ~30-60s cold-start. Worth ~$0.10/hr of idle compute to
-    # guarantee Tier A wins on the first try instead of timing out
-    # while the container boots.
     min_containers=1,
 )
 def run_extract(request_data: dict) -> dict:
