@@ -13,7 +13,15 @@ export type ServiceType = "new" | "reroof-tearoff" | "layover" | "repair";
 
 export interface Facet {
   id: string;
-  polygon: Array<{ lat: number; lng: number }>;
+  /** Polygon vertices in WGS84 lat/lng. When `heightM` is populated,
+   *  the vertex is in actual 3D space (height above local eave, in
+   *  meters) — emitted by reconstruction tiers that produce real
+   *  3D mesh output (Point2Roof, future PolyFit). When `heightM` is
+   *  absent, the polygon is 2D and the renderer synthesizes Y from
+   *  the facet's pitch/azimuth + a generated frustum approximation.
+   *  The field is OPTIONAL + ADDITIVE so older fixtures and tier-C
+   *  results (Solar bbox segments) work unchanged. */
+  polygon: Array<{ lat: number; lng: number; heightM?: number }>;
   normal: { x: number; y: number; z: number };
   pitchDegrees: number;
   azimuthDeg: number;

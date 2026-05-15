@@ -453,11 +453,23 @@ def _faces_to_facets(
         else:
             azimuth_deg = math.degrees(math.atan2(-nx, -ny)) % 360
 
-        # Project cycle to lat/lng for the Facet polygon.
+        # Project cycle to lat/lng for the Facet polygon. Preserve the
+        # Z coordinate as `heightM` so the renderer can use the
+        # measured 3D shape directly instead of synthesizing geometry
+        # from the outline. We normalize Z relative to the LOWEST
+        # vertex of this facet (= the eave-side corner) so heightM=0
+        # corresponds to the eave and positive values rise to the
+        # ridge.
+        z_values = cp[:, 2]
+        z_eave = float(z_values.min())
         polygon_latlng: list[dict[str, float]] = []
-        for x, y, _z in cp:
+        for x, y, z in cp:
             lng_v, lat_v = aeqd_to_wgs84.transform(float(x), float(y))
-            polygon_latlng.append({"lat": float(lat_v), "lng": float(lng_v)})
+            polygon_latlng.append({
+                "lat": float(lat_v),
+                "lng": float(lng_v),
+                "heightM": float(z) - z_eave,
+            })
 
         # Area via shoelace in 2D (XY footprint), then divide by cos(pitch)
         # to get sloped area.
