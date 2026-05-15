@@ -37,6 +37,15 @@ requests
 # a single C call. ~30s saved on 100k-point clouds.
 matplotlib
 
+# Point2Roof config loader deps — the vendored utils/common_utils.py
+# uses easydict for cfg.MODEL.* attribute access and pyyaml to parse
+# the model config. Without these, point2roof_wrapper._load_model
+# fails at load_stage=imports with ModuleNotFoundError, every call
+# silently falls through to frustum-fallback. Caught by the gate
+# logs immediately after deploy.
+easydict
+pyyaml
+
 # ─── Phase 2 — CGAL / PolyFit (DISABLED) ─────────────────────────────
 # CGAL Python bindings WERE used for the PolyFit watertight roof mesh
 # reconstruction (SECONDARY tier, behind Point2Roof primary).
