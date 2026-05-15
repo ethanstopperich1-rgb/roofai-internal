@@ -344,27 +344,30 @@ function BuildingShell({
   );
   return (
     <>
-      {/* Solid wall mass — dim graphite with subtle blue cast. */}
+      {/* Solid wall mass — dim graphite, semi-transparent so the facets
+          on top remain the visual focus. The wall is for context, not
+          competition. */}
       <mesh
         geometry={geom}
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, eaveHeight, 0]}
       >
         <meshStandardMaterial
-          color="#0c1620"
+          color="#0a1219"
           metalness={0.0}
           roughness={0.95}
           transparent
-          opacity={0.85}
+          opacity={0.55}
         />
       </mesh>
-      {/* Wireframe outline so the wall edges read as drafting lines. */}
+      {/* Bright drafting outline on the wall edges so they read as
+          blueprint lines even with the dim fill. */}
       <lineSegments
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, eaveHeight, 0]}
       >
         <edgesGeometry args={[geom]} />
-        <lineBasicMaterial color="#3b6f93" transparent opacity={0.55} />
+        <lineBasicMaterial color="#4a8cb8" transparent opacity={0.7} />
       </lineSegments>
     </>
   );
@@ -405,46 +408,53 @@ function FacetMesh({
   const emissiveIntensity = isActive ? 0.4 : isHover ? 0.2 : 0;
   const outlineColor = isActive ? "#22d3ee" : facet.outlineColor;
   return (
+    // Outer group — positioned at the facet's centroid in scene coords.
     <group position={[facet.centroidX, facet.centroidY, facet.centroidZ]}>
-      <group
-        rotation={[-facet.pitchRad, facet.azimuthRad, 0]}
-      >
-        <mesh
-          ref={ref}
-          geometry={geom}
-          onClick={(e) => {
-            e.stopPropagation();
-            onClick();
-          }}
-          onPointerOver={(e) => {
-            e.stopPropagation();
-            onHover(true);
-            document.body.style.cursor = "pointer";
-          }}
-          onPointerOut={() => {
-            onHover(false);
-            document.body.style.cursor = "";
-          }}
-        >
-          <meshStandardMaterial
-            color={facet.color}
-            side={THREE.DoubleSide}
-            metalness={0.1}
-            roughness={0.65}
-            transparent
-            opacity={isActive ? 0.98 : 0.92}
-            emissive={emissive}
-            emissiveIntensity={emissiveIntensity}
-          />
-        </mesh>
-        {/* Crisp blueprint outline on every facet. */}
-        <lineSegments>
-          <edgesGeometry args={[geom]} />
-          <lineBasicMaterial
-            color={outlineColor}
-            linewidth={isActive ? 2 : 1}
-          />
-        </lineSegments>
+      {/* Middle group — yaw (azimuth) around Y. Compass-aligned. */}
+      <group rotation-y={facet.azimuthRad}>
+        {/* Inner group — flatten ShapeGeometry from the XY plane onto
+            the XZ plane (-π/2 around X) and additionally tilt by the
+            roof pitch around the local X axis. Composing this way keeps
+            the down-slope direction aligned with the azimuth yaw above
+            instead of getting tangled in Euler-angle order. */}
+        <group rotation-x={-Math.PI / 2 + facet.pitchRad}>
+          <mesh
+            ref={ref}
+            geometry={geom}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClick();
+            }}
+            onPointerOver={(e) => {
+              e.stopPropagation();
+              onHover(true);
+              document.body.style.cursor = "pointer";
+            }}
+            onPointerOut={() => {
+              onHover(false);
+              document.body.style.cursor = "";
+            }}
+          >
+            <meshStandardMaterial
+              color={facet.color}
+              side={THREE.DoubleSide}
+              metalness={0.1}
+              roughness={0.65}
+              transparent
+              opacity={isActive ? 0.98 : 0.92}
+              emissive={emissive}
+              emissiveIntensity={emissiveIntensity}
+            />
+          </mesh>
+          {/* Crisp blueprint outline. */}
+          <lineSegments>
+            <edgesGeometry args={[geom]} />
+            <lineBasicMaterial
+              color={outlineColor}
+              linewidth={isActive ? 2 : 1}
+            />
+          </lineSegments>
+        </group>
       </group>
     </group>
   );
@@ -684,7 +694,7 @@ function projectRoof(data: RoofData): Projected {
   // Eave height — a fixed reasonable default for residential. The
   // LiDAR data doesn't include ridge/eave Z (just facet pitches), so
   // we synthesize a building shell at a believable height.
-  const eaveHeight = 3.0;
+  const eaveHeight = 2.6;
 
   let maxRange = 0;
 
@@ -692,18 +702,42 @@ function projectRoof(data: RoofData): Projected {
   const facets: Facet3D[] = [];
   for (const f of data.facets) {
     if (!f.polygon || f.polygon.length < 3) continue;
-    const pts2d = f.polygon.map((v) => {
+    // Project lat/lng → scene coords (x_scene east meters, z_scene
+    // south meters — note the negation in toScene).
+    const ptsScene = f.polygon.map((v) => {
       const [x, z] = toScene(v.lat, v.lng);
       maxRange = Math.max(maxRange, Math.hypot(x, z));
-      return new THREE.Vector2(x, z);
+      return [x, z] as [number, number];
     });
-    const shape = new THREE.Shape(pts2d);
-    const cx = pts2d.reduce((s, p) => s + p.x, 0) / pts2d.length;
-    const cz = pts2d.reduce((s, p) => s + p.y, 0) / pts2d.length;
+    const cx = ptsScene.reduce((s, p) => s + p[0], 0) / ptsScene.length;
+    const cz = ptsScene.reduce((s, p) => s + p[1], 0) / ptsScene.length;
+
+    // CRITICAL BUG FIX: the Shape's vertices MUST be local to the
+    // centroid. Previously they were absolute scene coords, which then
+    // got translated AGAIN by (cx, cz) when we positioned the parent
+    // group — doubling every facet's distance from origin (= the
+    // "facets scattered in 3D" symptom in the screenshots).
+    //
+    // We also negate the local-z (= shape-y) because ShapeGeometry is
+    // built in the XY plane, and we rotate it by -π/2 around X to lay
+    // it flat — that rotation takes shape-Y → -scene-Z. Pre-negating
+    // keeps the polygon's compass orientation correct after flatten.
+    const pts2dLocal = ptsScene.map(
+      ([x, z]) => new THREE.Vector2(x - cx, -(z - cz)),
+    );
+    const shape = new THREE.Shape(pts2dLocal);
+
     const pitchRad = (f.pitchDegrees * Math.PI) / 180;
-    const azimuthRad = (((f.azimuthDeg ?? 0) * Math.PI) / 180);
-    const radius = Math.hypot(cx, cz);
-    const cy = eaveHeight + radius * Math.tan(pitchRad) * 0.35;
+    // Compass azimuth runs clockwise from north; Three.js Y-rotation is
+    // right-hand counterclockwise. Flip sign to match.
+    const azimuthRad = -(((f.azimuthDeg ?? 0) * Math.PI) / 180);
+
+    // Uniform centroid height — sit each facet a small constant above
+    // the wall top. The pitch tilt naturally lifts the up-slope edge
+    // and drops the down-slope edge; the OLD code added a per-facet
+    // `radius * tan(pitch) * 0.35` lift which was what threw outlying
+    // facets into the sky.
+    const cy = eaveHeight + 0.25;
 
     facets.push({
       id: f.id,
@@ -718,15 +752,22 @@ function projectRoof(data: RoofData): Projected {
     });
   }
 
-  // Edges
+  // Edges. Ridges/hips/valleys ride at the ridge plane (higher than
+  // eaves/rakes). Without 3D edge data (Tier C) we approximate:
+  //   - ridge / hip / valley → ridge height (eave + 1.5m)
+  //   - eave / rake / step-wall → eave height
+  // This gets the visual reading right without needing per-vertex
+  // heights from the source data.
   const edges: Edge3D[] = [];
+  const ridgeHeight = eaveHeight + 1.5;
   for (const e of data.edges) {
     if (!e.polyline || e.polyline.length < 2) continue;
+    const isRidgeLike =
+      e.type === "ridge" || e.type === "hip" || e.type === "valley";
+    const defaultY = isRidgeLike ? ridgeHeight : eaveHeight + 0.05;
     const points = e.polyline.map((v) => {
       const [x, z] = toScene(v.lat, v.lng);
-      // Edges with explicit heightM (Tier A) sit above ground; without
-      // (Tier C fallback), drop them to the eave.
-      const y = v.heightM > 0 ? eaveHeight + v.heightM : eaveHeight + 0.4;
+      const y = v.heightM > 0 ? eaveHeight + v.heightM : defaultY;
       return new THREE.Vector3(x, y, z);
     });
     edges.push({
