@@ -229,6 +229,35 @@ def extract_roof_pipeline(
     totals = _compute_totals(facets, edges, objects)
     latency_ms = int((time.time() - t0) * 1000)
 
+    # Sanity check: LiDAR's measured footprint vs. the input parcel polygon.
+    # If we measured 60% or less, or 140% or more, of the polygon's area,
+    # something went wrong (under-segmentation, over-segmentation, neighbor
+    # bleed). Flag for review and demote confidence — don't fail outright
+    # since a 1.4x ratio can also mean the polygon was loose.
+    if parcel_polygon and len(parcel_polygon) >= 3:
+        try:
+            polygon_sqft = _polygon_area_sqft(parcel_polygon, lat)
+            measured_sqft = totals.get("totalFootprintSqft", 0)
+            if polygon_sqft > 100 and measured_sqft > 0:
+                ratio = measured_sqft / polygon_sqft
+                if ratio < 0.6 or ratio > 1.4:
+                    warnings.append(
+                        f"LiDAR footprint {measured_sqft} sqft is "
+                        f"{int(ratio * 100)}% of the parcel polygon "
+                        f"({int(polygon_sqft)} sqft). Sources disagree — "
+                        "review the 3D model before trusting the number."
+                    )
+                    needs_review.append({
+                        "kind": "facet",
+                        "id": "all",
+                        "reason": f"area-ratio-{ratio:.2f}",
+                    })
+                    confidence = min(confidence, 0.60)
+        except Exception:  # noqa: BLE001
+            # Sanity check is advisory — its failure shouldn't poison
+            # the actual pipeline result.
+            pass
+
     return {
         "roofData": {
             "address": {
@@ -255,6 +284,31 @@ def extract_roof_pipeline(
         "latencyMs": latency_ms,
         "freshness": freshness,
     }
+
+
+def _polygon_area_sqft(
+    polygon: list[dict[str, float]],
+    origin_lat: float,
+) -> float:
+    """Shoelace area for a lat/lng polygon, converted to square feet.
+    Uses a cheap-flat-earth projection good to ~0.1% for sub-km parcels."""
+    import math  # noqa: PLC0415
+
+    if len(polygon) < 3:
+        return 0.0
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lng = m_per_deg_lat * math.cos(math.radians(origin_lat))
+    pts = [
+        (v["lng"] * m_per_deg_lng, v["lat"] * m_per_deg_lat)
+        for v in polygon
+    ]
+    total = 0.0
+    for i in range(len(pts)):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % len(pts)]
+        total += x1 * y2 - x2 * y1
+    area_m2 = abs(total) / 2.0
+    return area_m2 * 10.7639  # m² → sqft
 
 
 def _zero_flashing() -> dict[str, Any]:

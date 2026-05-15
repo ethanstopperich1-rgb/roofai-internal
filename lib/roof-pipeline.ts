@@ -279,3 +279,202 @@ export async function runRoofPipeline(opts: {
   await setCached("roof-data", opts.address.lat, opts.address.lng, primary, 60 * 60);
   return primary;
 }
+
+// ============================================================================
+// Cross-compare mode — runs Tier A (LiDAR) + Tier C (Solar) in PARALLEL on
+// the same address and returns both RoofData payloads. Used by the customer
+// /quote + rep /internal 3D visual so the user can toggle between the two
+// measurements with a button. Also a continuous-validation signal: when the
+// two measurements disagree by >X%, we know one of them is wrong on this
+// address and surface it for manual review.
+// ============================================================================
+
+export interface RoofComparison {
+  /** The winning source — higher confidence, LiDAR breaks ties. Always
+   *  populated (degraded RoofData if both sources failed). */
+  primary: RoofData;
+  /** Tier A LiDAR result, when available. null when LIDAR_SERVICE_URL is
+   *  unset, when Modal returned no coverage, or when the call errored. */
+  lidar: RoofData | null;
+  /** Tier C Solar result, when available. null when Solar 404'd (rural). */
+  solar: RoofData | null;
+  /** Source-agreement metrics for diagnostics + UI cross-check chip. */
+  agreement: {
+    /** Both sources returned non-null. */
+    bothPresent: boolean;
+    /** |lidar_sqft - solar_sqft| / max(lidar_sqft, solar_sqft). 0 = perfect
+     *  agreement, 1 = total disagreement. null when only one source ran. */
+    sqftDeltaPct: number | null;
+    /** |lidar_pitch - solar_pitch|, degrees. null when only one source ran. */
+    pitchDeltaDegrees: number | null;
+    /** Facet count delta. null when only one source ran. */
+    facetCountDelta: number | null;
+  };
+  /** Per-source latency for telemetry. */
+  latencyMs: { lidar: number | null; solar: number | null; total: number };
+}
+
+export async function runRoofPipelineCompare(opts: {
+  address: { formatted: string; lat: number; lng: number; zip?: string };
+  nocache?: boolean;
+}): Promise<RoofComparison> {
+  const startedAt = Date.now();
+  const requestId = nanoid();
+
+  // Reuse the same polygon-hint pre-fetch as the serial pipeline — Tier A
+  // needs it to clip the point cloud. We pay for one Solar findClosest +
+  // optional dataLayers mask, both of which are also part of Tier C's
+  // own work, so when we run Tier C downstream this is effectively free.
+  const apiKey =
+    process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
+  const [solarHint, parcelPolygonFromMask] = await Promise.all([
+    fetchSolarHint(opts.address.lat, opts.address.lng),
+    apiKey
+      ? buildParcelPolygon(opts.address.lat, opts.address.lng, null, apiKey).catch(
+          () => null,
+        )
+      : Promise.resolve(null),
+  ]);
+  const finalParcelPolygon =
+    parcelPolygonFromMask ??
+    (solarHint
+      ? await buildParcelPolygon(opts.address.lat, opts.address.lng, solarHint, undefined)
+      : null);
+  const imageryDate = solarHint?.imageryDate ?? null;
+
+  // Fire both Tier A and Tier C in parallel. We track each independently so
+  // a failure in one doesn't poison the other. Tier-A typically takes
+  // 5-25s warm, 30-90s cold; Tier-C typically 1-3s. Total wall time = max,
+  // not sum.
+  const lidarStart = Date.now();
+  const solarStart = Date.now();
+  const [lidarSettled, solarSettled] = await Promise.allSettled([
+    tierALidarSource({
+      address: opts.address,
+      requestId,
+      parcelPolygon: finalParcelPolygon ?? undefined,
+      imageryDate,
+    }),
+    tierCSolarSource({
+      address: opts.address,
+      requestId,
+      parcelPolygon: finalParcelPolygon ?? undefined,
+      imageryDate,
+    }),
+  ]);
+  const lidar =
+    lidarSettled.status === "fulfilled" ? lidarSettled.value : null;
+  const lidarLatency = lidar ? Date.now() - lidarStart : null;
+  const solar =
+    solarSettled.status === "fulfilled" ? solarSettled.value : null;
+  const solarLatency = solar ? Date.now() - solarStart : null;
+
+  // Vision fallback only fires when BOTH primary sources failed — keeps
+  // cost/latency low and avoids cluttering the cross-compare with a
+  // third measurement that has lower confidence than either.
+  let vision: RoofData | null = null;
+  if (!lidar && !solar) {
+    try {
+      vision = await tierCVisionSource({
+        address: opts.address,
+        requestId,
+        parcelPolygon: finalParcelPolygon ?? undefined,
+        imageryDate,
+      });
+    } catch {
+      vision = null;
+    }
+  }
+
+  // Pick primary: highest confidence, LiDAR breaks ties (matches the
+  // original serial-pipeline priority of "LiDAR wins when both succeed").
+  let primary: RoofData;
+  if (lidar && solar) {
+    primary = lidar.confidence >= solar.confidence ? lidar : solar;
+  } else if (lidar) {
+    primary = lidar;
+  } else if (solar) {
+    primary = solar;
+  } else if (vision) {
+    primary = vision;
+  } else {
+    const attempts: RoofDiagnostics["attempts"] = [
+      { source: "tier-a-lidar", outcome: "failed-error", reason: "no result" },
+      { source: "tier-c-solar", outcome: "failed-error", reason: "no result" },
+      { source: "tier-c-vision", outcome: "failed-error", reason: "no result" },
+    ];
+    primary = makeDegradedRoofData({ address: opts.address, attempts });
+  }
+
+  // Cross-source baseline on primary, like the serial pipeline does.
+  if (primary.source === "tier-a-lidar" && solarHint) {
+    primary.crossSourceBaseline = {
+      solar: {
+        sqft: solarHint.sqft,
+        pitchDegrees: solarHint.pitchDegrees,
+        segmentCount: solarHint.segmentCount,
+        imageryDate: solarHint.imageryDate,
+        imageryQuality: solarHint.imageryQuality,
+      },
+    };
+  }
+
+  // Agreement metrics — useful for both the UI cross-check chip AND
+  // continuous monitoring of "where do our two sources diverge."
+  const agreement = {
+    bothPresent: !!(lidar && solar),
+    sqftDeltaPct:
+      lidar && solar
+        ? Math.abs(
+            lidar.totals.totalRoofAreaSqft - solar.totals.totalRoofAreaSqft,
+          ) /
+          Math.max(
+            lidar.totals.totalRoofAreaSqft,
+            solar.totals.totalRoofAreaSqft,
+            1,
+          )
+        : null,
+    pitchDeltaDegrees:
+      lidar && solar
+        ? Math.abs(
+            lidar.totals.averagePitchDegrees - solar.totals.averagePitchDegrees,
+          )
+        : null,
+    facetCountDelta:
+      lidar && solar
+        ? Math.abs(lidar.totals.facetsCount - solar.totals.facetsCount)
+        : null,
+  };
+
+  const totalLatency = Date.now() - startedAt;
+  console.log("[roof-pipeline] cross_compare_complete", {
+    address: opts.address.formatted,
+    primary: primary.source,
+    lidarPresent: !!lidar,
+    solarPresent: !!solar,
+    visionFallback: !!vision,
+    agreement,
+    latencyMs: { lidar: lidarLatency, solar: solarLatency, total: totalLatency },
+  });
+
+  // Cache primary RoofData under the existing key so legacy callers
+  // (runRoofPipeline) hit the same cache; secondary data is recomputed
+  // each time cross-compare runs (cheap with hint reuse).
+  if (primary.source !== "none") {
+    await setCached(
+      "roof-data",
+      opts.address.lat,
+      opts.address.lng,
+      primary,
+      60 * 60,
+    );
+  }
+
+  return {
+    primary,
+    lidar,
+    solar,
+    agreement,
+    latencyMs: { lidar: lidarLatency, solar: solarLatency, total: totalLatency },
+  };
+}

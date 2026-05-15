@@ -149,7 +149,82 @@ def segment_plane_regions(roof_pts: dict[str, Any]) -> list[dict[str, Any]]:
         })
 
     log.info("region-grow: emitted %d plane regions", len(planes))
+
+    # Connected-component post-filter — drops detached structures (sheds,
+    # detached garages, ADUs) that the parcel polygon mistakenly included.
+    # Without this, two adjacent buildings sharing a Solar building mask
+    # are both measured as "the roof."
+    #
+    # Approach: build a graph over facets where an edge exists between
+    # two facets if their centroids are <= MAIN_BUILDING_LINK_M apart in
+    # xy. Find connected components. The largest component (by total
+    # point count) is "the main building." Drop facets outside it.
+    if len(planes) >= 2:
+        planes = _filter_to_main_building(planes)
+        log.info("after connected-component filter: %d planes", len(planes))
+
     return planes
+
+
+# Distance threshold (meters) under which two facets are considered part
+# of the same building. A typical hip-roof ridge spans 3-12m between
+# adjacent facet centroids; a detached shed is usually 5-30m away from
+# the main house centroid. 8m is the sweet spot that joins all main-
+# house facets while rejecting almost all detached structures.
+MAIN_BUILDING_LINK_M = 8.0
+
+
+def _filter_to_main_building(planes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the planes belonging to the largest spatial cluster.
+
+    Two facets are linked if their xy centroids are within
+    MAIN_BUILDING_LINK_M. The largest connected component (by total
+    point count, not facet count — penalizes a few big-area orphans
+    that happen to be close to each other in xy) wins.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    n = len(planes)
+    centroids = np.array([p["centroid"][:2] for p in planes], dtype=np.float64)
+    sizes = np.array([p["size"] for p in planes], dtype=np.int64)
+
+    # Union-Find for connected components.
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    link_sq = MAIN_BUILDING_LINK_M * MAIN_BUILDING_LINK_M
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = centroids[i, 0] - centroids[j, 0]
+            dy = centroids[i, 1] - centroids[j, 1]
+            if dx * dx + dy * dy <= link_sq:
+                union(i, j)
+
+    # Total point count per root.
+    component_size: dict[int, int] = {}
+    for i in range(n):
+        r = find(i)
+        component_size[r] = component_size.get(r, 0) + int(sizes[i])
+
+    main_root = max(component_size, key=lambda r: component_size[r])
+    kept = [planes[i] for i in range(n) if find(i) == main_root]
+    dropped = n - len(kept)
+    if dropped > 0:
+        log.info(
+            "main-building filter: dropped %d detached planes (%d remain)",
+            dropped, len(kept),
+        )
+    return kept
 
 
 def _grow_region(

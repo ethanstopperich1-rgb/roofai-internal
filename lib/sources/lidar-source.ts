@@ -74,17 +74,30 @@ export async function tierALidarSource(opts: {
   };
 
   // Modal HTTP gateway caps sync responses at 150s — a cold Tier A
-  // call routinely needs 300-500s for the 360MB LAZ download. Use the
-  // submit + poll pattern: POST /submit returns a call_id immediately,
-  // GET /result?call_id=... is non-blocking.
+  // call routinely needs 300-500s. Use the submit + poll pattern.
   //
-  // serviceUrl may be the legacy /extract-roof endpoint (sync) or the
-  // new /submit endpoint. Detect by URL suffix.
-  const isLegacyEndpoint = /\/extract-roof\/?(\?|$)/.test(serviceUrl);
-  const submitUrl = isLegacyEndpoint
-    ? serviceUrl.replace(/\/extract-roof\/?(\?.*)?$/, "/submit$1")
-    : serviceUrl;
-  const resultUrl = submitUrl.replace(/\/submit\/?(\?.*)?$/, "/result$1");
+  // Modal's per-endpoint URL pattern is:
+  //   https://<workspace>--<app-name>-<function-name>.modal.run[/path]
+  // So `voxaris-roof-lidar` exposes 4 endpoints (submit/result/
+  // extract-roof/health), each at its own host. We accept ANY of those
+  // (or a path-suffixed variant like /submit on a shared host) and
+  // rebuild canonical submit + result URLs from the host prefix.
+  // This avoids the brittle silent failure when the env var is set
+  // to the workspace base, /health, /result, /extract-roof, etc.
+  let submitUrl: string;
+  let resultUrl: string;
+  try {
+    const { submit, result } = normalizeModalUrls(serviceUrl);
+    submitUrl = submit;
+    resultUrl = result;
+  } catch (err) {
+    console.warn(
+      "[tier-a-lidar] LIDAR_SERVICE_URL is malformed:",
+      serviceUrl,
+      err,
+    );
+    return null;
+  }
 
   const totalTimeoutMs = resolveTimeoutMs();
   const deadline = Date.now() + totalTimeoutMs;
@@ -99,17 +112,31 @@ export async function tierALidarSource(opts: {
       signal: AbortSignal.timeout(15_000),
     });
     if (!submitResp.ok) {
-      console.warn("[tier-a-lidar] submit non-ok:", submitResp.status);
+      const body = await submitResp.text().catch(() => "");
+      console.warn(
+        "[tier-a-lidar] submit non-ok:",
+        submitResp.status,
+        "url:", submitUrl,
+        "body:", body.slice(0, 400),
+      );
       return null;
     }
     const submitJson = await submitResp.json() as { call_id?: string };
     if (!submitJson.call_id) {
-      console.warn("[tier-a-lidar] submit missing call_id");
+      console.warn(
+        "[tier-a-lidar] submit response missing call_id — likely wrong URL.",
+        "url:", submitUrl,
+        "response:", submitJson,
+      );
       return null;
     }
     callId = submitJson.call_id;
   } catch (err) {
-    console.warn("[tier-a-lidar] submit failed:", err);
+    console.warn(
+      "[tier-a-lidar] submit failed — check LIDAR_SERVICE_URL is reachable.",
+      "url:", submitUrl,
+      "err:", err,
+    );
     return null;
   }
 
@@ -123,6 +150,21 @@ export async function tierALidarSource(opts: {
         { signal: AbortSignal.timeout(15_000) },
       );
       if (!pollResp.ok) {
+        // 405 / 404 / 401 / 403 are permanent — no point polling for
+        // 5 minutes. Bail immediately with a clear diagnostic.
+        // This is exactly the "GET / → 405 every 10s" bug we fixed
+        // upstream via normalizeModalUrls; the early-bail here makes
+        // sure any future URL mismatch fails fast instead of hanging.
+        if ([401, 403, 404, 405].includes(pollResp.status)) {
+          const body = await pollResp.text().catch(() => "");
+          console.warn(
+            "[tier-a-lidar] poll got permanent error — wrong result URL?",
+            "status:", pollResp.status,
+            "url:", resultUrl,
+            "body:", body.slice(0, 400),
+          );
+          return null;
+        }
         console.warn("[tier-a-lidar] poll non-ok:", pollResp.status);
         continue;
       }
@@ -196,4 +238,95 @@ export async function tierALidarSource(opts: {
   }
 
   return rd;
+}
+
+// ---- Modal URL normalization ------------------------------------------------
+
+// Modal exposes each @fastapi_endpoint at its own subdomain, NOT at a path:
+//   https://<workspace>--<app-name>-<function-name>.modal.run
+// Both <workspace> and <app-name> can contain hyphens
+// (e.g. ethanstopperich1-rgb / voxaris-roof-lidar). The ONLY reliable
+// separator between them is `--`. After the `--`, the trailing token
+// after the final `-` is the function name (submit / result / health /
+// extract-roof — extract-roof itself contains a hyphen, so it's handled
+// as a special case via alternation in the trailing capture group).
+const MODAL_HOST_RE =
+  /^(.+?)--(.+)-(submit|result|health|extract-roof)$/;
+
+/** Parse a Modal-style URL and return canonical submit / result / health
+ *  URLs. Modal uses subdomain-per-function, not path-per-function — this
+ *  is the exact gotcha that caused the original "GET / → 405 every 10s
+ *  for 5 minutes" bug: regex-transforming `/submit` → `/result` is a
+ *  no-op when the function name is in the hostname.
+ *
+ *  Accepts any of the four Modal subdomains:
+ *    - https://ws--voxaris-roof-lidar-submit.modal.run
+ *    - https://ws--voxaris-roof-lidar-result.modal.run
+ *    - https://ws--voxaris-roof-lidar-extract-roof.modal.run
+ *    - https://ws--voxaris-roof-lidar-health.modal.run
+ *  Plus generic hosts (Fly / Railway / localhost) where the same
+ *  FastAPI app serves all four functions at paths.
+ *
+ *  When LIDAR_SUBMIT_URL / LIDAR_RESULT_URL / LIDAR_HEALTH_URL are set
+ *  in the environment, those values win unconditionally — this is the
+ *  escape hatch for any future host where this regex doesn't fit.
+ *
+ *  Throws if `serviceUrl` itself isn't a valid URL. */
+export function normalizeModalUrls(serviceUrl: string): {
+  submit: string;
+  result: string;
+  health: string;
+  /** True when we recognized the Modal per-endpoint host convention. */
+  isModal: boolean;
+} {
+  const u = new URL(serviceUrl);
+  const host = u.hostname;
+  const isModal = host.endsWith(".modal.run");
+
+  // Compute the "natural" submit/result/health URLs from the input shape.
+  let submit: string;
+  let result: string;
+  let health: string;
+
+  if (isModal) {
+    const hostBase = host.replace(/\.modal\.run$/, "");
+    const m = hostBase.match(MODAL_HOST_RE);
+    if (m) {
+      const [, workspace, appName] = m;
+      const make = (fn: string) =>
+        `${u.protocol}//${workspace}--${appName}-${fn}.modal.run`;
+      submit = make("submit");
+      result = make("result");
+      health = make("health");
+    } else {
+      // Hostname is *.modal.run but didn't match our pattern. Treat the
+      // origin as the all-paths host (works if the user reverse-proxies
+      // their Modal app behind their own modal.run subdomain).
+      const base = u.origin;
+      submit = `${base}/submit`;
+      result = `${base}/result`;
+      health = `${base}/health`;
+    }
+  } else {
+    // Generic host (Fly, Railway, localhost). Strip any trailing
+    // function path and append /submit /result /health.
+    const stripped = u.origin + u.pathname.replace(
+      /\/(submit|result|extract-roof|health)\/?$/,
+      "",
+    );
+    const base = stripped.replace(/\/$/, "");
+    submit = `${base}/submit`;
+    result = `${base}/result`;
+    health = `${base}/health`;
+  }
+
+  // Env-var escape hatches — let an operator override any of the three
+  // URLs without changing code. Useful for: a Modal deploy that doesn't
+  // match our regex, a partial migration to a different host, or
+  // testing with a mock server.
+  if (process.env.LIDAR_SUBMIT_URL) submit = process.env.LIDAR_SUBMIT_URL;
+  if (process.env.LIDAR_RESULT_URL) result = process.env.LIDAR_RESULT_URL;
+  if (process.env.LIDAR_HEALTH_URL) health = process.env.LIDAR_HEALTH_URL;
+
+  return { submit, result, health, isModal };
 }

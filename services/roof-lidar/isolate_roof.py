@@ -53,8 +53,23 @@ def isolate_roof_points(
         ground_z = float(np.percentile(xyz[:, 2], 5))
 
     # Building-top candidates: returns >2m above ground, and not classified
-    # as ground (class 2) or low-veg (class 3).
-    high_mask = (xyz[:, 2] > ground_z + 2.0) & ~np.isin(cls, [2, 3])
+    # as ground (2), low-veg (3), medium-veg (4), or high-veg/trees (5).
+    #
+    # Adding class 4 + 5 here is the single biggest accuracy lever for
+    # residential roofs: USGS 3DEP LAS files mark mature trees as class 5,
+    # and a mature oak's canopy regularly clips the building polygon (or
+    # IS the building polygon when the canopy overhangs). Without this
+    # explicit drop, dense canopy passes the height filter, survives the
+    # normal-Z filter (upward-facing leaves give |nz| > 0.35 in patches),
+    # and ends up as a spurious "facet" in segmentation. Two failure modes
+    # eliminated by this single line.
+    #
+    # Note: class 6 = building (which is what we want). Some contractors
+    # don't classify class 6 at all and put everything man-made into
+    # "unclassified" (class 1). We deliberately keep class 1 because
+    # dropping it on a poorly-classified parcel would zero out the
+    # whole roof.
+    high_mask = (xyz[:, 2] > ground_z + 2.0) & ~np.isin(cls, [2, 3, 4, 5])
     candidates = xyz[high_mask]
     if len(candidates) == 0:
         raise ValueError("no above-ground returns")

@@ -35,20 +35,63 @@ Modal will:
 
 1. Build the container image (~3-5 min cold; installs PDAL, Open3D, Torch).
 2. Push it to Modal's registry.
-3. Emit two web endpoint URLs:
-   - `https://<workspace>--voxaris-roof-lidar-extract-roof.modal.run`
-   - `https://<workspace>--voxaris-roof-lidar-health.modal.run`
+3. Emit **four** web endpoint URLs — one per `@modal.fastapi_endpoint`:
+   - `https://<workspace>--voxaris-roof-lidar-submit.modal.run`         ← async POST
+   - `https://<workspace>--voxaris-roof-lidar-result.modal.run`         ← async GET poll
+   - `https://<workspace>--voxaris-roof-lidar-extract-roof.modal.run`   ← legacy sync (deprecated)
+   - `https://<workspace>--voxaris-roof-lidar-health.modal.run`         ← liveness probe
+
+**Important: Modal uses subdomain-per-function, not path-per-function.**
+Each endpoint lives at its own hostname. The TS adapter auto-derives
+`result` and `health` from whichever `submit`-form URL you supply.
 
 ### Wire up the Next.js app
 
-Set the extract endpoint URL as `LIDAR_SERVICE_URL` in the Next.js project env:
+Set the **submit** endpoint URL as `LIDAR_SERVICE_URL` in the Next.js project env:
 
 ```
-LIDAR_SERVICE_URL=https://<workspace>--voxaris-roof-lidar-extract-roof.modal.run
+LIDAR_SERVICE_URL=https://<workspace>--voxaris-roof-lidar-submit.modal.run
 ```
 
-The TS-side `lib/sources/lidar-source.ts` only activates when this var is set.
-Without it, `runRoofPipeline` skips Tier A and falls through to Tier B/C.
+The TS-side `lib/sources/lidar-source.ts` parses this URL, extracts the
+`<workspace>--<app>` prefix, and rebuilds the `result` + `health` subdomains
+automatically. Confirm it's working by hitting `/api/lidar-health` from
+the Next.js app — green chip = ready, red chip = wrong URL / unreachable.
+
+**Escape-hatch override.** If your deploy doesn't match the standard
+Modal `<ws>--<app>-<fn>.modal.run` pattern (e.g. you reverse-proxied
+the service behind your own domain, or future Modal CLI versions
+emit different hostnames), set these three explicitly to skip the
+auto-derivation:
+
+```
+LIDAR_SUBMIT_URL=...
+LIDAR_RESULT_URL=...
+LIDAR_HEALTH_URL=...
+```
+
+Without `LIDAR_SERVICE_URL` (and no overrides), `runRoofPipeline` skips
+Tier A and falls through to Tier B/C — silent skip, build stays green.
+
+### Verify the URL is correct
+
+The most common deploy bug: pasting any URL other than the **submit**
+subdomain, or assuming Modal uses path routing. To sanity-check:
+
+```bash
+# Should return 200 with {"ok": true, "service": "voxaris-roof-lidar"}
+curl https://<workspace>--voxaris-roof-lidar-health.modal.run/
+
+# Should return 200 with {"call_id": "fc-..."}
+curl -X POST https://<workspace>--voxaris-roof-lidar-submit.modal.run/ \
+  -H "Content-Type: application/json" \
+  -d '{"lat": 28.5, "lng": -81.4, "address": "test"}'
+```
+
+If the **result** URL returns `405 Method Not Allowed` on a GET, it
+means you accidentally pointed `LIDAR_SERVICE_URL` at the **submit**
+subdomain *and* the auto-derivation didn't kick in (older adapter, or
+a future Modal naming change). Set `LIDAR_RESULT_URL` explicitly.
 
 ---
 
