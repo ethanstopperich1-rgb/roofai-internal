@@ -1019,9 +1019,39 @@ function generateFrustumRoof(opts: {
   }
   const avgPitchDeg = totalArea > 0 ? weightedPitch / totalArea : 22; // 22° ≈ 5/12
 
+  // CRITICAL: all quads share a SINGLE ridge height. For a roof to
+  // read as one coherent shape, adjacent quads must meet at the
+  // ridge at the same y. Each outline edge contributes its own
+  // insetDist to the ridge polygon, so using per-edge pitch *
+  // per-edge insetDist as the rise produced wildly varying ridge
+  // heights — the chaotic-LiDAR view came from this. The fix: pick
+  // ONE global ridge height; per-quad pitch falls out of the
+  // geometry (long sides → shallower angle, hip ends → steeper),
+  // which is geometrically correct for a hip roof anyway.
+  //
+  // Compute the global ridge height from avg pitch × MEDIAN inset
+  // distance. Median is more robust than mean to outline-vertex
+  // distribution (very dense or very sparse outlines don't skew it).
+  const insetDistances: number[] = [];
+  for (let i = 0; i < footprint.length; i++) {
+    const next = (i + 1) % footprint.length;
+    const d = pointToSegmentDistance(inset[i], footprint[i], footprint[next]);
+    if (Number.isFinite(d)) insetDistances.push(d);
+  }
+  const sortedDists = insetDistances.slice().sort((a, b) => a - b);
+  const medianInsetDist =
+    sortedDists.length === 0
+      ? 1
+      : sortedDists.length % 2 === 1
+        ? sortedDists[(sortedDists.length - 1) / 2]
+        : (sortedDists[sortedDists.length / 2 - 1] +
+            sortedDists[sortedDists.length / 2]) / 2;
+  const ridgeHeight =
+    medianInsetDist * Math.tan((avgPitchDeg * Math.PI) / 180);
+  const ridgeY = eaveHeight + ridgeHeight;
+
   // For each outline edge, generate a quad facet.
   const roofQuads: RoofQuad3D[] = [];
-  let maxRidgeLift = 0;
   for (let i = 0; i < footprint.length; i++) {
     const next = (i + 1) % footprint.length;
     const eaveA = footprint[i];
@@ -1054,16 +1084,23 @@ function generateFrustumRoof(opts: {
     const azimuthDeg = scenenormalToCompass(nx, ny);
 
     // Match this quad to the closest source-data facet by azimuth.
+    // Used for color and for the inspector's source-data display.
     const matched = findClosestFacetByAzimuth(sourceFacets, azimuthDeg);
-    const pitchDeg = matched?.pitchDegrees ?? avgPitchDeg;
 
-    // Compute the rise from eave to ridge for this quad. The inset
-    // distance (perpendicular from eave to ridge edge) times tan(pitch).
+    // Per-edge insetDist for this quad. The geometric pitch
+    // (what the rendered slope LOOKS like) is whatever angle the
+    // slope makes given the shared ridgeHeight and this quad's
+    // insetDist — long sides have larger insetDist → shallower
+    // angle; hip ends have smaller insetDist → steeper angle.
+    // For visual coloring we still use the matched facet's
+    // declared pitch when available, because the renderer's
+    // geometric pitch is a property of the outline + topology,
+    // not the underlying measurement.
     const insetDist = pointToSegmentDistance(ridgeA, eaveA, eaveB);
-    const rise = insetDist * Math.tan((pitchDeg * Math.PI) / 180);
-    maxRidgeLift = Math.max(maxRidgeLift, rise);
+    const geometricPitchDeg =
+      (Math.atan2(ridgeHeight, Math.max(insetDist, 0.01)) * 180) / Math.PI;
+    const pitchDeg = matched?.pitchDegrees ?? geometricPitchDeg;
 
-    const ridgeY = eaveHeight + rise;
     const corners: [
       THREE.Vector3,
       THREE.Vector3,
@@ -1090,7 +1127,7 @@ function generateFrustumRoof(opts: {
   return {
     roofQuads,
     ridgePolygon: inset,
-    ridgeHeight: maxRidgeLift,
+    ridgeHeight,
   };
 }
 
