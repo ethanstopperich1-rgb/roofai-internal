@@ -362,7 +362,18 @@ export async function pickWithMsFetch(
 
 /** Fetch SAM3 / Roboflow vision-traced roof polygon. Returns null on
  *  any failure (cold-start timeout, low confidence, network error,
- *  empty polygon) so the picker degrades cleanly to Solar mask. */
+ *  empty polygon) so the picker degrades cleanly to Solar mask.
+ *
+ *  Emits single-line `sam3:` gate logs at every exit so we can
+ *  diagnose why fall-throughs happen post-hoc:
+ *    sam3: gate=http_error status=...
+ *    sam3: gate=timeout latency_ms=...
+ *    sam3: gate=missing_polygon source=...
+ *    sam3: gate=too_few_vertices n=...
+ *    sam3: gate=success vertices=N source=... latency_ms=...
+ *
+ *  60s timeout (was 35s) — Roboflow workers warmed by /api/cron/warm-sam3
+ *  serve in <5s, but cold starts can run 30-45s. 60s clears them. */
 async function fetchSam3(
   geocode: { lat: number; lng: number },
   baseUrl: string | undefined,
@@ -374,27 +385,50 @@ async function fetchSam3(
     lng: String(geocode.lng),
   });
   if (address) params.set("address", address);
+  const t0 = Date.now();
   try {
     const res = await fetch(`${origin}/api/sam3-roof?${params}`, {
       cache: "no-store",
-      // 35s gives Roboflow's cold path (~5-30s typical) room without
-      // pushing the overall pipeline budget too far. Falls back to
-      // Solar mask on AbortError.
-      signal: AbortSignal.timeout(35_000),
+      signal: AbortSignal.timeout(60_000),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn(
+        "sam3: gate=http_error status=%d latency_ms=%d",
+        res.status, Date.now() - t0,
+      );
+      return null;
+    }
     const data = (await res.json()) as {
       polygon?: Array<{ lat: number; lng: number }>;
       source?: string;
     };
-    // Some SAM3 fallback paths (e.g. footprint-only) emit a polygon
-    // that's really a wall trace, not a roof outline. The picker's
-    // downstream area + IoU checks will catch grossly wrong ones,
-    // but we reject the obviously-bad source labels here so they
-    // never even compete for the slot.
-    if (!data.polygon || data.polygon.length < 3) return null;
+    if (!data.polygon) {
+      console.warn(
+        "sam3: gate=missing_polygon source=%s latency_ms=%d",
+        data.source ?? "none", Date.now() - t0,
+      );
+      return null;
+    }
+    if (data.polygon.length < 3) {
+      console.warn(
+        "sam3: gate=too_few_vertices n=%d source=%s latency_ms=%d",
+        data.polygon.length, data.source ?? "none", Date.now() - t0,
+      );
+      return null;
+    }
+    console.log(
+      "sam3: gate=success vertices=%d source=%s latency_ms=%d",
+      data.polygon.length, data.source ?? "none", Date.now() - t0,
+    );
     return data.polygon;
-  } catch {
+  } catch (err) {
+    const isAbort = err instanceof Error && err.name === "TimeoutError";
+    console.warn(
+      "sam3: gate=%s latency_ms=%d err=%s",
+      isAbort ? "timeout" : "fetch_error",
+      Date.now() - t0,
+      err instanceof Error ? err.message.slice(0, 120) : "unknown",
+    );
     return null;
   }
 }
