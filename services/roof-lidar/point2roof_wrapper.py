@@ -208,6 +208,11 @@ def _load_model() -> Any:
     if _VENDOR_ROOT not in sys.path:
         sys.path.insert(0, _VENDOR_ROOT)
 
+    # Per-stage load diagnostics — same single-line greppable shape
+    # as the gate=* logs in reconstruct(). Lets the weekly log scan
+    # bucket model_load_failed cases by underlying cause so we know
+    # whether to fix vendored imports, ship the checkpoint, patch
+    # the state-dict, or adjust torch.load security flags.
     try:
         import torch  # noqa: PLC0415
         # The vendored modules use relative imports from /vendor/point2roof/.
@@ -217,30 +222,64 @@ def _load_model() -> Any:
         from utils import common_utils  # type: ignore  # noqa: PLC0415
         from model import model_utils as p2r_model_utils  # type: ignore  # noqa: PLC0415
     except Exception as err:  # noqa: BLE001
-        log.warning("Point2Roof model imports failed: %s", err)
+        log.warning(
+            "point2roof: load_stage=imports cls=%s err=%s",
+            type(err).__name__, err,
+        )
         _model_load_failed = True
         return None
 
     if not os.path.exists(_CHECKPOINT_PATH):
-        log.warning("Point2Roof checkpoint missing at %s", _CHECKPOINT_PATH)
+        log.warning(
+            "point2roof: load_stage=checkpoint_missing path=%s",
+            _CHECKPOINT_PATH,
+        )
         _model_load_failed = True
         return None
 
     try:
         cfg = common_utils.cfg_from_yaml_file(_CONFIG_PATH)
-        net = RoofNet(cfg.MODEL)
-        net.cuda()
-        net.eval()
-        p2r_model_utils.load_params(net, _CHECKPOINT_PATH, logger=log)
-        # The original test.py sets net.use_edge = True before inference.
-        net.use_edge = True
-        _model_cache = net
-        log.info("Point2Roof model loaded from %s", _CHECKPOINT_PATH)
-        return net
     except Exception as err:  # noqa: BLE001
-        log.warning("Point2Roof model load failed: %s", err)
+        log.warning(
+            "point2roof: load_stage=cfg_parse cls=%s err=%s",
+            type(err).__name__, err,
+        )
         _model_load_failed = True
         return None
+    try:
+        net = RoofNet(cfg.MODEL)
+    except Exception as err:  # noqa: BLE001
+        log.warning(
+            "point2roof: load_stage=model_init cls=%s err=%s",
+            type(err).__name__, err,
+        )
+        _model_load_failed = True
+        return None
+    try:
+        net.cuda()
+        net.eval()
+    except Exception as err:  # noqa: BLE001
+        log.warning(
+            "point2roof: load_stage=cuda_transfer cls=%s err=%s",
+            type(err).__name__, err,
+        )
+        _model_load_failed = True
+        return None
+    try:
+        p2r_model_utils.load_params(net, _CHECKPOINT_PATH, logger=log)
+    except Exception as err:  # noqa: BLE001
+        log.warning(
+            "point2roof: load_stage=load_params cls=%s err=%s",
+            type(err).__name__, err,
+        )
+        _model_load_failed = True
+        return None
+
+    # The original test.py sets net.use_edge = True before inference.
+    net.use_edge = True
+    _model_cache = net
+    log.info("point2roof: load_stage=success path=%s", _CHECKPOINT_PATH)
+    return net
 
 
 # ─── Inference (one batch of 1024 normalized points) ───────────────
