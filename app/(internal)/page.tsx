@@ -51,7 +51,9 @@ import CarrierClaimPanel from "@/components/CarrierClaimPanel";
 import SupplementAnalyzerPanel from "@/components/SupplementAnalyzerPanel";
 import type { PhotoMeta } from "@/types/photo";
 import type { ClaimContext } from "@/lib/carriers";
-import { QuantumPulseLoader } from "@/components/ui/quantum-pulse-loader";
+// QuantumPulseLoader removed — replaced with inline progress strip + skeleton
+// loaders inside each section. The full-screen overlay was blocking the rep
+// from seeing partial data (Property satellite map, etc.) while Tier A ran.
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
 import { generatePdf, buildSummaryText } from "@/lib/pdf";
@@ -1147,15 +1149,15 @@ function HomePageInner() {
           </div>
         </div>
 
-        <h1 className="font-display text-[32px] sm:text-[44px] md:text-[52px] leading-[1.02] tracking-[-0.028em] font-semibold mb-3 text-balance">
+        <h1 className="font-display text-[34px] sm:text-[48px] md:text-[58px] leading-[0.98] tracking-[-0.032em] font-semibold mb-3 text-balance">
           Where are we{" "}
           <span className="iridescent-text">roofing</span>{" "}
           today?
         </h1>
-        <p className="text-[14px] sm:text-[15px] text-slate-400 mb-6 max-w-xl leading-relaxed">
+        <p className="text-[14.5px] sm:text-[15.5px] text-slate-400 mb-7 max-w-[42rem] leading-relaxed text-pretty">
           Type or paste the address. Voxaris measures the roof from LiDAR
-          and Solar in parallel, then renders a click-through 3D blueprint
-          you can verify before pricing.
+          and satellite imagery in parallel, then renders a click-through
+          3D blueprint you can verify before pricing.
         </p>
 
         <AddressInput
@@ -1213,36 +1215,45 @@ function HomePageInner() {
 
       {!shown && <EmptyState />}
 
-      {/* ─── Quantum-pulse loader: full-screen overlay while polygon resolution
-           is still in flight. Stays up until ALL of:
-             1. Solar + Vision metadata fetches complete (visionLoading)
-             2. SAM3 settles — either successfully traces a polygon, or
-                fails and the Solar-mask fallback completes (sam3InFlight)
-             3. Click-pick re-trace settles (pickingLoading) — when the rep
-                taps "Wrong building? Click to pick", the route re-runs
-                Roboflow on the new centre and that call also takes
-                5-30s. Without this gate, the rep saw the old polygon
-                hang on-screen while Roboflow worked, then flicker to
-                the new one — confusing UX. Showing the same overlay as
-                initial load makes the state unambiguous.
-           Without the sam3InFlight gate, the overlay would clear at ~3s
-           (when vision finishes) but SAM3 would still be cold-starting
-           Roboflow for another 5-30s. Reps were seeing the satellite
-           render with NO polygon, then a stale fallback polygon appear,
-           then the real SAM3 polygon flicker in late — making them
-           assume SAM3 had failed. Holding the overlay through SAM3's
-           full settle window eliminates that flicker. */}
-      {pipelineLoading && (
+      {/* In-flight progress strip — replaces the previous full-screen
+          "Analyzing roof" overlay. Was blocking the entire page for 30-60s
+          while Tier A ran; rep had no signal beyond a spinner and the
+          actual page sections (Property, Estimate) had nothing to look at.
+          New approach: the page renders sections IMMEDIATELY when shown
+          flips true, each with its own inline loading state. This strip
+          surfaces just enough context — which tier is computing right now
+          and a shimmer-bar — so the rep knows work is happening without
+          being locked out of the rest of the UI. */}
+      {pipelineLoading && shown && (
         <div
-          // No backdrop-blur — the filter forces full-page recomposite every
-          // frame, which thrashes against Cesium's WebGL canvas underneath
-          // and made the loader animation visibly stutter. A solid fill at
-          // 88% darkness reads almost the same and stays smooth.
-          className="fixed inset-0 z-50 flex items-center justify-center float-in"
-          style={{ background: "rgba(7,9,13,0.88)" }}
+          className="relative overflow-hidden rounded-2xl border border-cy-300/15 bg-cy-300/[0.025] px-5 py-3.5 stagger-in"
           aria-live="polite"
+          role="status"
         >
-          <QuantumPulseLoader text="Analyzing roof" />
+          <div className="absolute inset-x-0 top-0 h-px overflow-hidden">
+            <div className="h-px w-1/3 bg-gradient-to-r from-transparent via-cy-300 to-transparent animate-shimmer" />
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="relative flex h-2 w-2 flex-shrink-0">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cy-300 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-cy-300" />
+              </span>
+              <div className="min-w-0">
+                <div className="text-[12.5px] font-medium text-slate-100 truncate">
+                  {!roofData
+                    ? "Measuring roof from LiDAR + satellite imagery…"
+                    : "Finalizing estimate…"}
+                </div>
+                <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-cy-300/75 mt-0.5">
+                  {address?.formatted ?? "—"}
+                </div>
+              </div>
+            </div>
+            <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-slate-500 hidden sm:block">
+              live · cancellable
+            </div>
+          </div>
         </div>
       )}
 
@@ -1280,7 +1291,10 @@ function HomePageInner() {
               aspect-clipped 3D column — the section fills naturally
               when content lands and doesn't reserve a viewport of
               dead space when it doesn't. */}
-          <section className="grid lg:grid-cols-2 gap-4 min-h-[400px] sm:min-h-[480px] lg:min-h-[620px] float-in relative">
+          <section
+            className="grid lg:grid-cols-2 gap-4 min-h-[400px] sm:min-h-[480px] lg:min-h-[620px] stagger-in relative"
+            style={{ animationDelay: "80ms" }}
+          >
             <MapView
               lat={address?.lat}
               lng={address?.lng}
@@ -1545,7 +1559,10 @@ function HomePageInner() {
           />
 
           {/* ─── Two-col grid for everything else ─────────────────────── */}
-          <div className="grid lg:grid-cols-3 gap-5 lg:gap-7 float-in">
+          <div
+            className="grid lg:grid-cols-3 gap-5 lg:gap-7 stagger-in"
+            style={{ animationDelay: "240ms" }}
+          >
             <div className="lg:col-span-2 space-y-5">
               {/* Tier C unified-pipeline panels. Driven entirely from
                   RoofData (single canonical feed). */}

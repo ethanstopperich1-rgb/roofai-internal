@@ -252,6 +252,26 @@ textarea.input { resize: vertical; min-height: 90px; line-height: 1.5; }
 }
 .pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
 
+/* Stagger-in: identical motion shape to float-in but slightly longer
+   travel so the entrance carries more weight. Pair with inline
+   `animation-delay` for cascade effects (section A at 0ms, B at 80ms,
+   C at 160ms). Cubic-bezier matches Apple's springy "outback" curve. */
+@keyframes stagger-in {
+  0%   { opacity: 0; transform: translateY(14px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.stagger-in { animation: stagger-in 560ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+
+/* Shimmer-bar: a thin highlight that sweeps left-to-right across a
+   container's top edge while work is in flight. Paired with
+   `overflow-hidden` on the parent so the bar appears to wipe through
+   the surface. */
+@keyframes shimmer-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.animate-shimmer { animation: shimmer-sweep 1.8s linear infinite; }
+
 /* ─── Quantum-pulse "Generating" loader ─────────────────────────────── */
 
 /* Lightweight version: translateY + opacity only. The previous version used
