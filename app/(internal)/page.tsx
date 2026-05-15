@@ -1114,17 +1114,17 @@ function HomePageInner() {
       <section
         className="glass-panel-hero p-5 sm:p-7 md:p-9 relative z-30"
       >
-        {/* Top strip — dynamic progress stepper on the left, rep meta
-            (name input + New) on the right. The stepper used to be a
-            static "ADDRESS — ANALYZE — REVIEW — DELIVER" breadcrumb
-            with "DELIVER" hardcoded as the active step, which was both
-            wrong and noisy. Now it reflects actual pipeline state:
+        {/* Top strip — dynamic progress stepper on the left, "New
+            estimate" reset button tucked into the top-right corner
+            when an estimate is loaded. The standalone "Your name"
+            input was removed — staff identity persists in
+            localStorage on the OutputButtons save flow and didn't
+            need its own slot at the top of the page. Reflects actual
+            pipeline state on the stepper:
               address  → active until an address resolves
               analyze  → active while the pipeline is in flight
               review   → active once roofData lands
-              deliver  → active once a priced estimate exists
-            On narrow widths the labels collapse to dots so the bar
-            stays a single row. */}
+              deliver  → active once a priced estimate exists */}
         <div className="relative flex items-center justify-between gap-4 mb-7 flex-wrap">
           <HeroStepper
             current={
@@ -1137,24 +1137,16 @@ function HomePageInner() {
                     : "deliver"
             }
           />
-          <div className="flex items-stretch gap-2 ml-auto">
-            <input
-              className="glass-input flex-1 sm:flex-none sm:w-40 text-[13px]"
-              placeholder="Your name"
-              value={staff}
-              onChange={(e) => setStaff(e.target.value)}
-            />
-            {shown && (
-              <button
-                onClick={reset}
-                className="glass-button-secondary flex-shrink-0 text-[13px]"
-                aria-label="Start new estimate"
-              >
-                <RotateCcw size={13} />
-                <span className="hidden sm:inline">New</span>
-              </button>
-            )}
-          </div>
+          {shown && (
+            <button
+              onClick={reset}
+              className="glass-button-secondary flex-shrink-0 text-[12.5px] ml-auto"
+              aria-label="Start new estimate"
+            >
+              <RotateCcw size={12} />
+              <span className="hidden sm:inline">New</span>
+            </button>
+          )}
         </div>
 
         <h1 className="font-display text-[34px] sm:text-[48px] md:text-[58px] leading-[0.98] tracking-[-0.032em] font-semibold mb-3 text-balance">
