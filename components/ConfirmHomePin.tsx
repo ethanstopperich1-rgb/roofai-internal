@@ -327,12 +327,47 @@ export default function ConfirmHomePin({
   }
 
   return (
-    <div className="flex flex-col h-full w-full bg-black/40 backdrop-blur-md">
-      {/* Map fills the available space; bottom bar holds the controls */}
-      <div className="flex-1 relative min-h-[320px]">
+    <div
+      className="flex flex-col h-full w-full bg-[#07090d]/95 backdrop-blur-xl p-3 sm:p-5 lg:p-7 gap-4"
+      style={{
+        // Subtle vignette so the focus snaps to the framed map + confirm
+        // card. The previous full-bleed black-on-black layout had no
+        // visual hierarchy — viewport was just "satellite image, then
+        // bar of text."
+        background:
+          "radial-gradient(1200px 700px at 50% 20%, rgba(56,197,238,0.04), transparent 60%), #07090d",
+      }}
+    >
+      {/* Eyebrow strip — anchors the user in the workflow before the
+          satellite imagery hits. Was missing entirely, which made the
+          screen feel like a popup that appeared from nowhere. */}
+      <header className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-2.5">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cy-300 opacity-60" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-cy-300" />
+          </span>
+          <span className="text-[10.5px] font-mono uppercase tracking-[0.18em] text-cy-300/85">
+            Confirm property
+          </span>
+        </div>
+        <span className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-500 hidden sm:inline">
+          Step 1 of 2 · pin → measure
+        </span>
+      </header>
+
+      {/* Framed satellite map — rounded glass container with inner
+          border, replaces the edge-to-edge bleed. The pin sits inside
+          this surface so the eye reads "you're inspecting a frame"
+          rather than "you're trapped inside a map." */}
+      <div className="flex-1 relative min-h-[280px] sm:min-h-[360px] rounded-2xl overflow-hidden border border-white/[0.10] shadow-[0_30px_80px_-30px_rgba(0,0,0,0.8)]">
         <div ref={mapRef} className="absolute inset-0" />
         {!mapReady && !loadError && (
-          <div className="absolute inset-0 flex items-center justify-center text-slate-300 text-sm">
+          <div className="absolute inset-0 flex items-center justify-center gap-2.5 text-slate-300 text-[13px]">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cy-300 opacity-70" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cy-300" />
+            </span>
             Loading satellite view…
           </div>
         )}
@@ -352,39 +387,41 @@ export default function ConfirmHomePin({
         )}
       </div>
 
-      {/* Bottom action bar */}
+      {/* Bottom confirm card — proper glass surface, not a footer bar.
+          Address rides in a pinned chip, the prompt sits on its own
+          line, actions get visible breathing room. */}
       <div
-        className="border-t border-white/10 bg-black/70 px-4 py-4 sm:px-6 sm:py-5"
-        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
+        className="rounded-2xl border border-white/[0.10] bg-white/[0.025] backdrop-blur-md px-4 py-4 sm:px-6 sm:py-5"
+        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 18px)" }}
       >
-        <div className="max-w-2xl mx-auto">
-          <div className="mb-2">
-            <h2 className="text-lg sm:text-xl font-medium tracking-tight text-slate-50">
+        <div className="max-w-3xl mx-auto flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+          <div className="min-w-0">
+            <h2 className="font-display text-[19px] sm:text-[22px] font-semibold tracking-[-0.018em] text-slate-50">
               Is this your roof?
             </h2>
-            <p className="text-xs sm:text-sm text-slate-400 mt-1">
-              {address}
+            <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-white/[0.10] bg-white/[0.03] px-3 py-1 text-[12px] text-slate-200 max-w-full">
+              <span className="text-cy-300 shrink-0" aria-hidden>📍</span>
+              <span className="truncate">{address}</span>
+            </div>
+            <p className="text-[12px] text-slate-500 mt-2.5 leading-relaxed">
+              Drag the pin if we&apos;re on the wrong building.
             </p>
           </div>
-          <p className="text-xs sm:text-sm text-slate-400 mb-4">
-            Drag the pin if we're on the wrong building.
-          </p>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
             <button
               onClick={() => {
                 logPinEvent({ type: "pin_back" });
                 onCancel();
               }}
-              className="text-sm text-slate-400 hover:text-slate-200 transition px-2 py-2"
+              className="text-[13px] font-medium text-slate-400 hover:text-slate-100 transition-colors px-3 py-2 rounded-lg hover:bg-white/[0.04]"
             >
               ← Back
             </button>
-            <div className="flex-1" />
             <AuroraButton
               onClick={handleConfirm}
-              className="px-5 sm:px-6 py-2.5 font-medium text-[14px] tracking-tight"
+              className="px-5 sm:px-7 py-2.5 font-semibold text-[14px] tracking-tight"
             >
-              Yep, that's it
+              Yep, that&apos;s it
             </AuroraButton>
           </div>
         </div>
