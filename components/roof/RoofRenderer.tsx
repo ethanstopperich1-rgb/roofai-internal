@@ -783,7 +783,15 @@ function projectRoof(
     if (!e.polyline || e.polyline.length < 2) continue;
     const isRidgeLike =
       e.type === "ridge" || e.type === "hip" || e.type === "valley";
-    const defaultY = isRidgeLike ? edgeRidgeHeight : eaveHeight + 0.05;
+    // Phase 2 visual cleanup — suppress eave / rake / step-wall edge
+    // polylines. Since the wall extrusion was removed, these edges
+    // ride at the eave plane with nothing below them, so they read
+    // as floating green rectangles around the perimeter. The roof
+    // mesh's own outline already shows the eave silhouette. Ridge /
+    // hip / valley edges still render because they sit higher up
+    // and communicate real structural detail.
+    if (!isRidgeLike) continue;
+    const defaultY = edgeRidgeHeight;
     const points = e.polyline.map((v) => {
       const [x, z] = toScene(v.lat, v.lng);
       const y = v.heightM > 0 ? eaveHeight + v.heightM : defaultY;

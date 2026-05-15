@@ -168,11 +168,18 @@ def extract_roof_pipeline(
         )
         if pf_facets is not None and len(pf_facets) > 0:
             facets = pf_facets
-            mesh_source = "polyfit"
+            # mesh_source comes from the wrapper's diagnostics — it's
+            # "point2roof" when the ML primary tier won, "polyfit" when
+            # the CGAL secondary tier won. Defaults to "frustum-fallback"
+            # below if both failed.
+            mesh_source = polyfit_diagnostics.get("mesh_source") or "polyfit"
             attempts.append({
                 "stage": "polyfit_reconstruct",
                 "outcome": "succeeded",
-                "reason": f"facets={len(facets)} planes_in={len(planes)}",
+                "reason": (
+                    f"mesh={mesh_source} facets={len(facets)} "
+                    f"planes_in={len(planes)}"
+                ),
             })
         else:
             # PolyFit returned None (CGAL unavailable, IP solver failed,
