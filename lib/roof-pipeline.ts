@@ -106,6 +106,7 @@ async function buildParcelPolygon(
   lng: number,
   solar: SolarSummary | null,
   apiKey: string | undefined,
+  address: string | null,
 ): Promise<{
   polygon: Array<{ lat: number; lng: number }> | null;
   /** Picker provenance. Null when the picker wasn't able to run
@@ -138,15 +139,20 @@ async function buildParcelPolygon(
       ? solar.segmentPolygonsLatLng.flat()
       : null;
 
-  // Picker fetches MS Buildings internally; we pass the Solar / OSM
-  // hints we've already resolved. OSM is null until Phase 1.5 wires
-  // the fetcher.
+  // Picker fetches MS Buildings + SAM3 internally; we pass the Solar /
+  // OSM hints we've already resolved. SAM3 (Roboflow vision trace) is
+  // the new top-priority polygon source — it traces visible roof edges
+  // rather than parcel-ish blobs. Solar mask is now the fallback.
   const picked = await pickWithMsFetch(
     { lat, lng },
     {
       solar_mask: solarMask,
       osm: null,
       solar_segments: solarSegments,
+    },
+    {
+      baseUrl: resolveBaseUrl(),
+      address,
     },
   );
 
@@ -214,6 +220,7 @@ export async function runRoofPipeline(opts: {
     opts.address.lng,
     solarHint,
     apiKey,
+    opts.address.formatted,
   );
   const finalParcelPolygon = pickerResult.polygon;
   const imageryDate = solarHint?.imageryDate ?? null;
@@ -413,6 +420,7 @@ export async function runRoofPipelineCompare(opts: {
     opts.address.lng,
     solarHint,
     apiKey,
+    opts.address.formatted,
   );
   const finalParcelPolygon = pickerResult.polygon;
   const imageryDate = solarHint?.imageryDate ?? null;

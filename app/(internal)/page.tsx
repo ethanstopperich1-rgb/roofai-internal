@@ -18,6 +18,11 @@ import { useSearchParams } from "next/navigation";
 // from there, the 3D mesh draping is anchored on the right building
 // — and the photorealistic view is a real differentiator for reps
 // showing storm damage to homeowners on tablets in the field.
+// Roof3DViewer + RoofRenderer + RoofViewer imports kept as dynamic stubs
+// so we don't break anywhere else that references them, but they're no
+// longer mounted on the rep tool — 3D is parked while SAM3 / SAM2 wiring
+// is in flight.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
   ssr: false,
 });
@@ -25,6 +30,7 @@ const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
 // — works for Tier A (LiDAR) and Tier C (Solar) alike. When cross-
 // compare data is available, exposes a Solar/LiDAR toggle inside the
 // renderer so the rep can verify both sources agree.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const RoofRenderer = dynamic(() => import("@/components/roof/RoofRenderer"), {
   ssr: false,
 });
@@ -1262,24 +1268,17 @@ function HomePageInner() {
               )
             }
           />
-          {/* ─── Map hero — satellite + 3D side-by-side, full width ───────
-               Strict 2-column grid: MapView (which internally stacks
-               satellite over street view) on the left, Roof3DViewer
-               on the right. The "Wrong building? Click to pick"
-               affordance moved OUT of this section into its own block
-               below — adding it here gave the grid 3 children and broke
-               the side-by-side layout (3D viewer wrapped to row 2,
-               overflowing the fixed-height section). */}
-          {/* Property hero — 2D map + 3D mesh side-by-side. Height was
-              previously a fixed 640px on lg+ which reserved a giant
-              empty black panel while the 3D viewer / pipeline were
-              still loading (Cesium tiles + LiDAR can take 30-60s). Now
-              capped at min-h instead of fixed h, with a tighter
-              aspect-clipped 3D column — the section fills naturally
-              when content lands and doesn't reserve a viewport of
-              dead space when it doesn't. */}
+          {/* ─── Map hero — single-column satellite + street-view ─────────
+               3D Three.js / Cesium renderer hidden for now per design
+               direction — focus is on the 2D polygon trace getting RIGHT
+               (SAM3 vision → Solar mask fallback). 3D returns once SAM2
+               object detection lands and the renderer has real per-facet
+               flashing classification to draw.
+               MapView internally stacks satellite over street view; this
+               section is just that single column with a generous min-h
+               so the satellite gets real estate. */}
           <section
-            className="grid lg:grid-cols-2 gap-4 min-h-[400px] sm:min-h-[480px] lg:min-h-[620px] stagger-in relative"
+            className="grid grid-cols-1 gap-4 min-h-[400px] sm:min-h-[480px] lg:min-h-[620px] stagger-in relative max-w-3xl"
             style={{ animationDelay: "80ms" }}
           >
             <MapView
@@ -1309,130 +1308,13 @@ function HomePageInner() {
               // see TODO above. MapView's pickingBuilding prop is optional;
               // omitting it disables the pick UI entirely.
             />
-            {/* ─── Photorealistic 3D mesh (Google Map Tiles 3D via Cesium) ───
-                 Sits in column 2 of the grid, beside MapView in column 1.
-                 Mounts only after the polygon resolution has settled so
-                 Cesium isn't re-drawing the draped outline as polygons
-                 race in. `key` forces a hard remount on address change so
-                 the previous Cesium camera + tile cache can't linger.
-                 interactive=true for rep workflow (they need to pan,
-                 zoom, change angle to inspect damage). When no polygon
-                 is on-screen yet we render a placeholder div instead of
-                 nothing, so the grid layout doesn't collapse to single-
-                 column and orphan the MapView. */}
-            {polygonReady &&
-            polygonSource !== "none" &&
-            address?.lat != null &&
-            address?.lng != null &&
-            roofData &&
-            roofData.source !== "none" &&
-            roofData.facets.length > 0 ? (
-              // Standalone blueprint renderer. Same view for Tier A
-              // (LiDAR) and Tier C (Solar) measurements. When cross-
-              // compare is active, a LiDAR/Solar toggle appears top-
-              // right + an agreement chip top-left so the rep can
-              // verify both sources agree before pricing.
-              <div
-                className="glass-panel overflow-hidden h-full relative"
-                aria-label={`3D blueprint view of the roof at ${address.formatted ?? "this property"}`}
-                role="img"
-              >
-                <RoofRenderer
-                  key={`renderer-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
-                  data={roofData}
-                  lidar={roofCompare?.lidar ?? null}
-                  solar={roofCompare?.solar ?? null}
-                  agreement={roofCompare?.agreement ?? null}
-                  className="absolute inset-0"
-                />
-                {(inspectorStatus === "running" ||
-                  inspectorStatus === "done") &&
-                  roofData.refinements.length > 0 && (
-                    <div
-                      className="absolute bottom-2.5 left-2.5 z-10 chip backdrop-blur-md bg-[#07090d]/65 pointer-events-none"
-                      role="status"
-                      aria-live="polite"
-                    >
-                      Roof inspector ✓ ({roofData.refinements.length} refinement
-                      {roofData.refinements.length === 1 ? "" : "s"})
-                    </div>
-                  )}
-              </div>
-            ) : polygonReady &&
-            polygonSource !== "none" &&
-            address?.lat != null &&
-            address?.lng != null ? (
-              // Pre-pipeline-result fallback — show the photorealistic
-              // Cesium viewer while RoofData is still being measured.
-              // This keeps Tier B's multi-view inspector capture path
-              // alive (onMultiViewCaptured is bound here) until the
-              // standalone renderer takes over with measured facets.
-              <div
-                className="glass-panel overflow-hidden h-full relative"
-                aria-label={`3D photorealistic view of the roof at ${address.formatted ?? "this property"}`}
-                role="img"
-              >
-                <Roof3DViewer
-                  key={`${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
-                  lat={address.lat}
-                  lng={address.lng}
-                  address={address.formatted}
-                  polygons={activePolygons}
-                  polygonSource={polygonSource}
-                  imageryDate={roofData?.imageryDate ?? null}
-                  expectedFootprintSqft={
-                    roofData?.totals.totalFootprintSqft ?? null
-                  }
-                  onMultiViewCaptured={handleMultiViewCaptured}
-                  interactive
-                />
-                {(inspectorStatus === "running" ||
-                  inspectorStatus === "done") &&
-                  roofData &&
-                  roofData.source !== "none" && (
-                    <div
-                      className="absolute bottom-2.5 left-2.5 z-10 chip backdrop-blur-md bg-[#07090d]/65 pointer-events-none"
-                      role="status"
-                      aria-live="polite"
-                    >
-                      {inspectorStatus === "running"
-                        ? "Roof inspector: analyzing obliques…"
-                        : `Roof inspector ✓ (${roofData.refinements.length} refinement${roofData.refinements.length === 1 ? "" : "s"})`}
-                    </div>
-                  )}
-              </div>
-            ) : (
-              // Placeholder keeps the 2-column grid intact while the
-              // pipeline / SAM3 is in flight. Tinted radial gradient
-              // + animated dot + clear copy beats the previous "dead
-              // black panel" look. Also hides itself entirely on
-              // mobile so we don't reserve a full-height column of
-              // empty space below the satellite map on phones.
-              <div
-                className="hidden lg:flex glass-panel h-full flex-col items-center justify-center gap-3 relative overflow-hidden"
-                role="status"
-                aria-live="polite"
-              >
-                <div
-                  aria-hidden
-                  className="absolute inset-0 pointer-events-none"
-                  style={{
-                    background:
-                      "radial-gradient(closest-side at 50% 50%, rgba(56,197,238,0.06), transparent 70%)",
-                  }}
-                />
-                <div className="relative flex items-center gap-2">
-                  <span className="inline-flex w-2 h-2 rounded-full bg-cy-300 animate-pulse" />
-                  <span className="text-[10.5px] font-mono uppercase tracking-[0.18em] text-cy-300/85">
-                    3D mesh
-                  </span>
-                </div>
-                <div className="relative text-[12.5px] text-slate-300 max-w-[18rem] text-center leading-relaxed">
-                  Loads after measurement — interactive 3D model with
-                  per-facet inspection.
-                </div>
-              </div>
-            )}
+            {/* 3D renderer (RoofRenderer + Roof3DViewer + Cesium) hidden
+                for now. The focus is on getting the 2D polygon trace
+                right (SAM3 vision-default + Solar fallback) and the
+                upcoming SAM2 object-detection / color-coded flashing
+                layer. 3D returns once those are wired and the renderer
+                has real per-facet flashing classifications to draw —
+                until then the satellite trace IS the visual product. */}
           </section>
 
           {/* Tier C drops the "Wrong building? Click to pick" affordance —

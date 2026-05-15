@@ -43,6 +43,7 @@ import { fetchMsBuildings, type LatLng } from "@/lib/sources/ms-buildings";
 // ─── Public types ────────────────────────────────────────────────────
 
 export type ParcelPolygonSource =
+  | "sam3"
   | "solar_mask"
   | "ms_buildings"
   | "osm"
@@ -79,6 +80,14 @@ export interface PickResult {
  *  passes whatever resolved. Any field may be omitted; the picker
  *  handles all-empty by emitting the synthetic fallback. */
 export interface SourceBundle {
+  /** SAM3 (Roboflow) vision-traced building outline. Default polygon
+   *  source for new pipeline runs — vision actually traces the roof's
+   *  visible edges, while Solar's dataLayers mask returns parcel-ish
+   *  blobs that bleed into yards / driveways / neighbouring lots.
+   *  When SAM3 succeeds it always wins; the rest of this bundle are
+   *  fallbacks for SAM3 timeout / low-confidence / hard-to-trace
+   *  rooftops. */
+  sam3?: LatLng[] | null;
   solar_mask?: LatLng[] | null;
   ms_buildings?: LatLng[] | null;
   osm?: LatLng[] | null;
@@ -94,6 +103,12 @@ export interface SourceBundle {
 type PickableSource = Exclude<ParcelPolygonSource, "synthetic_fallback">;
 
 const PRIORITY_ORDER: PickableSource[] = [
+  // SAM3 (Roboflow vision trace) is the new default — it actually traces
+  // visible roof edges instead of returning parcel-ish blobs. Solar mask
+  // demoted to fallback after the 813 Summerwood Dr, Jupiter case where
+  // Solar returned a 7,013 sf parcel diamond against a 1,655 sqft real
+  // roof. SAM3 traces the same building tightly to ~2,800 sf.
+  "sam3",
   "solar_mask",
   "ms_buildings",
   "osm",
@@ -101,11 +116,12 @@ const PRIORITY_ORDER: PickableSource[] = [
 ];
 
 const PRIORITY_RANK: Record<ParcelPolygonSource, number> = {
-  solar_mask: 0,
-  ms_buildings: 1,
-  osm: 2,
-  solar_segments: 3,
-  synthetic_fallback: 4,
+  sam3: 0,
+  solar_mask: 1,
+  ms_buildings: 2,
+  osm: 3,
+  solar_segments: 4,
+  synthetic_fallback: 5,
 };
 
 const IOU_TIEBREAKER_DELTA = 0.05;
@@ -316,18 +332,71 @@ export function pickBestParcelPolygon(
 // ─── Convenience: pickWithMsFetch ────────────────────────────────────
 //
 // Most callers (the LiDAR pipeline) want the picker plus MS Buildings
-// lookup as a single call. This wrapper fetches MS Buildings, merges
-// with the provided Solar / OSM hints, and invokes the picker.
+// + SAM3 vision trace fetched in one call. This wrapper fans those two
+// upstream requests in parallel, merges them with the provided Solar
+// hints, and invokes the picker.
 
 export async function pickWithMsFetch(
   geocode: { lat: number; lng: number },
-  hints: Omit<SourceBundle, "ms_buildings">,
+  hints: Omit<SourceBundle, "ms_buildings" | "sam3">,
+  opts?: {
+    /** SSR base URL — required so the SAM3 fetch can hit /api/sam3-roof
+     *  from inside the Next.js server context. The roof-pipeline already
+     *  resolves this via `resolveBaseUrl()`; pass it through. */
+    baseUrl?: string;
+    /** Optional address string forwarded to /api/sam3-roof so the route
+     *  can use the address for vision-aware roof identification. */
+    address?: string | null;
+  },
 ): Promise<PickResult> {
-  const msBuildings = await fetchMsBuildings(geocode).catch(() => null);
+  const [msBuildings, sam3] = await Promise.all([
+    fetchMsBuildings(geocode).catch(() => null),
+    fetchSam3(geocode, opts?.baseUrl, opts?.address).catch(() => null),
+  ]);
   return pickBestParcelPolygon(geocode, {
     ...hints,
+    sam3,
     ms_buildings: msBuildings?.polygon ?? null,
   });
+}
+
+/** Fetch SAM3 / Roboflow vision-traced roof polygon. Returns null on
+ *  any failure (cold-start timeout, low confidence, network error,
+ *  empty polygon) so the picker degrades cleanly to Solar mask. */
+async function fetchSam3(
+  geocode: { lat: number; lng: number },
+  baseUrl: string | undefined,
+  address: string | null | undefined,
+): Promise<LatLng[] | null> {
+  const origin = baseUrl ?? "";
+  const params = new URLSearchParams({
+    lat: String(geocode.lat),
+    lng: String(geocode.lng),
+  });
+  if (address) params.set("address", address);
+  try {
+    const res = await fetch(`${origin}/api/sam3-roof?${params}`, {
+      cache: "no-store",
+      // 35s gives Roboflow's cold path (~5-30s typical) room without
+      // pushing the overall pipeline budget too far. Falls back to
+      // Solar mask on AbortError.
+      signal: AbortSignal.timeout(35_000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      polygon?: Array<{ lat: number; lng: number }>;
+      source?: string;
+    };
+    // Some SAM3 fallback paths (e.g. footprint-only) emit a polygon
+    // that's really a wall trace, not a roof outline. The picker's
+    // downstream area + IoU checks will catch grossly wrong ones,
+    // but we reject the obviously-bad source labels here so they
+    // never even compete for the slot.
+    if (!data.polygon || data.polygon.length < 3) return null;
+    return data.polygon;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Geometry helpers ────────────────────────────────────────────────
