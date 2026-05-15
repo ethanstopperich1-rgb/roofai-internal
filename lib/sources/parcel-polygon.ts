@@ -102,26 +102,24 @@ export interface SourceBundle {
  *  with these values safely. */
 type PickableSource = Exclude<ParcelPolygonSource, "synthetic_fallback">;
 
-const PRIORITY_ORDER: PickableSource[] = [
-  // SAM3 (Roboflow vision trace) is the new default — it actually traces
-  // visible roof edges instead of returning parcel-ish blobs. Solar mask
-  // demoted to fallback after the 813 Summerwood Dr, Jupiter case where
-  // Solar returned a 7,013 sf parcel diamond against a 1,655 sqft real
-  // roof. SAM3 traces the same building tightly to ~2,800 sf.
-  "sam3",
-  "solar_mask",
-  "ms_buildings",
-  "osm",
-  "solar_segments",
-];
+// SAM3 is the ONLY polygon source. Solar mask, MS Buildings, OSM, and
+// Solar segments are all out — the system never traces the roof with
+// anything other than the SAM3 vision model. When SAM3 fails (cold
+// start exceeds 60s, returned no mask, or returned a too-small
+// polygon), the pipeline falls all the way through to
+// `synthetic_fallback` and the rep handles it manually rather than
+// silently displaying a wrong polygon source. Solar still provides
+// the DATA (plane decomposition, pitch, azimuth, area) — but never
+// the OUTLINE.
+const PRIORITY_ORDER: PickableSource[] = ["sam3"];
 
 const PRIORITY_RANK: Record<ParcelPolygonSource, number> = {
   sam3: 0,
-  solar_mask: 1,
-  ms_buildings: 2,
-  osm: 3,
-  solar_segments: 4,
-  synthetic_fallback: 5,
+  solar_mask: 99,       // legacy, never selected
+  ms_buildings: 99,     // legacy, never selected
+  osm: 99,              // legacy, never selected
+  solar_segments: 99,   // legacy, never selected
+  synthetic_fallback: 100,
 };
 
 const IOU_TIEBREAKER_DELTA = 0.05;
@@ -338,26 +336,27 @@ export function pickBestParcelPolygon(
 
 export async function pickWithMsFetch(
   geocode: { lat: number; lng: number },
-  hints: Omit<SourceBundle, "ms_buildings" | "sam3">,
+  // `hints` retained for API stability — Solar mask / OSM / segments
+  // are still accepted as inputs but they no longer compete for the
+  // polygon slot, so the picker ignores them. Kept on the type so
+  // callers don't have to retool their existing fetches. Same with
+  // the `ms_buildings` field, which is no longer fetched here.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _hints: Omit<SourceBundle, "ms_buildings" | "sam3">,
   opts?: {
-    /** SSR base URL — required so the SAM3 fetch can hit /api/sam3-roof
-     *  from inside the Next.js server context. The roof-pipeline already
-     *  resolves this via `resolveBaseUrl()`; pass it through. */
     baseUrl?: string;
-    /** Optional address string forwarded to /api/sam3-roof so the route
-     *  can use the address for vision-aware roof identification. */
     address?: string | null;
   },
 ): Promise<PickResult> {
-  const [msBuildings, sam3] = await Promise.all([
-    fetchMsBuildings(geocode).catch(() => null),
-    fetchSam3(geocode, opts?.baseUrl, opts?.address).catch(() => null),
-  ]);
-  return pickBestParcelPolygon(geocode, {
-    ...hints,
-    sam3,
-    ms_buildings: msBuildings?.polygon ?? null,
-  });
+  // SAM3 is the ONLY polygon source — Solar mask, MS Buildings, OSM,
+  // and Solar segments are out per the May 2026 architecture pivot.
+  // No parallel fetches for sources that can't win the priority.
+  const sam3 = await fetchSam3(
+    geocode,
+    opts?.baseUrl,
+    opts?.address,
+  ).catch(() => null);
+  return pickBestParcelPolygon(geocode, { sam3 });
 }
 
 /** Fetch SAM3 / Roboflow vision-traced roof polygon. Returns null on

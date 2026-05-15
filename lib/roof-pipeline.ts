@@ -124,41 +124,33 @@ async function buildParcelPolygon(
    *  picker paths (synthetic_fallback, solar_disagreement, etc.). */
   confidencePenalty: number;
 }> {
-  // Fetch Solar mask in parallel with the MS Buildings module's own
-  // lookup (which the picker triggers via pickWithMsFetch). Solar
-  // segments are provided by the caller (already fetched for the
-  // findClosest hint).
-  let solarMask: Array<{ lat: number; lng: number }> | null = null;
-  if (apiKey) {
-    try {
-      const mask = await fetchSolarRoofMask({ lat, lng, apiKey });
-      if (mask && mask.latLng.length >= 3) solarMask = mask.latLng;
-    } catch {
-      /* fall through */
-    }
-  }
-
-  const solarSegments =
-    solar && solar.segmentPolygonsLatLng.length > 0
-      ? solar.segmentPolygonsLatLng.flat()
-      : null;
-
-  // Picker fetches MS Buildings + SAM3 internally; we pass the Solar /
-  // OSM hints we've already resolved. SAM3 (Roboflow vision trace) is
-  // the new top-priority polygon source — it traces visible roof edges
-  // rather than parcel-ish blobs. Solar mask is now the fallback.
+  // SAM3 is the ONLY polygon source as of May 2026. Solar mask, MS
+  // Buildings, OSM, and Solar segments don't compete for the polygon
+  // slot anymore — Solar still drives the FACET DATA (plane decomp,
+  // pitch, azimuth, area per surface) but never the outline. If SAM3
+  // fails, the picker emits synthetic_fallback (rep handles manually)
+  // rather than silently drawing a wrong shape with a different model.
   const picked = await pickWithMsFetch(
     { lat, lng },
     {
-      solar_mask: solarMask,
+      // hints intentionally empty — the picker ignores Solar mask /
+      // OSM / solar_segments now. Kept on the type for backwards
+      // compat with older callers; passing null is the safest signal.
+      solar_mask: null,
       osm: null,
-      solar_segments: solarSegments,
+      solar_segments: null,
     },
     {
       baseUrl: resolveBaseUrl(),
       address,
     },
   );
+  // apiKey + solar are no longer consumed inside the picker path —
+  // the lint suppressions below keep the function signature stable
+  // (Solar is still passed in by callers for downstream segment data
+  // outside this function).
+  void apiKey;
+  void solar;
 
   // 0.5m buffer per Phase 1 design — eaves typically extend 0.4-0.6m
   // past the wall; this catches eave LiDAR returns. The previous
