@@ -17,8 +17,8 @@
 import { useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import * as THREE from "three";
-import { Satellite, Box as BoxIcon } from "lucide-react";
-import type { RoofData, Edge, RoofObject } from "@/types/roof";
+import { Satellite, Box as BoxIcon, X } from "lucide-react";
+import type { RoofData, Edge, Facet, RoofObject } from "@/types/roof";
 
 const Canvas = dynamic(
   () => import("@react-three/fiber").then((m) => m.Canvas),
@@ -84,6 +84,13 @@ export default function RoofRenderer({
   const [activeKey, setActiveKey] = useState<"lidar" | "solar">(initialKey);
   const active = sources.find((s) => s.key === activeKey) ?? sources[0];
 
+  // Facet selection state. activeFacetId === null = no selection (default).
+  // Click a facet → see its pitch, azimuth, sqft in a side card. Click
+  // outside or hit X to clear.
+  const [activeFacetId, setActiveFacetId] = useState<string | null>(null);
+  const [hoverFacetId, setHoverFacetId] = useState<string | null>(null);
+  const activeFacet = active?.data.facets.find((f) => f.id === activeFacetId) ?? null;
+
   if (!active) return null;
 
   return (
@@ -102,7 +109,13 @@ export default function RoofRenderer({
       >
         <color attach="background" args={["#05070a"]} />
         <fog attach="fog" args={["#05070a", 60, 180]} />
-        <RoofScene data={active.data} />
+        <RoofScene
+          data={active.data}
+          activeFacetId={activeFacetId}
+          hoverFacetId={hoverFacetId}
+          onFacetClick={setActiveFacetId}
+          onFacetHover={setHoverFacetId}
+        />
         <OrbitControls
           enablePan={false}
           enableZoom={true}
@@ -129,6 +142,16 @@ export default function RoofRenderer({
       )}
       <BlueprintLegend data={active.data} />
       <BlueprintCorner />
+      {/* Facet inspector — slides in from the right when a facet is
+          clicked. Shows pitch (in /12 + degrees), azimuth (cardinal +
+          degrees), sloped area, footprint area, and material guess. */}
+      {activeFacet && (
+        <FacetInspector
+          facet={activeFacet}
+          sourceLabel={active.label}
+          onClose={() => setActiveFacetId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -210,7 +233,19 @@ function AgreementChip({
   );
 }
 
-function RoofScene({ data }: { data: RoofData }) {
+function RoofScene({
+  data,
+  activeFacetId,
+  hoverFacetId,
+  onFacetClick,
+  onFacetHover,
+}: {
+  data: RoofData;
+  activeFacetId: string | null;
+  hoverFacetId: string | null;
+  onFacetClick: (id: string | null) => void;
+  onFacetHover: (id: string | null) => void;
+}) {
   const projected = useMemo(() => projectRoof(data), [data]);
 
   return (
@@ -250,10 +285,24 @@ function RoofScene({ data }: { data: RoofData }) {
         />
       )}
 
-      {/* Facets at correct pitch + azimuth. */}
-      {projected.facets.map((f) => (
-        <FacetMesh key={f.id} facet={f} />
-      ))}
+      {/* Facets at correct pitch + azimuth. Click to inspect; hover to
+          highlight. The 3D scene swallows clicks on facets but lets
+          background clicks bubble — wrap the meshes in a click-empty
+          group that clears the selection. */}
+      <group onPointerMissed={() => onFacetClick(null)}>
+        {projected.facets.map((f) => (
+          <FacetMesh
+            key={f.id}
+            facet={f}
+            isActive={activeFacetId === f.id}
+            isHover={hoverFacetId === f.id}
+            onClick={() =>
+              onFacetClick(activeFacetId === f.id ? null : f.id)
+            }
+            onHover={(over) => onFacetHover(over ? f.id : null)}
+          />
+        ))}
+      </group>
 
       {/* Edge polylines from LiDAR topology, color-coded by classification. */}
       {projected.edges.map((e) => (
@@ -335,28 +384,66 @@ interface Facet3D {
   outlineColor: string;
 }
 
-function FacetMesh({ facet }: { facet: Facet3D }) {
+function FacetMesh({
+  facet,
+  isActive,
+  isHover,
+  onClick,
+  onHover,
+}: {
+  facet: Facet3D;
+  isActive: boolean;
+  isHover: boolean;
+  onClick: () => void;
+  onHover: (over: boolean) => void;
+}) {
   const ref = useRef<THREE.Mesh>(null);
   const geom = useMemo(() => new THREE.ShapeGeometry(facet.shape), [facet.shape]);
+  // Selection / hover visual: brighten + cyan outline when selected,
+  // gentle emissive bump on hover. Subtle but unmistakable.
+  const emissive = isActive ? "#22d3ee" : isHover ? "#1e3a52" : "#000000";
+  const emissiveIntensity = isActive ? 0.4 : isHover ? 0.2 : 0;
+  const outlineColor = isActive ? "#22d3ee" : facet.outlineColor;
   return (
     <group position={[facet.centroidX, facet.centroidY, facet.centroidZ]}>
       <group
         rotation={[-facet.pitchRad, facet.azimuthRad, 0]}
       >
-        <mesh ref={ref} geometry={geom}>
+        <mesh
+          ref={ref}
+          geometry={geom}
+          onClick={(e) => {
+            e.stopPropagation();
+            onClick();
+          }}
+          onPointerOver={(e) => {
+            e.stopPropagation();
+            onHover(true);
+            document.body.style.cursor = "pointer";
+          }}
+          onPointerOut={() => {
+            onHover(false);
+            document.body.style.cursor = "";
+          }}
+        >
           <meshStandardMaterial
             color={facet.color}
             side={THREE.DoubleSide}
             metalness={0.1}
             roughness={0.65}
             transparent
-            opacity={0.92}
+            opacity={isActive ? 0.98 : 0.92}
+            emissive={emissive}
+            emissiveIntensity={emissiveIntensity}
           />
         </mesh>
         {/* Crisp blueprint outline on every facet. */}
         <lineSegments>
           <edgesGeometry args={[geom]} />
-          <lineBasicMaterial color={facet.outlineColor} />
+          <lineBasicMaterial
+            color={outlineColor}
+            linewidth={isActive ? 2 : 1}
+          />
         </lineSegments>
       </group>
     </group>
@@ -467,6 +554,99 @@ function BlueprintLegend({ data }: { data: RoofData }) {
       </div>
     </div>
   );
+}
+
+// ─── Facet inspector overlay ──────────────────────────────────────────
+
+function FacetInspector({
+  facet,
+  sourceLabel,
+  onClose,
+}: {
+  facet: Facet;
+  sourceLabel: string;
+  onClose: () => void;
+}) {
+  const pitchRise = Math.round(12 * Math.tan((facet.pitchDegrees * Math.PI) / 180));
+  const cardinal = azimuthCardinal(facet.azimuthDeg);
+  const facetIndex = facet.id.replace(/^facet-?/i, "") || facet.id;
+  return (
+    <div className="absolute top-[52px] right-3 z-20 w-[260px] rounded-2xl border border-cyan-400/25 bg-black/80 backdrop-blur-md text-white shadow-2xl overflow-hidden">
+      {/* Header strip — cyan accent line under the title to match the
+          selected facet's outline color in the 3D scene. */}
+      <div className="px-4 py-2.5 border-b border-white/[0.06] flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-1 h-3 bg-cyan-400 rounded-full" />
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300/70">
+              Facet {facetIndex}
+            </div>
+            <div className="text-[10px] text-white/45 font-mono mt-0.5">
+              {sourceLabel} source
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-white/55 hover:text-white/90 transition-colors"
+          aria-label="Close facet inspector"
+        >
+          <X size={13} />
+        </button>
+      </div>
+      <div className="p-4 space-y-3">
+        <Row label="Pitch" value={`${pitchRise}/12 (${facet.pitchDegrees.toFixed(1)}°)`} />
+        <Row label="Azimuth" value={`${cardinal} (${Math.round(facet.azimuthDeg)}°)`} />
+        <Row
+          label="Sloped area"
+          value={`${Math.round(facet.areaSqftSloped).toLocaleString()} sqft`}
+        />
+        <Row
+          label="Footprint"
+          value={`${Math.round(facet.areaSqftFootprint).toLocaleString()} sqft`}
+        />
+        <Row
+          label="Low slope"
+          value={facet.isLowSlope ? "Yes (<2/12)" : "No"}
+        />
+        {facet.material && (
+          <Row label="Material" value={prettyMaterial(facet.material)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-white/45">
+        {label}
+      </div>
+      <div className="text-[12.5px] font-medium text-white/90 tabular-nums">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function azimuthCardinal(deg: number): string {
+  const a = ((deg % 360) + 360) % 360;
+  const labels = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return labels[Math.round(a / 45) % 8];
+}
+
+function prettyMaterial(m: string): string {
+  switch (m) {
+    case "asphalt-3tab": return "Asphalt (3-tab)";
+    case "asphalt-architectural": return "Asphalt (architectural)";
+    case "metal-standing-seam": return "Metal (standing seam)";
+    case "tile-concrete": return "Concrete tile";
+    case "wood-shake": return "Wood shake";
+    case "flat-membrane": return "Flat membrane";
+    default: return m;
+  }
 }
 
 function BlueprintCorner() {

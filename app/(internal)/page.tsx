@@ -1147,15 +1147,15 @@ function HomePageInner() {
           </div>
         </div>
 
-        <h1 className="font-display text-[30px] sm:text-[40px] md:text-[48px] leading-[1.02] tracking-[-0.025em] font-semibold mb-2 text-balance">
+        <h1 className="font-display text-[32px] sm:text-[44px] md:text-[52px] leading-[1.02] tracking-[-0.028em] font-semibold mb-3 text-balance">
           Where are we{" "}
           <span className="iridescent-text">roofing</span>{" "}
           today?
         </h1>
-        <p className="text-[14px] text-slate-400 mb-6 max-w-xl leading-relaxed">
-          Type or paste an address. Voxaris measures the roof in parallel
-          from LiDAR + Solar and renders an interactive 3D blueprint —
-          toggle sources to verify the two measurements agree before pricing.
+        <p className="text-[14px] sm:text-[15px] text-slate-400 mb-6 max-w-xl leading-relaxed">
+          Type or paste the address. Voxaris measures the roof from LiDAR
+          and Solar in parallel, then renders a click-through 3D blueprint
+          you can verify before pricing.
         </p>
 
         <AddressInput
@@ -1164,27 +1164,6 @@ function HomePageInner() {
           onSelect={setAddress}
           onSubmit={requestEstimate}
         />
-
-        {/* Keyboard shortcuts — collapsed to a single subtle line so they
-            stop visually competing with the address input. Power users
-            still get the hint; new reps don't see a noise strip. */}
-        <div className="hidden md:flex items-center gap-4 mt-4 text-[10.5px] font-mono uppercase tracking-[0.14em] text-slate-500">
-          <span className="flex items-center gap-1.5">
-            <span className="kbd">⌘K</span> Address
-          </span>
-          <span className="text-slate-600">·</span>
-          <span className="flex items-center gap-1.5">
-            <span className="kbd">⌘S</span> Save
-          </span>
-          <span className="text-slate-600">·</span>
-          <span className="flex items-center gap-1.5">
-            <span className="kbd">⌘P</span> PDF
-          </span>
-          <span className="text-slate-600">·</span>
-          <span className="flex items-center gap-1.5">
-            <span className="kbd">⌘E</span> Email
-          </span>
-        </div>
       </section>
 
       {/* Pipeline error chip — surfaces /api/roof-pipeline failures.
@@ -1826,41 +1805,84 @@ function HeroStepper({
 }
 
 function EmptyState() {
-  const tips = [
+  const features = [
     {
-      icon: <Sparkles size={14} className="text-cy-300" />,
-      title: "Auto-measure on address pick",
-      body: "Roof size, pitch, material, complexity — measured and assessed by Pitch in seconds.",
+      eyebrow: "Capability 01",
+      icon: <Sparkles size={15} className="text-cy-300" />,
+      accent: "from-cy-400/[0.08] to-transparent",
+      title: "Cross-source measurement",
+      body: "Every estimate runs LiDAR and Solar in parallel. The 3D viewer lets you toggle between the two to verify they agree before pricing.",
     },
     {
-      icon: <Plus size={14} className="text-mint" />,
-      title: "Tweak anything, total updates live",
-      body: "Material, complexity, multipliers, add-ons — recompute instantly with smooth animation.",
+      eyebrow: "Capability 02",
+      icon: <Plus size={15} className="text-mint" />,
+      accent: "from-emerald-400/[0.07] to-transparent",
+      title: "Interactive 3D blueprint",
+      body: "Standalone Three.js model — walls extruded, facets color-coded by azimuth, edges classified ridge / hip / valley / eave / rake. Click any facet to inspect pitch, sloped area, and material.",
     },
     {
-      icon: <Zap size={14} className="text-amber" />,
-      title: "Press ↵ to estimate",
-      body: "Or click a suggestion. Fastest path: type, ↓, ↵.",
+      eyebrow: "Capability 03",
+      icon: <Zap size={15} className="text-amber" />,
+      accent: "from-amber-300/[0.06] to-transparent",
+      title: "Sub-30s end-to-end",
+      body: "Parallel pipeline cuts wall time to max(LiDAR, Solar) ≈ 5–25s. Press ↵ on the address bar — measurement, pricing, and the 3D blueprint land together.",
     },
   ];
   return (
-    <section className="grid md:grid-cols-3 gap-4">
-      {tips.map((t, i) => (
-        <div
-          key={t.title}
-          className="glass-panel is-interactive p-5 float-in"
-          style={{ animationDelay: `${i * 70}ms` }}
-        >
-          <div className="flex items-center gap-2 mb-2">
-            {t.icon}
-            <span className="label">tip 0{i + 1}</span>
+    <section className="space-y-5">
+      <div className="flex items-center gap-3 px-1">
+        <span className="label text-slate-500">
+          What this estimator does
+        </span>
+        <div className="flex-1 h-px bg-gradient-to-r from-white/[0.06] via-white/[0.02] to-transparent" />
+      </div>
+      <div className="grid md:grid-cols-3 gap-4">
+        {features.map((f, i) => (
+          <div
+            key={f.title}
+            className="glass-panel is-interactive p-5 float-in relative overflow-hidden"
+            style={{ animationDelay: `${i * 90}ms` }}
+          >
+            <div
+              aria-hidden
+              className={`absolute inset-0 pointer-events-none bg-gradient-to-br ${f.accent}`}
+            />
+            <div className="relative">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-7 h-7 rounded-lg bg-white/[0.04] border border-white/[0.07] flex items-center justify-center">
+                  {f.icon}
+                </div>
+                <span className="label text-slate-500 tracking-[0.16em]">
+                  {f.eyebrow}
+                </span>
+              </div>
+              <div className="font-display font-semibold tracking-[-0.015em] text-[16px] text-white/95 mb-1.5 leading-tight">
+                {f.title}
+              </div>
+              <div className="text-[12.5px] text-slate-400 leading-relaxed">
+                {f.body}
+              </div>
+            </div>
           </div>
-          <div className="font-display font-medium tracking-tight text-[15px] mb-1">
-            {t.title}
-          </div>
-          <div className="text-[13px] text-slate-400 leading-relaxed">{t.body}</div>
+        ))}
+      </div>
+
+      {/* Quick start strip — keeps the keyboard-shortcut info visible
+          without it competing with the address bar above. */}
+      <div className="glass-panel p-4 sm:p-5 flex flex-wrap items-center gap-x-6 gap-y-3 float-in" style={{ animationDelay: "300ms" }}>
+        <div className="flex items-center gap-2">
+          <Sparkles size={13} className="text-cy-300/80" />
+          <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-400">
+            Quick start
+          </span>
         </div>
-      ))}
+        <div className="text-[12px] text-slate-400 flex items-center gap-2">
+          <span className="kbd">↵</span> on a suggestion to estimate
+        </div>
+        <div className="text-[12px] text-slate-400 flex items-center gap-2">
+          <span className="kbd">⌘S</span> save · <span className="kbd">⌘P</span> PDF · <span className="kbd">⌘E</span> email
+        </div>
+      </div>
     </section>
   );
 }
