@@ -71,12 +71,29 @@ export default function RoofRenderer({
       data.source === "tier-c-solar" || data.source === "tier-c-vision"
         ? data
         : solar ?? null;
+    // Labels are intentionally generic — never name upstream
+    // providers in user-visible chips. "Primary" is whichever source
+    // the pipeline picked as the winning tier; "Verify" is the
+    // independent cross-check. Same toggle behavior as before, but
+    // the customer/rep reads it as "two methods, same building"
+    // instead of "two competing answers".
+    const primaryIsLidar = data.source === "tier-a-lidar";
     if (lidarData && lidarData.source !== "none" && lidarData.facets.length > 0) {
-      list.push({ label: "LiDAR", key: "lidar", data: lidarData });
+      list.push({
+        label: primaryIsLidar ? "Primary" : "Verify",
+        key: "lidar",
+        data: lidarData,
+      });
     }
     if (solarData && solarData.source !== "none" && solarData.facets.length > 0) {
-      list.push({ label: "Solar", key: "solar", data: solarData });
+      list.push({
+        label: primaryIsLidar ? "Verify" : "Primary",
+        key: "solar",
+        data: solarData,
+      });
     }
+    // Always show Primary first.
+    list.sort((a, b) => (a.label === "Primary" ? -1 : 1));
     return list;
   }, [data, solar, lidar]);
 
@@ -241,7 +258,11 @@ function AgreementChip({
   };
 }) {
   const sqftPct = agreement.sqftDeltaPct ?? 0;
-  // <5% = strong agreement, 5-15% = moderate, >15% = weak.
+  // <5% = high confidence, 5-15% = moderate, >15% = needs review.
+  // Copy is intentionally non-confrontational — the rep/customer
+  // shouldn't read this as "your measurements disagree, panic" but
+  // as "two methods cross-checked, here's the spread." Primary is
+  // still the authoritative number; this is the verification signal.
   const tone =
     sqftPct < 0.05
       ? "border-emerald-400/30 bg-emerald-400/[0.06] text-emerald-200"
@@ -250,20 +271,23 @@ function AgreementChip({
         : "border-rose-400/30 bg-rose-400/[0.06] text-rose-200";
   const label =
     sqftPct < 0.05
-      ? "Strong agreement"
+      ? "Cross-check ✓"
       : sqftPct < 0.15
-        ? "Moderate agreement"
-        : "Sources disagree";
+        ? "Cross-check ~"
+        : "Cross-check Δ";
+  const sub =
+    sqftPct < 0.05
+      ? "Both methods agree closely"
+      : sqftPct < 0.15
+        ? "Methods agree within expected range"
+        : "Methods differ — rep will verify on-site";
   return (
     <div
-      className={`absolute top-3 left-3 z-10 rounded-full border ${tone} px-2.5 py-1 text-[10.5px] font-mono uppercase tracking-[0.12em] backdrop-blur-md`}
+      className={`absolute top-3 left-3 z-10 rounded-xl border ${tone} px-3 py-1.5 text-[10.5px] font-mono uppercase tracking-[0.12em] backdrop-blur-md max-w-[16rem]`}
     >
-      <div>{label}</div>
-      <div className="opacity-70 normal-case tracking-normal mt-0.5">
-        Δ {(sqftPct * 100).toFixed(1)}% sqft
-        {agreement.pitchDeltaDegrees != null && (
-          <> · Δ {agreement.pitchDeltaDegrees.toFixed(1)}° pitch</>
-        )}
+      <div>{label} · {(sqftPct * 100).toFixed(1)}% sqft spread</div>
+      <div className="opacity-80 normal-case tracking-normal mt-0.5 text-[10.5px] leading-snug">
+        {sub}
       </div>
     </div>
   );
@@ -633,15 +657,18 @@ function BlueprintLegend({ data }: { data: RoofData }) {
  *  instead of hardcoding "USGS LiDAR" regardless of which source the
  *  user has toggled to. */
 function sourceLabel(source: RoofData["source"]): string {
+  // Generic, customer-safe provenance labels — never name upstream
+  // data providers (USGS / Google / Iowa Mesonet / etc.) in user-
+  // visible chips. Same pattern as MeasurementVerification.tsx.
   switch (source) {
     case "tier-a-lidar":
-      return "USGS LiDAR";
+      return "Precision survey";
     case "tier-b-multiview":
-      return "Multiview refinement";
+      return "Multi-angle aerial";
     case "tier-c-solar":
-      return "Google Solar";
+      return "Aerial survey";
     case "tier-c-vision":
-      return "Aerial vision";
+      return "AI vision";
     case "none":
     default:
       return "approximate";
@@ -652,30 +679,32 @@ function meshSourceLabel(source: string | null | undefined): {
   text: string;
   toneClass: string;
 } {
+  // Customer-safe mesh provenance labels. The underlying source enum
+  // (point2roof / polyfit / frustum-fallback / solar-tier-c) names the
+  // implementation; the chip label describes the OUTPUT QUALITY tier.
+  // Three buckets the customer cares about: real reconstructed mesh,
+  // approximated from the polygon outline, or sourced from a
+  // secondary measurement method.
   switch (source) {
     case "point2roof":
-      return {
-        text: "point2roof (real)",
-        toneClass: "bg-emerald-400/15 text-emerald-200",
-      };
     case "polyfit":
       return {
-        text: "polyfit (real)",
+        text: "Reconstructed",
         toneClass: "bg-emerald-400/15 text-emerald-200",
       };
     case "frustum-fallback":
       return {
-        text: "frustum fallback",
+        text: "Approximated",
         toneClass: "bg-amber-400/15 text-amber-200",
       };
     case "solar-tier-c":
       return {
-        text: "solar tier-c",
+        text: "Secondary source",
         toneClass: "bg-slate-400/15 text-slate-300",
       };
     default:
       return {
-        text: "unknown",
+        text: "Unknown",
         toneClass: "bg-slate-400/15 text-slate-300",
       };
   }
