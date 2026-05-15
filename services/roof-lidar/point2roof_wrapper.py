@@ -88,33 +88,37 @@ def reconstruct(
         failure (CUDA unavailable, model load failed, no faces
         detected, inference error). Caller falls through.
     """
+    # ─── Per-gate observability logs ────────────────────────────────
+    # All gate misses + the success path emit a single greppable line of
+    # the shape `point2roof: gate=<name> [key=val ...]` so weekly modal
+    # log scans can count the distribution of failure modes across real
+    # addresses. Don't tune any thresholds in this function until the
+    # gate-rate distribution is known — guessing without data risks
+    # making the 90% case worse to chase the 10% case.
     try:
         import numpy as np  # noqa: PLC0415
         import torch  # noqa: PLC0415
     except ImportError as err:
-        log.info("Point2Roof unavailable — torch/numpy not importable: %s", err)
+        log.info("point2roof: gate=imports_unavailable err=%s", err)
         return None
 
     if not torch.cuda.is_available():
-        log.info(
-            "Point2Roof skipped — CUDA not available "
-            "(run_extract function not GPU-enabled). "
-            "Falling through to next reconstruction tier.",
-        )
+        log.info("point2roof: gate=no_cuda")
         return None
 
     model = _load_model()
     if model is None:
+        log.info("point2roof: gate=model_load_failed")
         return None
 
     # ─── Preprocess: center + normalize + FPS to NPOINT ──────────────
     pts_np = np.asarray(roof_xyz, dtype=np.float32)
     if pts_np.ndim != 2 or pts_np.shape[1] != 3:
-        log.warning("Point2Roof reject: bad input shape %s", pts_np.shape)
+        log.info("point2roof: gate=bad_input_shape shape=%s", pts_np.shape)
         return None
     n_in = len(pts_np)
     if n_in < 50:
-        log.warning("Point2Roof reject: only %d input points (< 50)", n_in)
+        log.info("point2roof: gate=npoints n_in=%d", n_in)
         return None
 
     min_pt = pts_np.min(axis=0)
@@ -130,6 +134,7 @@ def reconstruct(
     # so the network still gets a fixed-size input.
     sampled_idx = _farthest_point_sample(normalized, _NPOINT)
     if sampled_idx is None:
+        log.info("point2roof: gate=fps_failed n_in=%d", n_in)
         return None
     sampled = normalized[sampled_idx]
 
@@ -137,15 +142,15 @@ def reconstruct(
     try:
         keypoints, edges = _infer(model, sampled)
     except Exception as err:  # noqa: BLE001
-        log.warning("Point2Roof inference failed: %s", err)
+        log.info("point2roof: gate=inference_error err=%s", err)
         return None
 
-    if keypoints is None or len(keypoints) < 3 or edges is None or len(edges) < 3:
+    n_keypoints = 0 if keypoints is None else len(keypoints)
+    n_edges = 0 if edges is None else len(edges)
+    if keypoints is None or n_keypoints < 3 or edges is None or n_edges < 3:
         log.info(
-            "Point2Roof: insufficient structure detected "
-            "(keypoints=%d, edges=%d). Falling through.",
-            0 if keypoints is None else len(keypoints),
-            0 if edges is None else len(edges),
+            "point2roof: gate=insufficient_structure keypoints=%d edges=%d n_in=%d",
+            n_keypoints, n_edges, n_in,
         )
         return None
 
@@ -155,7 +160,10 @@ def reconstruct(
     # ─── Wireframe → polygon faces via cycle detection ───────────────
     faces = _wireframe_to_faces(keypoints_meters, edges)
     if not faces or len(faces) == 0:
-        log.info("Point2Roof: no closed polygon cycles found in wireframe")
+        log.info(
+            "point2roof: gate=no_closed_cycles keypoints=%d edges=%d n_in=%d",
+            n_keypoints, n_edges, n_in,
+        )
         return None
 
     # ─── Convert each face to Facet[] schema ─────────────────────────
@@ -166,10 +174,14 @@ def reconstruct(
         center_lng=center_lng,
     )
     if not facets:
+        log.info(
+            "point2roof: gate=face_to_facet_empty faces=%d keypoints=%d edges=%d",
+            len(faces), n_keypoints, n_edges,
+        )
         return None
     log.info(
-        "Point2Roof: reconstructed %d facets from %d keypoints / %d edges",
-        len(facets), len(keypoints), len(edges),
+        "point2roof: gate=success facets=%d keypoints=%d edges=%d n_in=%d",
+        len(facets), n_keypoints, n_edges, n_in,
     )
     return facets
 
