@@ -583,6 +583,11 @@ function NorthArrow({ size }: { size: number }) {
 
 function BlueprintLegend({ data }: { data: RoofData }) {
   const totals = data.totals;
+  // Map meshSource → user-facing label + tone. Surfaces WHICH
+  // reconstruction tier produced the rendered geometry, so the
+  // user doesn't have to dig through Modal logs to know whether
+  // Point2Roof is firing or we're on the alpha-shape fallback.
+  const meshLabel = meshSourceLabel(data.meshSource ?? null);
   return (
     <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between text-white pointer-events-none">
       <div className="space-y-0.5">
@@ -591,6 +596,15 @@ function BlueprintLegend({ data }: { data: RoofData }) {
         </div>
         <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/40">
           confidence {Math.round((data.confidence ?? 0) * 100)}%
+        </div>
+        {/* Mesh-source diag chip — tells you at a glance whether
+            Point2Roof fired, fell through to alpha-shape, or never
+            ran (Solar tier). Removes the "dig through Modal logs"
+            step for routine "is Point2Roof working" checks. */}
+        <div
+          className={`inline-block mt-1 px-1.5 py-0.5 rounded text-[9.5px] font-mono uppercase tracking-[0.12em] ${meshLabel.toneClass}`}
+        >
+          mesh: {meshLabel.text}
         </div>
       </div>
       <div className="text-right space-y-0.5">
@@ -606,6 +620,44 @@ function BlueprintLegend({ data }: { data: RoofData }) {
       </div>
     </div>
   );
+}
+
+/** Map meshSource enum → user-facing label + Tailwind tone class.
+ *  Acceptable to use a chip color to signal status; emerald for
+ *  the real-mesh path (Point2Roof), amber for the synthetic
+ *  fallback (Point2Roof unavailable or never wired up), slate for
+ *  Solar tier-C (frustum mode but not a failure mode). */
+function meshSourceLabel(source: string | null | undefined): {
+  text: string;
+  toneClass: string;
+} {
+  switch (source) {
+    case "point2roof":
+      return {
+        text: "point2roof (real)",
+        toneClass: "bg-emerald-400/15 text-emerald-200",
+      };
+    case "polyfit":
+      return {
+        text: "polyfit (real)",
+        toneClass: "bg-emerald-400/15 text-emerald-200",
+      };
+    case "frustum-fallback":
+      return {
+        text: "frustum fallback",
+        toneClass: "bg-amber-400/15 text-amber-200",
+      };
+    case "solar-tier-c":
+      return {
+        text: "solar tier-c",
+        toneClass: "bg-slate-400/15 text-slate-300",
+      };
+    default:
+      return {
+        text: "unknown",
+        toneClass: "bg-slate-400/15 text-slate-300",
+      };
+  }
 }
 
 // ─── Facet inspector overlay ──────────────────────────────────────────
