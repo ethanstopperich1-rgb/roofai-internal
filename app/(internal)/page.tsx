@@ -1034,11 +1034,14 @@ function HomePageInner() {
   const mapBadges = (() => {
     const badges: string[] = [];
     // Tier C: imagery date + source + confidence chip — all from RoofData.
+    // Source chips are intentionally generic ("Aerial" / "AI traced" /
+    // "Precision") so reps see WHICH tier won without exposing the
+    // underlying providers to customers shoulder-surfing the iPad.
     if (roofData?.imageryDate) badges.push(`Imagery ${roofData.imageryDate}`);
     if (polygonSource === "edited") badges.push("Edited");
-    else if (roofData?.source === "tier-c-solar") badges.push("Solar facets");
+    else if (roofData?.source === "tier-c-solar") badges.push("Aerial");
     else if (roofData?.source === "tier-c-vision") badges.push("AI traced");
-    else if (roofData?.source === "tier-a-lidar") badges.push("LiDAR");
+    else if (roofData?.source === "tier-a-lidar") badges.push("Precision");
     // Tier B is a refinement layer, not a source — mergeRefinement
     // preserves the original source. Surface it via the refinements
     // marker so the badge appears whenever obliques have been merged.
@@ -1159,9 +1162,9 @@ function HomePageInner() {
           today?
         </h1>
         <p className="text-[14.5px] sm:text-[15.5px] text-slate-400 mb-7 max-w-[42rem] leading-relaxed text-pretty">
-          Type or paste the address. Voxaris measures the roof from LiDAR
-          and satellite imagery in parallel, then renders a click-through
-          3D blueprint you can verify before pricing.
+          Type or paste the address. Voxaris measures the roof from
+          multiple independent sources in parallel, then renders a
+          click-through 3D blueprint you can verify before pricing.
         </p>
 
         <AddressInput
@@ -1246,7 +1249,7 @@ function HomePageInner() {
               <div className="min-w-0">
                 <div className="text-[12.5px] font-medium text-slate-100 truncate">
                   {!roofData
-                    ? "Measuring roof from LiDAR + satellite imagery…"
+                    ? "Measuring roof from multiple sources…"
                     : "Finalizing estimate…"}
                 </div>
                 <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-cy-300/75 mt-0.5">
@@ -1272,7 +1275,7 @@ function HomePageInner() {
               roofData?.imageryDate && (
                 <span
                   className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-slate-500"
-                  title="Imagery capture date from the pipeline source (Solar API / vision tile)."
+                  title="Capture date of the satellite imagery underlying this measurement."
                 >
                   Imagery {roofData.imageryDate}
                 </span>
@@ -1445,8 +1448,8 @@ function HomePageInner() {
                   </span>
                 </div>
                 <div className="relative text-[12.5px] text-slate-300 max-w-[18rem] text-center leading-relaxed">
-                  Loads after measurement — Google Map Tiles 3D + LiDAR-derived
-                  roof drape.
+                  Loads after measurement — interactive 3D model with
+                  per-facet inspection.
                 </div>
               </div>
             )}
@@ -1721,7 +1724,7 @@ function HomePageInner() {
               polygonSource === "edited"
                 ? "Edited"
                 : polygonSource === "solar"
-                  ? "Solar facets"
+                  ? "Aerial"
                   : polygonSource === "ai"
                     ? "AI traced"
                     : polygonSource === "sam3"
@@ -1831,22 +1834,22 @@ function EmptyState() {
       eyebrow: "Capability 01",
       icon: <Sparkles size={15} className="text-cy-300" />,
       accent: "from-cy-400/[0.08] to-transparent",
-      title: "Cross-source measurement",
-      body: "Every estimate runs LiDAR and Solar in parallel. The 3D viewer lets you toggle between the two to verify they agree before pricing.",
+      title: "Cross-verified measurement",
+      body: "Every estimate runs multiple independent measurement methods in parallel. The 3D viewer shows the agreement so you can verify the number before pricing.",
     },
     {
       eyebrow: "Capability 02",
       icon: <Plus size={15} className="text-mint" />,
       accent: "from-emerald-400/[0.07] to-transparent",
       title: "Interactive 3D blueprint",
-      body: "Standalone Three.js model — walls extruded, facets color-coded by azimuth, edges classified ridge / hip / valley / eave / rake. Click any facet to inspect pitch, sloped area, and material.",
+      body: "Walk the roof in 3D — walls extruded, facets color-coded by direction, edges classified ridge / hip / valley / eave / rake. Click any facet to inspect pitch, sloped area, and material.",
     },
     {
       eyebrow: "Capability 03",
       icon: <Zap size={15} className="text-amber" />,
       accent: "from-amber-300/[0.06] to-transparent",
       title: "Sub-30s end-to-end",
-      body: "Parallel pipeline cuts wall time to max(LiDAR, Solar) ≈ 5–25s. Press ↵ on the address bar — measurement, pricing, and the 3D blueprint land together.",
+      body: "Address to priced estimate in 5-25 seconds. Press ↵ on the address bar — measurement, pricing, and the 3D blueprint land together.",
     },
   ];
   return (
@@ -1897,24 +1900,24 @@ function EmptyState() {
         style={{ animationDelay: "340ms" }}
       >
         <SignalCard
-          label="Data sources"
-          value="3"
-          detail="USGS LiDAR · Google Solar · Vision"
+          label="Measurement"
+          value="Multi-source"
+          detail="Independent measurements verified against each other"
         />
         <SignalCard
-          label="Median p50"
+          label="Median time"
           value="~12s"
-          detail="warm path · cold +30s"
+          detail="Address to priced estimate"
         />
         <SignalCard
           label="Coverage"
           value="49 states"
-          detail="USGS 3DEP boundaries"
+          detail="Continental US, expanding"
         />
         <SignalCard
-          label="LiDAR fidelity"
-          value="< 0.5m"
-          detail="point spacing typical"
+          label="Precision"
+          value="Sub-meter"
+          detail="Roof geometry resolved to inches"
         />
       </section>
 

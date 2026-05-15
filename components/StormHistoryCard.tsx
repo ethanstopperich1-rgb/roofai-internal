@@ -246,7 +246,7 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
               Storm history
             </h2>
             <div className="mt-0.5 text-[10.5px] font-mono uppercase tracking-[0.16em] text-slate-500">
-              SPC · MRMS · last 5 yr · {radiusMi} mi
+              Ground reports · Radar · last 5 yr · {radiusMi} mi
             </div>
           </div>
         </div>
@@ -294,7 +294,7 @@ export default function StormHistoryCard({ lat, lng }: { lat?: number; lng?: num
         {loading && (
           <div className="flex items-center gap-2 text-[12.5px] text-slate-400 py-2">
             <Loader2 size={13} className="animate-spin text-cy-300" />
-            Cross-checking SPC, MRMS, and parcel data…
+            Cross-checking ground reports, radar, and parcel data…
           </div>
         )}
 
@@ -502,7 +502,7 @@ function VerifiedIncidentCard({
       </div>
       <div className="text-[11px] text-slate-500 mt-1 font-mono tracking-wide">
         Radar detected ({event.hitCount} cell{event.hitCount === 1 ? "" : "s"})
-        {grounded ? " · confirmed by SPC ground reports" : " · no SPC ground report filed"}
+        {grounded ? " · confirmed by ground reports" : " · no ground report filed"}
       </div>
     </div>
   );
@@ -587,7 +587,7 @@ function MrmsBlock({ mrms, radiusMi }: { mrms: MrmsResp; radiusMi: number }) {
           <span>Radar-detected hail</span>
         </div>
         <span className="text-[10px] font-mono text-slate-500 uppercase tracking-[0.1em]">
-          NOAA MRMS · 1km · {radiusMi}mi
+          Radar grid · 1km · {radiusMi}mi
         </span>
       </div>
       <ul className="space-y-1 max-h-48 overflow-auto pr-1 -mr-1">

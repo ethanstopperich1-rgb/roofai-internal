@@ -144,8 +144,8 @@ function CustomerBadge({
       : "Measurements differ — rep will reconcile";
   const sub =
     tier === "red"
-      ? `LiDAR and aerial differ by ${Math.round(sqftDeltaPct * 100)}% — we'll confirm during the site visit.`
-      : `USGS LiDAR + Google aerial agree within ${Math.round(sqftDeltaPct * 100)}% · ${Math.round(agreementPct)}% confidence.`;
+      ? `Independent measurements differ by ${Math.round(sqftDeltaPct * 100)}% — we'll confirm during the site visit.`
+      : `Two independent measurement methods agree within ${Math.round(sqftDeltaPct * 100)}% · ${Math.round(agreementPct)}% confidence.`;
 
   return (
     <div
@@ -253,9 +253,9 @@ function RepPanel(props: {
       </div>
 
       <div className="mt-3 flex items-center justify-between text-[10.5px] font-mono uppercase tracking-[0.14em] text-white/35">
-        <div>USGS LiDAR · {tierAImageryDate ?? "date unknown"}</div>
+        <div>Precision survey · {tierAImageryDate ?? "date unknown"}</div>
         <div>
-          Google Solar · {tierCImageryDate ?? "—"} · {tierCQuality}
+          Aerial survey · {tierCImageryDate ?? "—"} · {tierCQuality}
         </div>
       </div>
     </div>
@@ -306,15 +306,18 @@ function SingleSourceBadge({
   variant: "customer" | "rep";
   className?: string;
 }) {
+  // User-facing source labels are intentionally generic — they
+  // describe WHAT KIND of measurement was used without naming the
+  // upstream data providers. Internal source enum is unchanged.
   const sourceLabel =
     data.source === "tier-a-lidar"
-      ? "USGS LiDAR"
+      ? "Precision survey"
       : data.source === "tier-b-multiview"
-      ? "Multiview Aerial"
+      ? "Multi-angle aerial"
       : data.source === "tier-c-solar"
-      ? "Google Solar imagery"
+      ? "Aerial survey"
       : data.source === "tier-c-vision"
-      ? "Computer Vision"
+      ? "AI vision"
       : "Aerial imagery";
 
   const confidencePct = Math.round(data.confidence * 100);
