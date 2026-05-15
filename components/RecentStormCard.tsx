@@ -119,7 +119,7 @@ export default function RecentStormCard({
           </div>
           <div className="min-w-0">
             <div className="text-[10px] uppercase tracking-[0.16em] text-white/45 font-mono">
-              Recent severe weather · IEM LSR
+              Recent severe weather · live reports
             </div>
             <div className="text-[14px] font-semibold text-white mt-0.5 truncate">
               {cityLabel ? `Near ${cityLabel}` : "Near this property"}
@@ -294,8 +294,7 @@ export default function RecentStormCard({
 
       <footer className="mt-4 pt-3 border-t border-white/[0.04] text-[10.5px] text-white/40 flex items-center gap-1.5">
         <MapPin size={10} />
-        Source: NWS Local Storm Reports via Iowa Environmental Mesonet · 10-min
-        cache · public records
+        Live ground reports · 10-minute refresh
       </footer>
     </section>
   );

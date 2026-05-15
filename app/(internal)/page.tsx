@@ -40,6 +40,7 @@ import ConfirmHomePin from "@/components/ConfirmHomePin";
 import InsightsPanel from "@/components/InsightsPanel";
 import PropertyContextPanel from "@/components/PropertyContextPanel";
 import StormHistoryCard from "@/components/StormHistoryCard";
+import RecentStormCard from "@/components/RecentStormCard";
 import LineItemsPanel from "@/components/LineItemsPanel";
 import TiersPanel from "@/components/TiersPanel";
 import MeasurementsPanel from "@/components/MeasurementsPanel";
@@ -1628,6 +1629,20 @@ function HomePageInner() {
                 StormHistoryCard expansion stays scoped to the rail. */}
             <aside className="space-y-5 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
               <PropertyContextPanel address={address} />
+              {/* Two storm surfaces stacked: RecentStormCard surfaces
+                  near-real-time events from the last 7-30 days (was the
+                  Aug 5 / Sep 8 type "what hit here this week" answer
+                  the rep needs when knocking the day after a storm),
+                  while StormHistoryCard goes back 5 years for the
+                  claim-eligibility / canvass-prioritization story.
+                  Order is deliberate — recency first because that's
+                  the rep's lead-in question on the doorstep. */}
+              <RecentStormCard
+                lat={address?.lat}
+                lng={address?.lng}
+                defaultWindow={7}
+                defaultRadius={10}
+              />
               <StormHistoryCard lat={address?.lat} lng={address?.lng} />
               <PhotoUploadPanel photos={photos} onChange={setPhotos} />
               <div className="glass-panel p-5 space-y-3">
