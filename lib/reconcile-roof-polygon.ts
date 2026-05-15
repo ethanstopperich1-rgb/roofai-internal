@@ -22,7 +22,11 @@
  */
 
 import { polygonAreaSqft, polygonIoU, polygonIsNearAddress } from "./polygon";
-import { fetchMicrosoftBuildingPolygon } from "./microsoft-buildings";
+// Phase 1 migration — was `./microsoft-buildings` (Nashville TSV impl);
+// new path points at the Azure + 3-tier-cached module. Preserves the
+// MS-Buildings-only semantics this consumer expects (rural fallback in
+// the reconciliation tier ladder).
+import { fetchMsBuildingsOnly as fetchMicrosoftBuildingPolygon } from "./sources/ms-buildings";
 import { fetchBuildingPolygon } from "./buildings";
 
 type LatLng = { lat: number; lng: number };

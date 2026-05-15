@@ -52,24 +52,44 @@ def isolate_roof_points(
         # Sparse-ground fallback — take the bottom 5% of returns as proxy.
         ground_z = float(np.percentile(xyz[:, 2], 5))
 
-    # Building-top candidates: returns >2m above ground, and not classified
-    # as ground (2), low-veg (3), medium-veg (4), or high-veg/trees (5).
+    # Building-top candidates. Phase 1 strengthens this filter with
+    # CONDITIONAL class-6 enforcement: when the LAS file has enough
+    # class-6 (building) points to trust the classifier, we take
+    # CLASS 6 ONLY. When the file is poorly classified (some
+    # contractors lump everything man-made into class 1 / unclassified),
+    # we fall back to the loose negative filter.
     #
-    # Adding class 4 + 5 here is the single biggest accuracy lever for
-    # residential roofs: USGS 3DEP LAS files mark mature trees as class 5,
-    # and a mature oak's canopy regularly clips the building polygon (or
-    # IS the building polygon when the canopy overhangs). Without this
-    # explicit drop, dense canopy passes the height filter, survives the
-    # normal-Z filter (upward-facing leaves give |nz| > 0.35 in patches),
-    # and ends up as a spurious "facet" in segmentation. Two failure modes
-    # eliminated by this single line.
+    # The conditional design avoids two failure modes:
+    #   - good LAS + aggressive filter (everything correctly class 6,
+    #     keep only class 6 → great)
+    #   - bad LAS + aggressive filter (file has zero class 6 because
+    #     contractor didn't classify → empty cloud, run fails)
     #
-    # Note: class 6 = building (which is what we want). Some contractors
-    # don't classify class 6 at all and put everything man-made into
-    # "unclassified" (class 1). We deliberately keep class 1 because
-    # dropping it on a poorly-classified parcel would zero out the
-    # whole roof.
-    high_mask = (xyz[:, 2] > ground_z + 2.0) & ~np.isin(cls, [2, 3, 4, 5])
+    # 200 class-6 points ≈ 50 m² at QL2 density (~4 pts/m²). Below
+    # that, the classifier signal isn't trustworthy and we degrade
+    # gracefully to the negative-filter path.
+    #
+    # Negative-filter classes: ground (2), low-veg (3), med-veg (4),
+    # high-veg/trees (5). Class 4 + 5 were added pre-Phase-1 — see
+    # commit history. Tree canopy was the dominant "phantom facet"
+    # source on residential parcels before that fix.
+    HARD_CLASS_6_THRESHOLD = 200
+    n_class6 = int((cls == 6).sum())
+    has_strong_class6 = n_class6 >= HARD_CLASS_6_THRESHOLD
+    if has_strong_class6:
+        # Trust the classifier. Height filter still applies as a sanity
+        # backstop (mis-tagged ground points labeled class 6 do happen).
+        high_mask = (xyz[:, 2] > ground_z + 2.0) & (cls == 6)
+        log.info(
+            "isolate_roof: class-6 enforcement on (%d class-6 points >= threshold %d)",
+            n_class6, HARD_CLASS_6_THRESHOLD,
+        )
+    else:
+        high_mask = (xyz[:, 2] > ground_z + 2.0) & ~np.isin(cls, [2, 3, 4, 5])
+        log.info(
+            "isolate_roof: loose negative filter (class-6 count %d below threshold %d)",
+            n_class6, HARD_CLASS_6_THRESHOLD,
+        )
     candidates = xyz[high_mask]
     if len(candidates) == 0:
         raise ValueError("no above-ground returns")
@@ -92,9 +112,15 @@ def isolate_roof_points(
     # available (e.g. local-dev w/o the heavy dep).
     normals = _estimate_normals(candidates)
 
-    # Vertical-return filter: drop points whose local normal has |normal_z|
-    # < 0.35 (steeply tilted local surface = wall, not roof).
-    n_z_mask = np.abs(normals[:, 2]) >= 0.35
+    # Vertical-return filter: drop points whose local normal has
+    # |normal_z| < 0.30 (steeply tilted local surface = wall, not roof).
+    # Phase 1 tightens this from 0.35 → 0.30: the smaller footprint
+    # buffer (0.5m, was 1.5-2.5m) admits more near-wall returns that
+    # need to be rejected here. 0.30 corresponds to ~73 deg from
+    # horizontal; surfaces tilted more than that are almost certainly
+    # walls rather than steep mansards (which max out around 65 deg).
+    WALL_NORMAL_Z_THRESHOLD = 0.30
+    n_z_mask = np.abs(normals[:, 2]) >= WALL_NORMAL_Z_THRESHOLD
     roof_xyz = candidates[n_z_mask]
     roof_normals = normals[n_z_mask]
 

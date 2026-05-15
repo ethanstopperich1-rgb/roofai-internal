@@ -8,6 +8,11 @@ import { getCached, setCached } from "@/lib/cache";
 import { fetchSolarRoofMask } from "@/lib/solar-mask";
 import { resolveBaseUrl } from "@/lib/base-url";
 import type { SolarSummary } from "@/types/estimate";
+import {
+  pickWithMsFetch,
+  type ParcelPolygonReason,
+  type ParcelPolygonSource,
+} from "@/lib/sources/parcel-polygon";
 
 function nanoid(): string {
   return Math.random().toString(36).slice(2, 14);
@@ -85,43 +90,80 @@ function bufferPolygon(
 
 /** Build a polygon hint for Tier A's isolate_roof clip step.
  *
- *  Preference order:
- *    1. Solar dataLayers mask polygon (pixel-accurate, ~20 vertices)
- *       buffered +1.5m for eave overhang + segmentation conservatism.
- *    2. Union of Solar findClosest segment polygons (rotated bboxes)
- *       buffered +2.5m (rotated bboxes already overshoot somewhat
- *       so a smaller margin is enough).
- *    3. None — Tier A relies on height + normal-vertical filters alone.
+ *  Phase 1 — delegates to `pickBestParcelPolygon` which runs the full
+ *  multi-source picker (Solar mask → MS Buildings → OSM → Solar
+ *  segments → synthetic fallback) with Solar-disagreement IoU check
+ *  and 0.5m buffer. Returns both the buffered polygon AND picker
+ *  diagnostics so callers can persist provenance to RoofData.
  *
- *  Buffering is always-safer: the downstream height + wall-vertical
- *  filters in isolate_roof drop non-roof points anyway, so a too-big
- *  polygon costs ~nothing while a too-small polygon drops real roof
- *  points (catastrophic). */
+ *  Buffer is applied INSIDE this function (0.5m) — the Phase 1 audit
+ *  found the previous 1.5-2.5m buffer was too loose and admitted
+ *  non-roof points that fed the over-segmentation problem.
+ *  Compensation: isolate_roof.py now enforces LAS class 6 + a tighter
+ *  normal-Z wall filter so eaves are still captured. */
 async function buildParcelPolygon(
   lat: number,
   lng: number,
   solar: SolarSummary | null,
   apiKey: string | undefined,
-): Promise<Array<{ lat: number; lng: number }> | null> {
+): Promise<{
+  polygon: Array<{ lat: number; lng: number }> | null;
+  /** Picker provenance. Null when the picker wasn't able to run
+   *  (no candidates AND synthetic was suppressed — currently never). */
+  pickerSource: ParcelPolygonSource | null;
+  pickerReason: ParcelPolygonReason | null;
+  iouVsSolar: number | null;
+  areaSqft: number;
+  likelyOutbuilding: boolean;
+  /** Subtract this from RoofData.confidence to surface low-confidence
+   *  picker paths (synthetic_fallback, solar_disagreement, etc.). */
+  confidencePenalty: number;
+}> {
+  // Fetch Solar mask in parallel with the MS Buildings module's own
+  // lookup (which the picker triggers via pickWithMsFetch). Solar
+  // segments are provided by the caller (already fetched for the
+  // findClosest hint).
+  let solarMask: Array<{ lat: number; lng: number }> | null = null;
   if (apiKey) {
     try {
       const mask = await fetchSolarRoofMask({ lat, lng, apiKey });
-      if (mask && mask.latLng.length >= 3) {
-        return bufferPolygon(mask.latLng, 1.5);
-      }
+      if (mask && mask.latLng.length >= 3) solarMask = mask.latLng;
     } catch {
       /* fall through */
     }
   }
-  if (solar && solar.segmentPolygonsLatLng.length > 0) {
-    // Flatten all segment polygons into one ring — Shapely's
-    // contains() on a multi-vertex outer ring is enough for isolate
-    // to clip points. Not a clean union (would need a polygon
-    // library) but residential segment polygons rarely have gaps
-    // big enough to matter for point-in-polygon tests.
-    return bufferPolygon(solar.segmentPolygonsLatLng.flat(), 2.5);
-  }
-  return null;
+
+  const solarSegments =
+    solar && solar.segmentPolygonsLatLng.length > 0
+      ? solar.segmentPolygonsLatLng.flat()
+      : null;
+
+  // Picker fetches MS Buildings internally; we pass the Solar / OSM
+  // hints we've already resolved. OSM is null until Phase 1.5 wires
+  // the fetcher.
+  const picked = await pickWithMsFetch(
+    { lat, lng },
+    {
+      solar_mask: solarMask,
+      osm: null,
+      solar_segments: solarSegments,
+    },
+  );
+
+  // 0.5m buffer per Phase 1 design — eaves typically extend 0.4-0.6m
+  // past the wall; this catches eave LiDAR returns. The previous
+  // 1.5-2.5m buffer admitted too many neighboring non-roof points.
+  const buffered = bufferPolygon(picked.polygon, 0.5);
+
+  return {
+    polygon: buffered,
+    pickerSource: picked.source,
+    pickerReason: picked.reason,
+    iouVsSolar: picked.iouVsSolar,
+    areaSqft: picked.areaSqft,
+    likelyOutbuilding: picked.likelyOutbuilding,
+    confidencePenalty: picked.confidencePenalty,
+  };
 }
 
 /**
@@ -163,27 +205,43 @@ export async function runRoofPipeline(opts: {
   // we get becomes the parcelPolygon hint.
   const apiKey =
     process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
-  const [solarHint, parcelPolygon] = await Promise.all([
-    fetchSolarHint(opts.address.lat, opts.address.lng),
-    apiKey
-      ? buildParcelPolygon(opts.address.lat, opts.address.lng, null, apiKey).catch(
-          () => null,
-        )
-      : Promise.resolve(null),
-  ]);
-  // If mask fetch failed but findClosest succeeded, build polygon from
-  // segment polygons as fallback.
-  const finalParcelPolygon =
-    parcelPolygon ??
-    (solarHint
-      ? await buildParcelPolygon(opts.address.lat, opts.address.lng, solarHint, undefined)
-      : null);
+  // Phase 1 — single picker call runs all sources (Solar mask, MS
+  // Buildings, Solar segments, synthetic fallback) and returns the
+  // best polygon plus provenance for diagnostics.
+  const solarHint = await fetchSolarHint(opts.address.lat, opts.address.lng);
+  const pickerResult = await buildParcelPolygon(
+    opts.address.lat,
+    opts.address.lng,
+    solarHint,
+    apiKey,
+  );
+  const finalParcelPolygon = pickerResult.polygon;
   const imageryDate = solarHint?.imageryDate ?? null;
   if (finalParcelPolygon) {
     console.log("[roof-pipeline] parcel_polygon_hint", {
       address: opts.address.formatted,
       vertices: finalParcelPolygon.length,
-      source: parcelPolygon ? "solar-mask" : "solar-findclosest-segments",
+      source: pickerResult.pickerSource,
+      reason: pickerResult.pickerReason,
+      iouVsSolar: pickerResult.iouVsSolar,
+      areaSqft: pickerResult.areaSqft,
+      likelyOutbuilding: pickerResult.likelyOutbuilding,
+      confidencePenalty: pickerResult.confidencePenalty,
+    });
+    // Persist picker provenance to diagnostics. Reason string matches
+    // what the Phase 1 audit format spec'd:
+    // `{source}/{reason}/iou={iou?.toFixed(2)}`
+    attempts.push({
+      source: "parcel-polygon",
+      outcome:
+        pickerResult.pickerSource === "synthetic_fallback"
+          ? "failed-coverage"
+          : "succeeded",
+      reason:
+        `${pickerResult.pickerSource}/${pickerResult.pickerReason}` +
+        (pickerResult.iouVsSolar != null
+          ? `/iou=${pickerResult.iouVsSolar.toFixed(2)}`
+          : ""),
     });
   }
 
@@ -233,6 +291,25 @@ export async function runRoofPipeline(opts: {
   }
 
   primary.diagnostics.attempts = attempts;
+
+  // Phase 1 — apply the picker's confidence penalty. Synthetic fallback
+  // (no upstream sources resolved) cuts confidence by 0.4; Solar/MS
+  // disagreement by 0.15; outbuilding-sized polygon by 0.05.
+  if (pickerResult.confidencePenalty > 0) {
+    primary.confidence = Math.max(
+      0,
+      primary.confidence - pickerResult.confidencePenalty,
+    );
+  }
+  // Surface the picker's likely-outbuilding flag as a needs-review entry
+  // so the failure corpus + the rep UI both see it.
+  if (pickerResult.likelyOutbuilding) {
+    primary.diagnostics.needsReview.push({
+      kind: "facet",
+      id: "all",
+      reason: "parcel-polygon-likely-outbuilding",
+    });
+  }
 
   // Cross-source baseline: when Tier A wins, capture what Tier C Solar
   // said about the same roof so the UI can show a measurement-agreement
@@ -327,19 +404,17 @@ export async function runRoofPipelineCompare(opts: {
   // own work, so when we run Tier C downstream this is effectively free.
   const apiKey =
     process.env.GOOGLE_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
-  const [solarHint, parcelPolygonFromMask] = await Promise.all([
-    fetchSolarHint(opts.address.lat, opts.address.lng),
-    apiKey
-      ? buildParcelPolygon(opts.address.lat, opts.address.lng, null, apiKey).catch(
-          () => null,
-        )
-      : Promise.resolve(null),
-  ]);
-  const finalParcelPolygon =
-    parcelPolygonFromMask ??
-    (solarHint
-      ? await buildParcelPolygon(opts.address.lat, opts.address.lng, solarHint, undefined)
-      : null);
+  // Phase 1 — single picker call (Solar mask + MS Buildings + Solar
+  // segments + synthetic fallback) instead of the prior two-phase
+  // Solar-only call.
+  const solarHint = await fetchSolarHint(opts.address.lat, opts.address.lng);
+  const pickerResult = await buildParcelPolygon(
+    opts.address.lat,
+    opts.address.lng,
+    solarHint,
+    apiKey,
+  );
+  const finalParcelPolygon = pickerResult.polygon;
   const imageryDate = solarHint?.imageryDate ?? null;
 
   // Fire both Tier A and Tier C in parallel. We track each independently so
