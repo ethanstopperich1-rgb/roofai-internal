@@ -99,12 +99,23 @@ image = (
         extra_index_url="https://download.pytorch.org/whl/cu121",
     )
     # CUDA toolkit (nvcc) — needed to compile the pc_util CUDA
-    # extension. Ubuntu Noble's default repos don't carry the modern
-    # cuda-toolkit-12-x packages; we have to add NVIDIA's official
-    # apt source first. wget the keyring deb, dpkg-install it, and
-    # then cuda-toolkit-12-1 becomes resolvable. Without this step
-    # the build errors with "E: Unable to locate package
-    # cuda-toolkit-12-1" and the image build aborts.
+    # extension. Ubuntu Noble's default repos don't carry cuda-toolkit-*
+    # packages; we add NVIDIA's official apt source via cuda-keyring.
+    #
+    # Pinned to cuda-toolkit-12-6 (not 12-1) because NVIDIA's Noble
+    # apt channel ships 12.6.x as the lowest 12.x they currently
+    # publish for noble — 12.1 isn't in this channel. CUDA is
+    # forward-compatible at the source level: nvcc 12.6 can build
+    # extensions that run against torch's cu121 runtime libraries.
+    # If pc_util compile fails on arch / header drift, the chained
+    # `|| echo 'WARN'` in the build step keeps the image shippable
+    # and Point2Roof falls through to the alpha-shape secondary.
+    #
+    # TODO(post-validate): refactor to use nvidia/cuda:12.1.1-devel as
+    # the base image instead of bolting CUDA onto pdal/pdal. PDAL is
+    # a Python wrapper that can apt-install on any Ubuntu base; CUDA
+    # toolkits are picky about their environment. Inverting the
+    # base lets us drop the keyring dance + version pin entirely.
     .apt_install("wget", "ca-certificates", "gnupg")
     .run_commands(
         "wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb "
@@ -113,7 +124,7 @@ image = (
         "rm /tmp/cuda-keyring.deb",
         "apt-get update",
     )
-    .apt_install("cuda-toolkit-12-1")
+    .apt_install("cuda-toolkit-12-6")
     .add_local_dir(".", "/app", copy=True)
     .workdir("/app")
     # Build the Point2Roof pc_util CUDA extension. The build is
