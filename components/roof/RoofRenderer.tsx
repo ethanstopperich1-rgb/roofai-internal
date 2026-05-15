@@ -793,7 +793,7 @@ function azimuthCardinal(deg: number): string {
 
 function prettyMaterial(m: string): string {
   switch (m) {
-    case "asphalt-3tab": return "Asphalt (3-tab)";
+    case "asphalt-3tab": return "Builder Grade Shingle";
     case "asphalt-architectural": return "Asphalt (architectural)";
     case "metal-standing-seam": return "Metal (standing seam)";
     case "tile-concrete": return "Concrete tile";

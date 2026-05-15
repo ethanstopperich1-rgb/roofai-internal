@@ -69,7 +69,7 @@ export const MATERIAL_RATES: Record<
   }
 > = {
   "asphalt-3tab": {
-    label: "Asphalt 3-Tab",
+    label: "Builder Grade Shingle",
     rate: 4.44, low: 3.77, high: 5.12,
     removeLow: 0.42, removeHigh: 0.58,
   },

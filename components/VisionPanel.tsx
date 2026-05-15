@@ -4,7 +4,7 @@ import { Eye, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { RoofVision } from "@/types/estimate";
 
 const MATERIAL_LABEL: Record<RoofVision["currentMaterial"], string> = {
-  "asphalt-3tab": "Asphalt 3-tab",
+  "asphalt-3tab": "Builder grade shingle",
   "asphalt-architectural": "Architectural shingle",
   "metal-standing-seam": "Standing-seam metal",
   "tile-concrete": "Concrete tile",

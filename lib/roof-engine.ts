@@ -532,7 +532,7 @@ const SHINGLE_CODE: Record<Material, string> = {
 };
 
 const SHINGLE_LABEL: Record<Material, string> = {
-  "asphalt-3tab": "3-tab composition shingle",
+  "asphalt-3tab": "Builder grade shingle",
   "asphalt-architectural": "Architectural composition shingle",
   "metal-standing-seam": "Standing-seam metal",
   "tile-concrete": "Concrete / clay tile",

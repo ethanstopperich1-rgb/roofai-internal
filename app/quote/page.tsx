@@ -114,7 +114,7 @@ const MATERIAL_COPY: Record<
   { title: string; tagline: string; warranty: string }
 > = {
   "asphalt-3tab": {
-    title: "Asphalt 3-Tab",
+    title: "Builder Grade Shingle",
     tagline: "Reliable, budget-friendly",
     warranty: "20-year warranty",
   },

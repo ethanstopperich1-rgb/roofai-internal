@@ -37,7 +37,7 @@ export default function CarrierClaimPanel({ context, onChange, state }: Props) {
           </div>
           <div>
             <div className="font-display font-semibold tracking-tight text-[15px] text-amber">
-              Insurance Claim Details
+              Claim details
             </div>
             <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500 -mt-0.5">
               Drives the carrier-specific PDF layout

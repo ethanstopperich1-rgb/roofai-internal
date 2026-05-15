@@ -135,7 +135,7 @@ export function summarizeProposalSnapshot(snapshot: Json | null): ProposalSummar
 export function fmtMaterial(raw: string | null): string {
   if (!raw) return "—";
   const map: Record<string, string> = {
-    "asphalt-3tab": "3-tab asphalt",
+    "asphalt-3tab": "Builder grade shingle",
     "asphalt-architectural": "Architectural shingle",
     "metal-standing-seam": "Metal · standing seam",
     "tile-concrete": "Concrete tile",

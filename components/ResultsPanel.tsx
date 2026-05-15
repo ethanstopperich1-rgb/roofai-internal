@@ -74,7 +74,7 @@ export default function ResultsPanel({
             </span>
             {isInsuranceClaim && (
               <span className="chip" style={{ background: "rgba(243,177,75,0.10)", borderColor: "rgba(243,177,75,0.32)", color: "#f3b14b" }}>
-                <ShieldAlert size={10} /> Insurance claim
+                <ShieldAlert size={10} /> Claim work
               </span>
             )}
           </div>
@@ -138,7 +138,7 @@ export default function ResultsPanel({
           <div className="flex-1">
             <div className="text-[13.5px] font-medium flex items-center gap-2">
               <ShieldAlert size={13} className={isInsuranceClaim ? "text-amber" : "text-slate-400"} />
-              Insurance claim
+              Claim work
             </div>
             <div className="text-[12px] text-slate-400 mt-0.5 leading-relaxed">
               Routes work to a restoration specialist; PDF includes full Xactimate-style line items.
