@@ -145,21 +145,68 @@ def extract_roof_pipeline(
             latency_ms=int((time.time() - t0) * 1000),
         )
 
-    # ---- Stage 5: build facets from plane inliers -------------------------
+    # ---- Stage 5: regularize + PolyFit reconstruction (Phase 2) ---------
+    # Primary path: plane regularization → CGAL PolyFit → watertight mesh.
+    # Fallback: per-plane alpha-shape (build_facets_from_planes, the
+    # pre-Phase-2 pipeline). The fallback IS the current production
+    # path; we keep it as a first-class option per the user-approved
+    # design — PolyFit's residential QL2 success rate is unknown until
+    # we have 2-4 weeks of corpus data.
+    facets = None
+    mesh_source = "frustum-fallback"  # set to "polyfit" on success
+    polyfit_diagnostics: dict[str, Any] = {}
     try:
-        facets = build_facets_from_planes(planes, center_lat=lat, center_lng=lng)
-        attempts.append({"stage": "build_facets", "outcome": "succeeded"})
-    except Exception as err:
-        log.exception("build_facets failed")
-        attempts.append({
-            "stage": "build_facets", "outcome": "failed-error", "reason": str(err),
-        })
-        return _degraded_response(
-            address, lat, lng,
-            warnings=warnings + [f"Facet build failed: {err}"],
-            attempts=attempts,
-            latency_ms=int((time.time() - t0) * 1000),
+        from regularize_planes import regularize_and_reconstruct  # noqa: PLC0415
+
+        # Pass the full filtered point cloud (roof_pts["xyz"]) so PolyFit
+        # can use it for the candidate-face selection cost function.
+        pf_facets, polyfit_diagnostics = regularize_and_reconstruct(
+            planes,
+            points_xyz=roof_pts["xyz"],
+            center_lat=lat,
+            center_lng=lng,
         )
+        if pf_facets is not None and len(pf_facets) > 0:
+            facets = pf_facets
+            mesh_source = "polyfit"
+            attempts.append({
+                "stage": "polyfit_reconstruct",
+                "outcome": "succeeded",
+                "reason": f"facets={len(facets)} planes_in={len(planes)}",
+            })
+        else:
+            # PolyFit returned None (CGAL unavailable, IP solver failed,
+            # or degenerate input). Fall through to alpha-shape path.
+            attempts.append({
+                "stage": "polyfit_reconstruct",
+                "outcome": "failed-coverage",
+                "reason": polyfit_diagnostics.get("failure_reason")
+                    or "polyfit_unavailable",
+            })
+    except Exception as err:
+        log.exception("regularize_and_reconstruct raised")
+        attempts.append({
+            "stage": "polyfit_reconstruct",
+            "outcome": "failed-error",
+            "reason": str(err),
+        })
+
+    if facets is None:
+        # Fallback path — current production behaviour.
+        try:
+            facets = build_facets_from_planes(planes, center_lat=lat, center_lng=lng)
+            attempts.append({"stage": "build_facets", "outcome": "succeeded"})
+        except Exception as err:
+            log.exception("build_facets failed")
+            attempts.append({
+                "stage": "build_facets", "outcome": "failed-error", "reason": str(err),
+            })
+            return _degraded_response(
+                address, lat, lng,
+                warnings=warnings + [f"Facet build failed: {err}"],
+                attempts=attempts,
+                latency_ms=int((time.time() - t0) * 1000),
+            )
 
     # ---- Stage 6: edge topology + classification --------------------------
     try:
@@ -274,6 +321,13 @@ def extract_roof_pipeline(
             "objects": objects,
             "flashing": flashing,
             "totals": totals,
+            # Phase 2 — meshSource tracks whether facets came from
+            # PolyFit's watertight reconstruction ("polyfit") or the
+            # per-plane alpha-shape fallback ("frustum-fallback").
+            # The renderer + UI consume this to decide whether to
+            # render the real PolyFit mesh or the synthetic frustum.
+            "meshSource": mesh_source,
+            "polyfitDiagnostics": polyfit_diagnostics,
             "diagnostics": {
                 "attempts": attempts,
                 "warnings": warnings,

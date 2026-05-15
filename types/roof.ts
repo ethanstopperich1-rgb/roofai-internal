@@ -149,6 +149,34 @@ export interface RoofData {
       imageryQuality: string;
     } | null;
   } | null;
+  /** Phase 2 — how the facets[] mesh was reconstructed.
+   *    "polyfit"          — CGAL Polygonal_surface_reconstruction_3
+   *                         produced a watertight mesh with shared
+   *                         edges. Tier A only.
+   *    "frustum-fallback" — PolyFit failed (or wasn't available);
+   *                         facets came from per-plane alpha-shape.
+   *                         Tier A only. The renderer falls back to
+   *                         its synthetic frustum-from-outline mesh.
+   *    "solar-tier-c"     — Source is Tier C Solar / vision; facets
+   *                         are Solar's bbox-rotated segments.
+   *  Optional + nullable — older fixtures and degraded payloads
+   *  leave it unset. Renderer treats missing as "frustum-fallback". */
+  meshSource?: "polyfit" | "frustum-fallback" | "solar-tier-c" | null;
+  /** Phase 2 — PolyFit failure-corpus diagnostics. Always present
+   *  on Tier A results; null otherwise. Includes mesh_source,
+   *  failure_reason, timings, input plane/point counts. Surface in
+   *  the rep tool when debugging an estimate; aggregate in the
+   *  failure log for the 2-4 week review. */
+  polyfitDiagnostics?: {
+    mesh_source: "polyfit" | "regularize_only" | "failed";
+    failure_reason: string | null;
+    timings: { regularize_ms?: number; polyfit_ms?: number; total_ms?: number };
+    input_plane_count: number;
+    input_point_count: number;
+    regularized_plane_count?: number;
+    output_facet_count?: number;
+    output_facet_count_after_filter?: number;
+  } | null;
 }
 
 export interface PricingInputs {
