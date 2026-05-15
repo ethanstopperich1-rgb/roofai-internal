@@ -125,34 +125,26 @@ image = (
         "apt-get update",
     )
     .apt_install("cuda-toolkit-12-6")
-    # Restore PDAL native libraries — the cuda-toolkit apt install
-    # triggered an apt-get update against NVIDIA's repo that evicted
-    # the libpdalcpp.so.20 the base image originally shipped. Modal
-    # worker was crashing at `import pdal`:
-    #   ImportError: libpdalcpp.so.20: cannot open shared object file
-    # Diagnose where libpdal actually lives now, set LD_LIBRARY_PATH
-    # if it's somewhere non-default, fall back to apt installing
-    # libpdal-base directly if the file is genuinely gone, then
-    # force-reinstall the pip binding so it links against whatever
-    # the current libpdal version is.
+    # Restore PDAL native lib visibility.
+    #
+    # pdal/pdal:latest stores PDAL in a conda env at
+    # /opt/conda/envs/pdal/lib (libpdalcpp.so.20 lives here). The
+    # base image activated that env's library path at startup; the
+    # cuda-toolkit apt install's apt-get update against NVIDIA's repo
+    # disrupted the conda env activation so the runtime linker now
+    # only searches default paths (/usr/lib etc.) and can't find
+    # libpdalcpp.so.20.
+    #
+    # Fix: register the conda env lib dir with ldconfig so it's
+    # globally discoverable regardless of conda activation state.
+    # Verified the .so files exist on disk via `find / -name
+    # 'libpdalcpp.so*'` — the lib is fine, only the path was lost.
     .run_commands(
-        # Find any libpdalcpp on disk — even if it's a different version
-        "find / -name 'libpdalcpp.so*' 2>/dev/null | head -20 || true",
-        # Try refreshing the linker cache in case the lib is just not
-        # registered with ldconfig
+        "echo '/opt/conda/envs/pdal/lib' > /etc/ld.so.conf.d/zz-pdal.conf",
         "ldconfig",
-        # Install PDAL natively via apt — pdal/pdal:latest installs to
-        # /usr/local, but the upstream apt repo's `pdal` package puts
-        # it under /usr/lib/x86_64-linux-gnu which ldconfig finds.
-        # The package version may not be 12.x but the lib API is stable.
-        "apt-get update && apt-get install -y --no-install-recommends pdal libpdal-dev || echo 'apt pdal not available, continuing'",
-        "ldconfig",
-        # Reinstall pip binding so it relinks against whatever
-        # libpdalcpp is now present.
-        "pip install --force-reinstall --no-cache-dir 'pdal>=3.5'",
-        # Verify import works at build time — fail the build if it
-        # doesn't so we don't silently ship a broken Tier A again.
-        "python -c 'import pdal; print(\"pdal version:\", pdal.__version__)'",
+        # Sanity gate — if pdal still can't import after the ldconfig,
+        # fail loudly at build time instead of shipping a broken Tier A.
+        "python -c 'import pdal; print(\"pdal import OK, version:\", pdal.__version__)'",
     )
     .add_local_dir(".", "/app", copy=True)
     .workdir("/app")
