@@ -80,7 +80,9 @@ import {
 } from "@/lib/sources/multiview-source";
 import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
-import { LidarHealthChip } from "@/components/roof/LidarHealthChip";
+// LidarHealthChip removed — exposed internal modal.run endpoints + service
+// names directly in the rep UI. Same status data is now implicit in the
+// source chip on the map (Precision / Aerial / AI traced).
 import MeasurementVerification from "@/components/roof/MeasurementVerification";
 import { FacetList } from "@/components/roof/FacetList";
 import { saveEstimateV2 } from "@/lib/storage";
@@ -1569,7 +1571,6 @@ function HomePageInner() {
                   RoofData (single canonical feed). */}
               {roofData && roofData.source !== "none" && (
                 <>
-                  <LidarHealthChip />
                   <MeasurementVerification data={roofData} variant="rep" />
                   <RoofTotalsCard data={roofData} />
                   <DetectedFeaturesPanel data={roofData} variant="rep" />
@@ -1743,6 +1744,19 @@ function HomePageInner() {
               polygonSource !== "none" ? estimateConfidence.level : null
             }
           />
+
+          {/* Closing rule — gives the page a defined bottom edge so the
+              filled-out flow doesn't dissolve into a viewport of empty
+              ambient gradient below the Add-Ons / Insights stack. Same
+              hairline + monospace wordmark we use on the empty state. */}
+          <div className="pt-2 mt-1 pb-[120px]">
+            <div className="h-px w-full bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
+            <div className="mt-4 flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.22em] text-slate-600">
+              <span>voxaris · pitch · v2</span>
+              <span className="hidden sm:inline">measurement · pricing · proposal</span>
+              <span>build · {new Date().getFullYear()}</span>
+            </div>
+          </div>
         </>
       )}
     </div>

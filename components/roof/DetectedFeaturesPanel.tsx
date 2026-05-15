@@ -34,28 +34,30 @@ export function DetectedFeaturesPanel({
     const pitchSummary = formatPitchSummary(avgDeg);
     const dominantDir = dominantCompass(data.facets);
     return (
-      <div className="rounded-lg border bg-white p-4">
-        <h3 className="text-sm font-semibold text-slate-900">What we detected</h3>
+      <div className="glass-panel p-5">
+        <h3 className="font-display text-[14px] font-semibold tracking-[-0.015em] text-slate-50">
+          What we detected
+        </h3>
         {facetCount > 0 && (
-          <p className="mt-1 text-sm text-slate-700">
-            <strong>{facetCount} roof plane{facetCount === 1 ? "" : "s"}</strong>
-            {pitchSummary && <> · <strong>{pitchSummary}</strong> average pitch</>}
-            {dominantDir && <> · primarily <strong>{dominantDir}-facing</strong></>}.
+          <p className="mt-2 text-[13px] text-slate-300 leading-relaxed">
+            <strong className="text-slate-50">{facetCount} roof plane{facetCount === 1 ? "" : "s"}</strong>
+            {pitchSummary && <> · <strong className="text-slate-50">{pitchSummary}</strong> average pitch</>}
+            {dominantDir && <> · primarily <strong className="text-slate-50">{dominantDir}-facing</strong></>}.
           </p>
         )}
-        <p className="mt-1 text-sm text-slate-700">
+        <p className="mt-1.5 text-[13px] text-slate-300 leading-relaxed">
           {lines.length > 0
             ? lines.join(", ") + " — all factored into your estimate."
             : "Clean roof — no penetrations detected."}
         </p>
         {wallTotal > 0 && (
-          <p className="mt-1 text-xs text-slate-600">
+          <p className="mt-1.5 text-[12px] text-slate-500">
             Plus {wallTotal} LF of wall-to-roof flashing.
           </p>
         )}
         {refinedByObliques && (
-          <p className="mt-1 text-[11px] text-emerald-700">
-            ✓ Verified by oblique roof inspection
+          <p className="mt-2 text-[11px] text-mint flex items-center gap-1.5">
+            <span aria-hidden>✓</span> Verified by oblique inspection
           </p>
         )}
       </div>
@@ -64,32 +66,43 @@ export function DetectedFeaturesPanel({
 
   // Rep variant — full diagnostics
   return (
-    <div className="rounded-lg border bg-white p-4">
+    <div className="glass-panel p-5">
       <div className="flex items-start justify-between gap-2">
-        <h3 className="text-sm font-semibold text-slate-900">Detected features</h3>
+        <h3 className="font-display text-[14px] font-semibold tracking-[-0.015em] text-slate-50">
+          Detected features
+        </h3>
         {refinedByObliques && (
           <span
-            className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700"
-            title="Pitches, object sizes, and wall-step flashing refined by Claude oblique inspection."
+            className="inline-flex items-center gap-1 rounded-full bg-mint/15 border border-mint/30 px-2 py-0.5 text-[10px] font-mono uppercase tracking-[0.14em] text-mint"
+            title="Pitches, object sizes, and wall-step flashing refined by oblique inspection."
           >
             ✓ Inspector
           </span>
         )}
       </div>
-      <ul className="mt-2 space-y-1 text-sm text-slate-700">
+      <ul className="mt-3 space-y-1 text-[13px] text-slate-300">
         <li>
-          {data.facets.length} facet{data.facets.length === 1 ? "" : "s"}
+          <span className="font-mono tabular text-slate-50 font-medium">
+            {data.facets.length}
+          </span>{" "}
+          facet{data.facets.length === 1 ? "" : "s"}
         </li>
-        <li>{data.edges.length} classified edges</li>
+        <li>
+          <span className="font-mono tabular text-slate-50 font-medium">
+            {data.edges.length}
+          </span>{" "}
+          classified edges
+        </li>
         {Object.entries(counts)
           .filter(([, n]) => n > 0)
           .map(([kind, n]) => (
             <li key={kind}>
-              {n} × {kind}
+              <span className="font-mono tabular text-slate-50 font-medium">{n}</span>{" "}
+              × {kind}
             </li>
           ))}
         {wallTotal > 0 && (
-          <li className="text-emerald-800">
+          <li className="text-mint">
             Wall-to-roof:{" "}
             {[
               data.flashing.wallStepLf > 0 && `step ${data.flashing.wallStepLf} LF`,
@@ -102,7 +115,7 @@ export function DetectedFeaturesPanel({
         )}
       </ul>
       {data.diagnostics.warnings.length > 0 && (
-        <div className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-900">
+        <div className="mt-3 rounded-lg border border-amber/30 bg-amber/[0.06] p-2.5 text-[11.5px] text-amber leading-relaxed">
           {data.diagnostics.warnings.join(" • ")}
         </div>
       )}
