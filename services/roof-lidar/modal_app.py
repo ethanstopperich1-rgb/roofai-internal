@@ -98,6 +98,21 @@ image = (
         "torchvision==0.22.1",
         extra_index_url="https://download.pytorch.org/whl/cu121",
     )
+    # CUDA toolkit (nvcc) — needed to compile the pc_util CUDA
+    # extension. Ubuntu Noble's default repos don't carry the modern
+    # cuda-toolkit-12-x packages; we have to add NVIDIA's official
+    # apt source first. wget the keyring deb, dpkg-install it, and
+    # then cuda-toolkit-12-1 becomes resolvable. Without this step
+    # the build errors with "E: Unable to locate package
+    # cuda-toolkit-12-1" and the image build aborts.
+    .apt_install("wget", "ca-certificates", "gnupg")
+    .run_commands(
+        "wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb "
+        "-O /tmp/cuda-keyring.deb",
+        "dpkg -i /tmp/cuda-keyring.deb",
+        "rm /tmp/cuda-keyring.deb",
+        "apt-get update",
+    )
     .apt_install("cuda-toolkit-12-1")
     .add_local_dir(".", "/app", copy=True)
     .workdir("/app")
