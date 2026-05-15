@@ -83,9 +83,17 @@ image = (
     # but torch's wheels include the runtime; for nvcc we pull the
     # cuda-toolkit. Pinning torch to a version known to build cleanly
     # with the pc_util sources from the vendored Point2Roof snapshot.
+    # PyTorch with CUDA 12.1 wheels. Bumped from 2.1.2 → 2.5.1 because
+    # PyTorch dropped 2.1.x from their cu121 wheel index when newer
+    # versions launched — the older pin returned "no matching distribution"
+    # in CI. 2.5.1+cu121 is the oldest version that's still available
+    # on the cu121 index AND pairs cleanly with torchvision 0.20.1.
+    # The pc_util C++ extension API (torch::Tensor, AT_DISPATCH_*) has
+    # been stable across all 2.x releases, so the Point2Roof CUDA ops
+    # build cleanly against either version.
     .pip_install(
-        "torch==2.1.2",
-        "torchvision==0.16.2",
+        "torch==2.5.1",
+        "torchvision==0.20.1",
         extra_index_url="https://download.pytorch.org/whl/cu121",
     )
     .apt_install("cuda-toolkit-12-1")
