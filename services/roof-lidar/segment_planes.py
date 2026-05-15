@@ -44,11 +44,30 @@ log = logging.getLogger(__name__)
 # within a single facet (typically ±3-5°).
 ANGLE_THRESHOLD_DEG = 12.0
 
-# Minimum points to call a region a facet. Smaller regions are
-# segmentation noise — small dormers, vent caps, edge artefacts.
-# At ~22 pt/m² density, 80 points ≈ 3.6m² (40 sqft) — about a small
-# dormer's worth of roof.
-MIN_FACET_POINTS = 80
+# Phase 3 — minimum points to call a region a facet. Dropped from 80
+# to 20 (3DEP QL2 is ~2-4 pts/m², so 80 points = ~30 m² = ~430 sqft,
+# which silently dropped dormers, hip triangles, and chimney crickets).
+# 20 points ≈ 10 m² ≈ ~108 sqft — catches small structures while still
+# rejecting segmentation noise. Combined with the post-PolyFit small-
+# flat-top filter, this won't introduce phantom HVAC/skylight facets.
+MIN_FACET_POINTS = 20
+
+# Phase 3 — point-to-plane distance threshold for region growing.
+# Previously absent: region growing only checked normal-direction
+# similarity, which let a noisy long facet drift apart into two
+# regions. Adding this distance check forces points to also be
+# spatially close to the running plane, not just normal-aligned.
+# 0.20m matches the ±0.15-0.25m research recommendation for QL2.
+PLANE_DISTANCE_THRESHOLD_M = 0.20
+
+# Phase 3 — epsilon for the coplanar-merge post-pass. Two planes are
+# considered the same surface (and merged) when their normals are
+# within COPLANAR_NORMAL_DEG AND their centroids project within
+# COPLANAR_CLUSTER_EPSILON_M along the shared normal. Catches "one
+# real facet split into two segmentation halves" before downstream
+# stages see the input.
+COPLANAR_CLUSTER_EPSILON_M = 0.50
+COPLANAR_NORMAL_DEG = 5.0
 
 # KNN for spatial neighbour expansion. 8 = standard for region-growing
 # on point clouds; preserves locality without over-bridging.
@@ -93,8 +112,10 @@ def segment_plane_regions(roof_pts: dict[str, Any]) -> list[dict[str, Any]]:
             seed_idx=seed_idx,
             knn_idx=knn_idx,
             normals=normals,
+            xyz=xyz,
             labels=labels,
             cos_threshold=cos_threshold,
+            plane_distance_threshold_m=PLANE_DISTANCE_THRESHOLD_M,
         )
         if facet_mask.sum() >= MIN_FACET_POINTS:
             labels[facet_mask] = facet_id
@@ -150,6 +171,15 @@ def segment_plane_regions(roof_pts: dict[str, Any]) -> list[dict[str, Any]]:
 
     log.info("region-grow: emitted %d plane regions", len(planes))
 
+    # Phase 3 — coplanar-merge pass. Region growing sometimes splits
+    # one real facet into two halves when noise drives the running
+    # mean normal apart mid-growth. Merge planes whose normals are
+    # within COPLANAR_NORMAL_DEG AND whose centroids project within
+    # COPLANAR_CLUSTER_EPSILON_M along the shared normal.
+    if len(planes) >= 2:
+        planes = _merge_coplanar_planes(planes)
+        log.info("after coplanar-merge: %d planes", len(planes))
+
     # Connected-component post-filter — drops detached structures (sheds,
     # detached garages, ADUs) that the parcel polygon mistakenly included.
     # Without this, two adjacent buildings sharing a Solar building mask
@@ -172,6 +202,101 @@ def segment_plane_regions(roof_pts: dict[str, Any]) -> list[dict[str, Any]]:
 # the main house centroid. 8m is the sweet spot that joins all main-
 # house facets while rejecting almost all detached structures.
 MAIN_BUILDING_LINK_M = 8.0
+
+
+def _merge_coplanar_planes(planes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge planes that describe the same surface. Two planes are
+    considered the same when:
+      - their normals are within COPLANAR_NORMAL_DEG of each other
+      - their centroids project within COPLANAR_CLUSTER_EPSILON_M
+        along the shared mean normal (perpendicular distance to
+        the other plane is small).
+
+    Uses union-find to group transitively (A coplanar with B, B
+    coplanar with C → all three merge). Merged plane's points,
+    centroid, and normal are recomputed from the combined input.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    n = len(planes)
+    cos_threshold = float(np.cos(np.radians(COPLANAR_NORMAL_DEG)))
+
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    normals = [np.asarray(p["normal"], dtype=np.float64) for p in planes]
+    centroids = [np.asarray(p["centroid"], dtype=np.float64) for p in planes]
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            ni = normals[i]
+            nj = normals[j]
+            # Normals are sign-ambiguous from PCA. Take the absolute
+            # dot to handle the case where one was flipped.
+            d = abs(float(np.dot(ni, nj)))
+            if d < cos_threshold:
+                continue
+            # Perpendicular distance from centroid[j] to plane[i]
+            # using the average normal as the reference direction.
+            mean_n = (ni + (nj if np.dot(ni, nj) > 0 else -nj)) / 2
+            mean_n /= max(1e-9, np.linalg.norm(mean_n))
+            delta = centroids[j] - centroids[i]
+            perp_dist = abs(float(np.dot(mean_n, delta)))
+            if perp_dist <= COPLANAR_CLUSTER_EPSILON_M:
+                union(i, j)
+
+    # Group indices by root.
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    if len(groups) == n:
+        return planes  # no merges happened
+
+    merged: list[dict[str, Any]] = []
+    for indices in groups.values():
+        if len(indices) == 1:
+            merged.append(planes[indices[0]])
+            continue
+        # Combine points from all source planes.
+        all_pts = np.vstack(
+            [np.asarray(planes[i]["points"]) for i in indices],
+        )
+        # Average normals with sign alignment (flip each to match the
+        # first plane's hemisphere before averaging).
+        ref_n = normals[indices[0]]
+        signed_sum = np.zeros(3, dtype=np.float64)
+        for i in indices:
+            n_i = normals[i]
+            if np.dot(ref_n, n_i) < 0:
+                n_i = -n_i
+            signed_sum += n_i * planes[i]["size"]  # weight by point count
+        mean_n = signed_sum / max(1e-9, np.linalg.norm(signed_sum))
+        new_centroid = all_pts.mean(axis=0)
+        new_d = float(-np.dot(mean_n, new_centroid))
+        merged.append({
+            "points": all_pts.tolist(),
+            "normal": mean_n.tolist(),
+            "d": new_d,
+            "centroid": new_centroid.tolist(),
+            "size": sum(planes[i]["size"] for i in indices),
+        })
+
+    log.info(
+        "coplanar-merge: %d planes -> %d (collapsed %d coplanar groups)",
+        n, len(merged), n - len(merged),
+    )
+    return merged
 
 
 def _filter_to_main_building(planes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -232,12 +357,21 @@ def _grow_region(
     seed_idx: int,
     knn_idx: Any,
     normals: Any,
+    xyz: Any,
     labels: Any,
     cos_threshold: float,
+    plane_distance_threshold_m: float,
 ) -> Any:
-    """BFS from `seed_idx` through KNN graph. Accept neighbour if its
-    normal is within angle_threshold of the running mean normal. Return
-    boolean mask over all points indicating which are in this region.
+    """BFS from `seed_idx` through KNN graph. Accept neighbour if:
+      1. Its normal is within angle_threshold of the running mean
+         normal, AND
+      2. Its 3D position is within plane_distance_threshold_m of the
+         running plane (Phase 3 addition — without this, region
+         growing only checked normal-direction similarity and a
+         noisy long facet could drift apart into two regions).
+
+    Return boolean mask over all points indicating which are in
+    this region.
     """
     import numpy as np  # noqa: PLC0415
 
@@ -245,8 +379,10 @@ def _grow_region(
     mask = np.zeros(n, dtype=bool)
     mask[seed_idx] = True
 
-    # Running sum of normals — divide by count for the running mean.
+    # Running sum of normals + positions — used to compute the
+    # running plane (mean normal, mean centroid) for the distance check.
     sum_normal = normals[seed_idx].copy()
+    sum_pos = xyz[seed_idx].copy()
     count = 1
 
     # BFS queue. Use a list as a stack — order doesn't matter for
@@ -263,12 +399,23 @@ def _grow_region(
         dot = float(np.dot(mean_n, normals[cand]))
         if abs(dot) < cos_threshold:
             continue
+        # Phase 3 — point-to-plane distance check. The running plane
+        # passes through (sum_pos / count) with normal mean_n. Project
+        # the candidate onto that plane; if the perpendicular distance
+        # exceeds the threshold, the candidate isn't on this facet
+        # (even though its normal looks similar — common case: noisy
+        # long ridge where the two halves drift in z by 30-50cm).
+        mean_pos = sum_pos / count
+        plane_dist = abs(float(np.dot(mean_n, xyz[cand] - mean_pos)))
+        if plane_dist > plane_distance_threshold_m:
+            continue
         # Accept — extend facet.
         mask[cand] = True
         # Sign-flip the candidate normal to match the facet's hemisphere
         # before averaging (PCA-derived normals are sign-ambiguous).
         n_signed = normals[cand] if dot > 0 else -normals[cand]
         sum_normal += n_signed
+        sum_pos += xyz[cand]
         count += 1
         # Enqueue this candidate's KNN neighbours.
         for nb in knn_idx[cand]:

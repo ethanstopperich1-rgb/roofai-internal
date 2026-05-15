@@ -5,8 +5,10 @@
  *
  * Standalone 3D roof renderer for Tier A LiDAR output. Renders the
  * roof as a true 3D model — facets at the correct pitch/azimuth,
- * walls extruded down to ground, edges classified and color-coded,
- * detected objects as labeled markers — over a subtle blueprint grid.
+ * edges classified and color-coded, detected objects as labeled
+ * markers — over a subtle blueprint grid. Walls intentionally NOT
+ * synthesized: they were a cosmetic add at a fixed eave height with
+ * no measurement backing and fought visually with the roof mesh.
  *
  * No photorealistic mesh underneath. The visual reads as an
  * engineering blueprint: precise, intentional, "we measured your
@@ -308,14 +310,12 @@ function RoofScene({
         position={[0, 0, 0]}
       />
 
-      {/* Building walls — extrude footprint down from eave height to
-          ground. Reads as a real model, not floating shingles. */}
-      {projected.footprint.length >= 3 && (
-        <BuildingShell
-          footprint={projected.footprint}
-          eaveHeight={projected.eaveHeight}
-        />
-      )}
+      {/* Wall extrusion intentionally removed. The synthesized walls
+          were a "make it look like a building" cosmetic — they didn't
+          come from any measurement, just a fixed 2.6m default. They
+          fought visually with the roof mesh and obscured the actual
+          measured geometry. The roof mesh + ground grid alone read
+          cleaner. */}
 
       {/* Roof mesh — generated from the building outline as a frustum
           (inset-polygon hip approximation). Each outline edge produces
@@ -323,9 +323,16 @@ function RoofScene({
           inset 35% toward the centroid. Each generated quad is
           color-matched to the closest source-data facet by azimuth,
           inheriting its pitch / id / color / material so the inspector
-          click flow still works. This replaces the previous per-facet
-          render which produced overlapping bbox-rotated rectangles that
-          didn't tile the roof. */}
+          click flow still works.
+          ---
+          Phase 2 note: when `data.meshSource === "polyfit"` and the
+          Python side actually returns a watertight mesh with shared
+          edges, this frustum approximation becomes redundant — we'd
+          render the real facets directly from `data.facets[]`
+          polygons. That wiring is fast-follow once PolyFit is
+          verified in the Modal image (see services/roof-lidar/
+          regularize_planes.py for current CGAL binding stub). Until
+          then the frustum is the universal render path. */}
       <group onPointerMissed={() => onFacetClick(null)}>
         {projected.roofQuads.map((q) => (
           <RoofQuad
@@ -362,59 +369,6 @@ function RoofScene({
 
       {/* North arrow on the ground. */}
       <NorthArrow size={Math.max(8, projected.sceneSize * 0.35)} />
-    </>
-  );
-}
-
-// ─── Building shell (extruded walls) ─────────────────────────────────
-
-function BuildingShell({
-  footprint,
-  eaveHeight,
-}: {
-  footprint: THREE.Vector2[];
-  eaveHeight: number;
-}) {
-  const shape = useMemo(() => {
-    const s = new THREE.Shape(footprint);
-    return s;
-  }, [footprint]);
-  const geom = useMemo(
-    () =>
-      new THREE.ExtrudeGeometry(shape, {
-        depth: eaveHeight,
-        bevelEnabled: false,
-        curveSegments: 4,
-      }),
-    [shape, eaveHeight],
-  );
-  return (
-    <>
-      {/* Solid wall mass — dim graphite, semi-transparent so the facets
-          on top remain the visual focus. The wall is for context, not
-          competition. */}
-      <mesh
-        geometry={geom}
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, eaveHeight, 0]}
-      >
-        <meshStandardMaterial
-          color="#0a1219"
-          metalness={0.0}
-          roughness={0.95}
-          transparent
-          opacity={0.55}
-        />
-      </mesh>
-      {/* Bright drafting outline on the wall edges so they read as
-          blueprint lines even with the dim fill. */}
-      <lineSegments
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, eaveHeight, 0]}
-      >
-        <edgesGeometry args={[geom]} />
-        <lineBasicMaterial color="#4a8cb8" transparent opacity={0.7} />
-      </lineSegments>
     </>
   );
 }

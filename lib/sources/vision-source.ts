@@ -58,6 +58,11 @@ export async function tierCVisionSource(opts: {
     // generic facet, so the facet polygon IS the outline. Consumers fall
     // back to the facet union when outlinePolygon is null.
     outlinePolygon: null,
+    // Phase 2 — vision shares the "solar-tier-c" meshSource bucket
+    // since both produce real (lower-fidelity) facet polygons rather
+    // than the renderer's synthetic frustum.
+    meshSource: "solar-tier-c",
+    polyfitDiagnostics: null,
     diagnostics: {
       attempts: [],
       warnings: ["Vision-only fallback — no Solar coverage. Pitch and area are approximate."],

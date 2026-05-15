@@ -48,6 +48,28 @@ image = (
         "libxrender-dev",
         "libjpeg-dev",
         "libpng-dev",
+        # Phase 2 — CGAL + dependencies for the PolyFit reconstruction
+        # pipeline. CGAL needs GMP (multi-precision integers), MPFR
+        # (multi-precision floats), Eigen (linear algebra), and Boost
+        # as transitive C++ deps. CGAL's Python bindings install via
+        # the `CGAL` pip package (requirements.txt) but the native
+        # libs MUST be present at import time.
+        #
+        # Image size impact: ~150 MB added (~12-15s extra cold-build).
+        # Acceptable per the Phase 2 design — Modal cold start was
+        # already ~30s; ~45s total is within the user-facing
+        # progress-indicator budget.
+        "libcgal-dev",
+        "libgmp-dev",
+        "libmpfr-dev",
+        "libeigen3-dev",
+        "libboost-dev",
+        # SCIP solver — used by PolyFit's integer programming face
+        # selection step. The `coinor-libscip-dev` Debian package
+        # ships a usable build; alternatively the Python `pyscipopt`
+        # package bundles its own SCIP but is heavier (~300 MB).
+        # Keeping the apt path for now.
+        "coinor-libscip-dev",
     )
     # PDAL Python bindings — package is `pdal` on PyPI (different from
     # conda's `python-pdal`). The official pdal/pdal Docker image has

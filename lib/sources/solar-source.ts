@@ -123,6 +123,13 @@ export async function tierCSolarSource(opts: {
     ageBucket: vision && vision.estimatedAge !== "unknown" ? vision.estimatedAge : null,
     facets, edges, objects, flashing, totals,
     outlinePolygon,
+    // Phase 2 — meshSource enum. Solar's segment polygons are real
+    // (lower-fidelity) bboxes rotated to the dominant azimuth, not the
+    // synthetic frustum the renderer falls back to when Tier A's
+    // PolyFit fails. The renderer treats this state differently from
+    // "frustum-fallback" so the UI can show appropriate provenance.
+    meshSource: "solar-tier-c",
+    polyfitDiagnostics: null,
     diagnostics: { attempts: [], warnings: [], needsReview: [] },
   };
 }
