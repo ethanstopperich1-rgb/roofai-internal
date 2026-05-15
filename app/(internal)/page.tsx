@@ -21,10 +21,11 @@ import { useSearchParams } from "next/navigation";
 const Roof3DViewer = dynamic(() => import("@/components/Roof3DViewer"), {
   ssr: false,
 });
-// Tier A.2 visual layer — only mounts when Tier A LiDAR is the active
-// source. For Tier B/C the existing Roof3DViewer (polygon-verify path)
-// continues to own the slot.
-const RoofViewer = dynamic(() => import("@/components/roof/RoofViewer"), {
+// Standalone blueprint renderer. Mounts whenever RoofData has facets
+// — works for Tier A (LiDAR) and Tier C (Solar) alike. When cross-
+// compare data is available, exposes a Solar/LiDAR toggle inside the
+// renderer so the rep can verify both sources agree.
+const RoofRenderer = dynamic(() => import("@/components/roof/RoofRenderer"), {
   ssr: false,
 });
 import AddressInput from "@/components/AddressInput";
@@ -76,6 +77,7 @@ import {
 } from "@/lib/sources/multiview-source";
 import { RoofTotalsCard } from "@/components/roof/RoofTotalsCard";
 import { DetectedFeaturesPanel } from "@/components/roof/DetectedFeaturesPanel";
+import { LidarHealthChip } from "@/components/roof/LidarHealthChip";
 import MeasurementVerification from "@/components/roof/MeasurementVerification";
 import { FacetList } from "@/components/roof/FacetList";
 import { saveEstimateV2 } from "@/lib/storage";
@@ -144,6 +146,19 @@ function HomePageInner() {
   // OSM/MSBuildings/SAM3 orchestration with a single canonical RoofData
   // feed. See lib/roof-pipeline.ts + /api/roof-pipeline.
   const [roofData, setRoofData] = useState<RoofData | null>(null);
+  // Cross-compare payload — Tier A LiDAR + Tier C Solar in parallel.
+  // Drives the dual-source toggle in the RoofRenderer below + an
+  // agreement chip showing whether the two sources agree on sqft/pitch.
+  const [roofCompare, setRoofCompare] = useState<{
+    lidar: RoofData | null;
+    solar: RoofData | null;
+    agreement: {
+      bothPresent: boolean;
+      sqftDeltaPct: number | null;
+      pitchDeltaDegrees: number | null;
+      facetCountDelta: number | null;
+    } | null;
+  } | null>(null);
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
   // Tier B inspector status — surfaces a "Refining via oblique inspection…"
@@ -666,16 +681,35 @@ function HomePageInner() {
     fetchSam3Polygon(addr, myGen);
     try {
       const nocacheSuffix = sam3NoCacheSuffix; // "&nocache=1" or ""
+      // compare=1 runs Tier A LiDAR + Tier C Solar in parallel. Both
+      // RoofData payloads come back; primary is whichever the pipeline
+      // would have picked serially.
       const res = await fetch(
         `/api/roof-pipeline?lat=${addr.lat}&lng=${addr.lng}` +
           `&address=${encodeURIComponent(addr.formatted)}` +
+          `&compare=1` +
           nocacheSuffix,
         { cache: "no-store" },
       );
       if (!res.ok) throw new Error(`pipeline ${res.status}`);
-      const data = (await res.json()) as RoofData;
+      const compare = (await res.json()) as {
+        primary: RoofData;
+        lidar: RoofData | null;
+        solar: RoofData | null;
+        agreement: {
+          bothPresent: boolean;
+          sqftDeltaPct: number | null;
+          pitchDeltaDegrees: number | null;
+          facetCountDelta: number | null;
+        };
+      };
       if (fetchGenRef.current !== myGen) return; // stale — newer fetch won
-      setRoofData(data);
+      setRoofData(compare.primary);
+      setRoofCompare({
+        lidar: compare.lidar,
+        solar: compare.solar,
+        agreement: compare.agreement,
+      });
     } catch (err) {
       if (fetchGenRef.current !== myGen) return;
       setPipelineError(err instanceof Error ? err.message : String(err));
@@ -1119,8 +1153,9 @@ function HomePageInner() {
           today?
         </h1>
         <p className="text-[14px] text-slate-400 mb-6 max-w-xl leading-relaxed">
-          Type or paste an address. Pitch auto-measures the roof and assesses
-          it against LiDAR + satellite + storm data.
+          Type or paste an address. Voxaris measures the roof in parallel
+          from LiDAR + Solar and renders an interactive 3D blueprint —
+          toggle sources to verify the two measurements agree before pricing.
         </p>
 
         <AddressInput
@@ -1266,7 +1301,7 @@ function HomePageInner() {
               aspect-clipped 3D column — the section fills naturally
               when content lands and doesn't reserve a viewport of
               dead space when it doesn't. */}
-          <section className="grid lg:grid-cols-2 gap-4 min-h-[360px] sm:min-h-[440px] lg:min-h-[520px] float-in relative">
+          <section className="grid lg:grid-cols-2 gap-4 min-h-[400px] sm:min-h-[480px] lg:min-h-[620px] float-in relative">
             <MapView
               lat={address?.lat}
               lng={address?.lng}
@@ -1309,24 +1344,49 @@ function HomePageInner() {
             polygonSource !== "none" &&
             address?.lat != null &&
             address?.lng != null &&
-            roofData?.source === "tier-a-lidar" ? (
-              // Tier A path — LiDAR-derived facets + edges + objects rendered
-              // on top of Google Photorealistic 3D Tiles via RoofViewer.
+            roofData &&
+            roofData.source !== "none" &&
+            roofData.facets.length > 0 ? (
+              // Standalone blueprint renderer. Same view for Tier A
+              // (LiDAR) and Tier C (Solar) measurements. When cross-
+              // compare is active, a LiDAR/Solar toggle appears top-
+              // right + an agreement chip top-left so the rep can
+              // verify both sources agree before pricing.
               <div
                 className="glass-panel overflow-hidden h-full relative"
-                aria-label={`3D LiDAR-derived view of the roof at ${address.formatted ?? "this property"}`}
+                aria-label={`3D blueprint view of the roof at ${address.formatted ?? "this property"}`}
                 role="img"
               >
-                <RoofViewer
-                  key={`lidar-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
+                <RoofRenderer
+                  key={`renderer-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
                   data={roofData}
-                  interactive
+                  lidar={roofCompare?.lidar ?? null}
+                  solar={roofCompare?.solar ?? null}
+                  agreement={roofCompare?.agreement ?? null}
+                  className="absolute inset-0"
                 />
+                {(inspectorStatus === "running" ||
+                  inspectorStatus === "done") &&
+                  roofData.refinements.length > 0 && (
+                    <div
+                      className="absolute bottom-2.5 left-2.5 z-10 chip backdrop-blur-md bg-[#07090d]/65 pointer-events-none"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      Roof inspector ✓ ({roofData.refinements.length} refinement
+                      {roofData.refinements.length === 1 ? "" : "s"})
+                    </div>
+                  )}
               </div>
             ) : polygonReady &&
             polygonSource !== "none" &&
             address?.lat != null &&
             address?.lng != null ? (
+              // Pre-pipeline-result fallback — show the photorealistic
+              // Cesium viewer while RoofData is still being measured.
+              // This keeps Tier B's multi-view inspector capture path
+              // alive (onMultiViewCaptured is bound here) until the
+              // standalone renderer takes over with measured facets.
               <div
                 className="glass-panel overflow-hidden h-full relative"
                 aria-label={`3D photorealistic view of the roof at ${address.formatted ?? "this property"}`}
@@ -1512,6 +1572,7 @@ function HomePageInner() {
                   RoofData (single canonical feed). */}
               {roofData && roofData.source !== "none" && (
                 <>
+                  <LidarHealthChip />
                   <MeasurementVerification data={roofData} variant="rep" />
                   <RoofTotalsCard data={roofData} />
                   <DetectedFeaturesPanel data={roofData} variant="rep" />

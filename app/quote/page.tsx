@@ -222,6 +222,21 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
   // with a single canonical RoofData feed via /api/roof-pipeline.
   // Drives RoofTotalsCard + DetectedFeaturesPanel + priceRoofData below.
   const [roofData, setRoofData] = useState<RoofData | null>(null);
+  // Cross-compare payload: when the pipeline runs in `compare=1` mode it
+  // returns BOTH the Tier A (LiDAR) and Tier C (Solar) RoofData in
+  // parallel, so the 3D viewer can toggle between them and the rep can
+  // sanity-check that both sources agree. Null when compare mode isn't
+  // used or no compare run has resolved yet.
+  const [roofCompare, setRoofCompare] = useState<{
+    lidar: RoofData | null;
+    solar: RoofData | null;
+    agreement: {
+      bothPresent: boolean;
+      sqftDeltaPct: number | null;
+      pitchDeltaDegrees: number | null;
+      facetCountDelta: number | null;
+    } | null;
+  } | null>(null);
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
   // Fetch-generation guard — protects against stale responses on rapid
@@ -336,16 +351,37 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
     setPipelineLoading(true);
     setPipelineError(null);
     try {
+      // compare=1 runs Tier A (LiDAR) and Tier C (Solar) in parallel and
+      // returns BOTH so the 3D viewer can toggle. The response shape is
+      // RoofComparison; we store `primary` in the existing roofData slot
+      // (back-compat with downstream consumers) and the full payload in
+      // `roofCompare` for the renderer's toggle.
       const res = await fetch(
         `/api/roof-pipeline?lat=${addr.lat}&lng=${addr.lng}` +
           `&address=${encodeURIComponent(addr.formatted ?? "")}` +
+          `&compare=1` +
           sam3NoCacheSuffix,
         { cache: "no-store" },
       );
       if (!res.ok) throw new Error(`pipeline ${res.status}`);
-      const data = (await res.json()) as RoofData;
+      const compare = (await res.json()) as {
+        primary: RoofData;
+        lidar: RoofData | null;
+        solar: RoofData | null;
+        agreement: {
+          bothPresent: boolean;
+          sqftDeltaPct: number | null;
+          pitchDeltaDegrees: number | null;
+          facetCountDelta: number | null;
+        };
+      };
       if (fetchGenRef.current !== myGen) return; // stale
-      setRoofData(data);
+      setRoofData(compare.primary);
+      setRoofCompare({
+        lidar: compare.lidar,
+        solar: compare.solar,
+        agreement: compare.agreement,
+      });
       // Note: we intentionally do NOT setRoofPolygon(data.outlinePolygon)
       // here. /quote's tier ladder (Tier 1 SAM3 → Tier 2 mask → Tier 3
       // MS Buildings) drives the displayed polygon, and SAM3 is usually
@@ -1010,6 +1046,7 @@ export default function QuotePage({ office = "nolands" }: QuotePageProps = {}) {
             satelliteUrl={satelliteUrl}
             roofPolygon={roofPolygon}
             roofData={roofData}
+            roofCompare={roofCompare}
             loading={loadingRoof || pipelineLoading}
             pickingLoading={pickingLoading}
             // Click-pick re-trace. Fired when the customer taps a
@@ -1322,6 +1359,7 @@ function RoofStep({
   satelliteUrl,
   roofPolygon,
   roofData,
+  roofCompare,
   loading,
   pickingLoading,
   onChangeSqft,
@@ -1338,6 +1376,19 @@ function RoofStep({
   /** Tier C/B/A canonical RoofData. When source === "tier-a-lidar", the
    *  Tier A.2 RoofViewer mounts instead of the legacy Roof3DViewer. */
   roofData: RoofData | null;
+  /** Cross-compare payload — when present, the 3D viewer renders the
+   *  blueprint and shows a Solar/LiDAR toggle button so the customer
+   *  can switch between the two measurements. */
+  roofCompare: {
+    lidar: RoofData | null;
+    solar: RoofData | null;
+    agreement: {
+      bothPresent: boolean;
+      sqftDeltaPct: number | null;
+      pitchDeltaDegrees: number | null;
+      facetCountDelta: number | null;
+    } | null;
+  } | null;
   loading: boolean;
   pickingLoading: boolean;
   onChangeSqft: (n: number) => void;
@@ -1438,15 +1489,21 @@ function RoofStep({
           aria-label={`3D photorealistic view of the roof at ${address?.formatted ?? "this property"}`}
           role="img"
         >
-          {roofData?.source === "tier-a-lidar" ? (
-            // Standalone LiDAR roof — no photorealistic mesh under it.
-            // Each facet plotted as a tilted polygon, color-coded by
-            // azimuth. Reads as "we measured your roof" instead of
-            // "wrong overlay on top of your actual roof." Bonus: no
-            // Map Tiles billing for this view.
+          {roofData && roofData.source !== "none" && roofData.facets.length > 0 ? (
+            // Standalone blueprint renderer. Works for BOTH LiDAR (Tier A)
+            // and Solar (Tier C) measurements — they produce the same
+            // RoofData shape (facets, edges, objects). When cross-compare
+            // is active, a Solar/LiDAR toggle appears top-right so the
+            // customer can flip between the two measurements; agreement
+            // chip top-left shows whether they agree on sqft/pitch.
+            // No photorealistic mesh underneath = no overlay-mismatch
+            // problem, no Map Tiles cost.
             <RoofRenderer
               key={`renderer-${address.lat.toFixed(6)},${address.lng.toFixed(6)}`}
               data={roofData}
+              lidar={roofCompare?.lidar ?? null}
+              solar={roofCompare?.solar ?? null}
+              agreement={roofCompare?.agreement ?? null}
               className="absolute inset-0"
             />
           ) : (
