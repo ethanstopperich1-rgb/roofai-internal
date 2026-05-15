@@ -16,7 +16,7 @@
  * photogrammetric texture.
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import * as THREE from "three";
 import { Satellite, Box as BoxIcon, X } from "lucide-react";
@@ -346,15 +346,12 @@ function RoofScene({
             onHover={(over) => onFacetHover(over ? q.id : null)}
           />
         ))}
-        {/* Ridge cap — flat polygon on top of the frustum that fills
-            the inset polygon. Without this, you can see through the
-            roof from above. */}
-        {projected.ridgePolygon.length >= 3 && (
-          <RidgeCap
-            polygon={projected.ridgePolygon}
-            height={projected.ridgeHeight + projected.eaveHeight}
-          />
-        )}
+        {/* Ridge cap removed — with proper PCA-based hip geometry the
+            ridge collapses to a line (rectangular outlines) or a single
+            apex point (square outlines). No flat cap means no
+            "tabletop" footprint-shaped flat spot on top. Adjacent
+            quads meet along the shared ridge endpoint by construction
+            so the roof is closed at the top. */}
       </group>
 
       {/* Edge polylines from LiDAR topology, color-coded by classification. */}
@@ -371,20 +368,6 @@ function RoofScene({
       <NorthArrow size={Math.max(8, projected.sceneSize * 0.35)} />
     </>
   );
-}
-
-// ─── Facet mesh ───────────────────────────────────────────────────────
-
-interface Facet3D {
-  id: string;
-  shape: THREE.Shape;
-  centroidX: number;
-  centroidY: number;
-  centroidZ: number;
-  pitchRad: number;
-  azimuthRad: number;
-  color: string;
-  outlineColor: string;
 }
 
 // ─── Generated roof quad (frustum approach) ──────────────────────────
@@ -493,48 +476,6 @@ function RoofQuad({
         />
       </lineSegments>
     </group>
-  );
-}
-
-// ─── Ridge cap (flat top of the frustum) ─────────────────────────────
-
-function RidgeCap({
-  polygon,
-  height,
-}: {
-  polygon: THREE.Vector2[];
-  height: number;
-}) {
-  const geom = useMemo(() => {
-    const shape = new THREE.Shape(polygon);
-    return new THREE.ShapeGeometry(shape);
-  }, [polygon]);
-  return (
-    <>
-      <mesh
-        geometry={geom}
-        // ShapeGeometry sits in XY plane; rotate -π/2 around X to lay
-        // it flat on the XZ plane, then raise to the ridge height.
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, height, 0]}
-      >
-        <meshStandardMaterial
-          color="#1a1f28"
-          metalness={0.05}
-          roughness={0.85}
-          side={THREE.DoubleSide}
-          transparent
-          opacity={0.95}
-        />
-      </mesh>
-      <lineSegments
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, height + 0.01, 0]}
-      >
-        <edgesGeometry args={[geom]} />
-        <lineBasicMaterial color="#3a5c7a" transparent opacity={0.7} />
-      </lineSegments>
-    </>
   );
 }
 
@@ -928,24 +869,39 @@ function projectRoof(
   };
 }
 
-// ─── Frustum roof generator ──────────────────────────────────────────
+// ─── Hip roof generator (PCA-based ridge geometry) ───────────────────
 //
-// Treats the building outline as the eave line and generates one quad
-// per outline edge. Each quad slopes inward + upward to a "ridge
-// polygon" inset 35% toward the building centroid. The ridge polygon
-// is filled with a flat cap (RidgeCap component).
+// Treats the building outline as the eave line and generates one face
+// per outline edge. The earlier centroid-inset approach left a flat
+// "tabletop" on top — visually wrong (real hip roofs don't have flat
+// tops). This version computes a proper hip-roof topology:
 //
-// This is a "mansard hip" approximation — for a true hip roof, the
-// ridge would collapse to a line (or to single points for square
-// buildings). For most residential outlines it reads as a proper roof
-// without needing a straight-skeleton algorithm. L-shaped and
-// rectangular outlines both produce coherent results.
+//   - Square-ish outline    → single apex at centroid + ridge height
+//                             (pyramid hip; every edge → triangular face)
+//   - Rectangular outline   → ridge LINE along the major axis, with
+//                             endpoints inset 30% from the ends
+//                             (long sides → trapezoids; short ends →
+//                              triangles meeting at the ridge endpoints)
+//   - Complex outline       → degrades to single apex (no tabletop)
 //
-// Each generated quad is matched to the closest source-data facet by
-// azimuth, inheriting its pitch (for slope steepness) and its id
-// (so the FacetInspector still pops the source-data details on click).
+// Each outline vertex snaps to its nearest ridge endpoint (one of two
+// for rectangles, one point for squares). Adjacent quads share their
+// "ridge" vertex by construction → adjacent faces meet at the ridge.
+//
+// Each face is matched to the closest source-data facet by azimuth,
+// inheriting its pitch (for slope steepness) and its id (so the
+// FacetInspector still pops the source-data details on click).
 
-const RIDGE_INSET_FRAC = 0.35;
+/** Aspect-ratio threshold above which we use a ridge line instead of
+ *  a single apex. 1.3 = major axis 30% longer than minor. Below this,
+ *  the building is "roughly square" and a pyramid reads correctly. */
+const RIDGE_LINE_ASPECT_THRESHOLD = 1.3;
+
+/** Ridge endpoint inset along the major axis, as a fraction of the
+ *  major extent. 0.30 means ridge endpoints sit 30% in from the
+ *  outline's major-axis extremes — matches a typical hip end where
+ *  the short-side triangle has a ~30° base angle. */
+const RIDGE_ENDPOINT_INSET_FRAC = 0.30;
 
 function generateFrustumRoof(opts: {
   footprint: THREE.Vector2[];
@@ -965,15 +921,83 @@ function generateFrustumRoof(opts: {
   const fx = footprint.reduce((s, p) => s + p.x, 0) / footprint.length;
   const fy = footprint.reduce((s, p) => s + p.y, 0) / footprint.length;
 
-  // Inset polygon — each vertex pulled `RIDGE_INSET_FRAC` toward the
-  // centroid. This is the "ridge polygon" — top of the frustum.
-  const inset = footprint.map(
-    (v) =>
-      new THREE.Vector2(
-        v.x + RIDGE_INSET_FRAC * (fx - v.x),
-        v.y + RIDGE_INSET_FRAC * (fy - v.y),
-      ),
+  // PCA on the outline vertices to find the major (long) axis.
+  // 2x2 covariance matrix → eigenvalues + eigenvectors via closed form.
+  let sxx = 0;
+  let sxy = 0;
+  let syy = 0;
+  for (const v of footprint) {
+    const dx = v.x - fx;
+    const dy = v.y - fy;
+    sxx += dx * dx;
+    sxy += dx * dy;
+    syy += dy * dy;
+  }
+  sxx /= footprint.length;
+  sxy /= footprint.length;
+  syy /= footprint.length;
+
+  // Eigenvalues of [[sxx, sxy], [sxy, syy]].
+  const trace = sxx + syy;
+  const det = sxx * syy - sxy * sxy;
+  const disc = Math.sqrt(Math.max(0, (trace * trace) / 4 - det));
+  const evMajor = trace / 2 + disc;
+  const evMinor = trace / 2 - disc;
+
+  // Major eigenvector (unit) — direction of the long axis.
+  let ux: number;
+  let uy: number;
+  if (Math.abs(sxy) > 1e-9) {
+    ux = evMajor - syy;
+    uy = sxy;
+  } else {
+    // Axes aligned — pick whichever is longer.
+    ux = sxx >= syy ? 1 : 0;
+    uy = sxx >= syy ? 0 : 1;
+  }
+  const ulen = Math.hypot(ux, uy);
+  ux /= Math.max(ulen, 1e-9);
+  uy /= Math.max(ulen, 1e-9);
+
+  // Project all outline vertices onto the major axis. Min and max
+  // projections give the extent of the building along the long axis.
+  const projections = footprint.map((v) => (v.x - fx) * ux + (v.y - fy) * uy);
+  const tMin = Math.min(...projections);
+  const tMax = Math.max(...projections);
+  const majorExtent = tMax - tMin;
+  // Approximate minor extent from the smaller eigenvalue (scale by 2σ
+  // → roughly the width of the building perpendicular to the ridge).
+  const minorExtent = 2 * Math.sqrt(Math.max(evMinor, 0));
+  const aspectRatio = majorExtent / Math.max(minorExtent, 1e-6);
+
+  // Build the ridge geometry:
+  //   - Aspect < threshold → single apex at the centroid (pyramid hip)
+  //   - Aspect ≥ threshold → ridge line along major axis with two
+  //     endpoints inset 30% from the major-axis extremes
+  const usePyramid = aspectRatio < RIDGE_LINE_ASPECT_THRESHOLD;
+  const tRidgeMin = tMin + RIDGE_ENDPOINT_INSET_FRAC * majorExtent;
+  const tRidgeMax = tMax - RIDGE_ENDPOINT_INSET_FRAC * majorExtent;
+  const ridgeStart = new THREE.Vector2(
+    fx + tRidgeMin * ux,
+    fy + tRidgeMin * uy,
   );
+  const ridgeEnd = new THREE.Vector2(
+    fx + tRidgeMax * ux,
+    fy + tRidgeMax * uy,
+  );
+  const apex = new THREE.Vector2(fx, fy);
+
+  // For each outline vertex, decide which ridge endpoint it snaps to.
+  // Pyramid case: all vertices snap to the single apex. Line case:
+  // vertices on the "low" half of the major axis snap to ridgeStart;
+  // vertices on the "high" half snap to ridgeEnd.
+  const inset: THREE.Vector2[] = footprint.map((_, i) => {
+    if (usePyramid) return apex;
+    const t = projections[i];
+    return Math.abs(t - tRidgeMin) < Math.abs(t - tRidgeMax)
+      ? ridgeStart
+      : ridgeEnd;
+  });
 
   // Average pitch across source facets — used as a fallback when the
   // azimuth-match doesn't return a facet. Weighted by sloped area so
