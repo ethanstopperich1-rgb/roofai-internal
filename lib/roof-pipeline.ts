@@ -11,7 +11,10 @@ import { tierCVisionSource } from "@/lib/sources/vision-source";
 import { getCached, setCached } from "@/lib/cache";
 import { fetchSolarRoofMask } from "@/lib/solar-mask";
 import { resolveBaseUrl } from "@/lib/base-url";
-import type { SolarSummary } from "@/types/estimate";
+import type { SolarSummary, SurfacePolygon } from "@/types/estimate";
+import { isSam2Configured } from "@/lib/roboflow-workflow-config";
+import { fetchGisFootprint } from "@/lib/reconcile-roof-polygon";
+import { polygonAreaSqft } from "@/lib/polygon";
 import {
   pickWithMsFetch,
   type ParcelPolygonReason,
@@ -168,6 +171,61 @@ async function buildParcelPolygon(
   };
 }
 
+/** Phase 2 — fetch SAM2 surface segmentation INSIDE the SAM3 outline.
+ *
+ *  Fanned out in parallel with the Tier C source cascade (Solar /
+ *  vision) so it doesn't add wall-clock latency unless Solar is faster
+ *  than Roboflow's serverless cold start (unlikely; Solar ~1-3s, SAM2
+ *  ~5-30s warm). Failures are strictly soft — empty surfaces array,
+ *  pipeline continues unchanged. SAM2 NEVER blocks the customer-facing
+ *  estimate.
+ *
+ *  Skip conditions (returns []):
+ *    - SAM2 not configured (env var unset) — gate logged, no fetch
+ *    - SAM3 polygon missing or has <3 vertices — nothing to segment
+ *    - /api/sam2-surfaces returns non-200 or throws — log + continue
+ *
+ *  Returns: array of SurfacePolygon (lat/lng polygons + class + area
+ *  + confidence). Empty array on any failure path.
+ */
+async function fetchSam2Surfaces(
+  lat: number,
+  lng: number,
+  sam3Polygon: Array<{ lat: number; lng: number }> | null,
+): Promise<SurfacePolygon[]> {
+  if (!isSam2Configured()) {
+    // Gate log matches sam3 pattern — single line, structured-ish.
+    // Logged at info level (not warn) because "not configured" is the
+    // expected steady state until Phase 2 ships.
+    console.log(
+      `sam2: gate=not_configured lat=${lat.toFixed(5)} lng=${lng.toFixed(5)}`,
+    );
+    return [];
+  }
+  if (!sam3Polygon || sam3Polygon.length < 3) {
+    console.warn(
+      `sam2: gate=no_sam3_polygon lat=${lat.toFixed(5)} lng=${lng.toFixed(5)} ` +
+        `vertices=${sam3Polygon?.length ?? 0}`,
+    );
+    return [];
+  }
+  try {
+    const url =
+      `${resolveBaseUrl()}/api/sam2-surfaces?lat=${lat}&lng=${lng}` +
+      `&sam3Polygon=${encodeURIComponent(JSON.stringify(sam3Polygon))}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) {
+      console.warn(`sam2: fetch returned ${res.status} for (${lat}, ${lng})`);
+      return [];
+    }
+    const data = (await res.json()) as { surfaces?: SurfacePolygon[] };
+    return Array.isArray(data.surfaces) ? data.surfaces : [];
+  } catch (err) {
+    console.warn(`sam2: fetch threw for (${lat}, ${lng}):`, err);
+    return [];
+  }
+}
+
 /**
  * Tier C orchestrator. Iterates sources serially; first non-null wins.
  * All sources failed → degraded RoofData (source: "none"); never throws.
@@ -179,7 +237,7 @@ export async function runRoofPipeline(opts: {
   nocache?: boolean;
 }): Promise<RoofData> {
   if (!opts.nocache) {
-    const cached = await getCached<RoofData>("roof-data", opts.address.lat, opts.address.lng);
+    const cached = await getCached<RoofData>("roof-data-v3-compare-undercount-fix", opts.address.lat, opts.address.lng);
     if (cached && cached.source !== "none") {
       console.log("[roof-pipeline] cache hit", {
         source: cached.source,
@@ -266,6 +324,23 @@ export async function runRoofPipeline(opts: {
     { name: "tier-c-vision", fn: tierCVisionSource },
   ];
 
+  // Phase 2 — kick off SAM2 surface segmentation in parallel with the
+  // Solar / vision cascade. Only fires when the picker landed a real
+  // SAM3 polygon (otherwise there's no outline to segment inside).
+  // Awaited below alongside whichever primary source resolved. Result
+  // attaches to RoofData as `surfaces`; absent / empty when SAM2 isn't
+  // configured or the fetch failed.
+  const sam2Promise: Promise<SurfacePolygon[]> =
+    pickerResult.pickerSource === "sam3" &&
+    pickerResult.polygon &&
+    pickerResult.polygon.length >= 3
+      ? fetchSam2Surfaces(
+          opts.address.lat,
+          opts.address.lng,
+          pickerResult.polygon,
+        )
+      : Promise.resolve([]);
+
   let primary: RoofData | null = null;
   const startedAt = Date.now();
   for (const s of sources) {
@@ -310,6 +385,13 @@ export async function runRoofPipeline(opts: {
   // customer sees a Solar-shaped outline even when SAM3 was the
   // intended polygon source. With SAM3 as the only allowed polygon
   // tracer (May 2026 architecture), the picker output IS the outline.
+  // SAM3 polygon override — when SAM3 won the picker, replace the
+  // source's default outline with the SAM3 trace. This is unconditional
+  // per architecture mandate (SAM3-every-time, never Solar mask).
+  // The "right way to fix bad SAM3 polygons" is to upgrade the GIS
+  // clip target (MS Buildings via direct Azure fetch beats OSM, which
+  // sometimes mis-tags driveways as `building`), NOT to fall back to
+  // Solar.
   if (
     pickerResult.pickerSource === "sam3" &&
     pickerResult.polygon &&
@@ -345,10 +427,157 @@ export async function runRoofPipeline(opts: {
   // on RoofData (additive optional) for future re-introduction of
   // a verification tier.
 
+  // ─── Solar low-confidence sanity check ────────────────────────────────
+  // When Solar's `imageryQuality` is MEDIUM or LOW (proxied by
+  // `primary.confidence < 0.85` — Solar source sets 0.85 for HIGH,
+  // 0.70 for MEDIUM, 0.55 for LOW), its photogrammetric building model
+  // can miss whole roof segments on complex residential roofs (lanai,
+  // attached garage, low-slope wings). Symptom on Jupiter (813
+  // Summerwood): Solar returns 6 segments totaling 1,612 sqft footprint
+  // on a building whose OSM/MS-Buildings footprint is 3,336 sqft, and
+  // whose EagleView ground truth is 3,651 sqft — Solar undercounts by
+  // 53% because MEDIUM imagery resolved less than half of the actual
+  // roof facets.
+  //
+  // Correction: when Solar's footprint is < 60% of the GIS footprint,
+  // replace `totals.totalRoofAreaSqft` with `gisFootprint × slopeFactor`,
+  // preserving Solar's averaged pitch ratio. The per-facet `areaSqftSloped`
+  // values stay untouched (still useful for per-facet pricing comps) —
+  // only the customer-facing total is corrected.
+  //
+  // HIGH-imagery Solar passes through unchanged (Orlando 2863 Newcomb
+  // example: Solar HIGH 2024 → 1,555 sqft, EagleView 1,592 → 2.3% off,
+  // no correction needed).
+  if (
+    primary.source === "tier-c-solar" &&
+    primary.confidence < 0.85 &&
+    primary.totals.totalFootprintSqft > 0 &&
+    primary.totals.totalRoofAreaSqft > 0
+  ) {
+    try {
+      // Extract leading house number from formatted address (e.g.
+      // "813 Summerwood Dr ..." → "813"). OSM Overpass uses this to
+      // rank candidate buildings; missing it just means OSM falls back
+      // to nearest-building-to-coords, which is usually fine here too
+      // since the pipeline already resolved the right lat/lng.
+      const hn = opts.address.formatted.match(/^\s*(\d+[A-Za-z]?)\b/)?.[1];
+      const gis = await fetchGisFootprint(
+        opts.address.lat,
+        opts.address.lng,
+        hn,
+      );
+      if (gis) {
+        const gisSqft = polygonAreaSqft(gis.polygon);
+        const solarFootprint = primary.totals.totalFootprintSqft;
+        const ratio = solarFootprint / gisSqft;
+
+        // ─── Track K (2026-05-16): GIS polygon validation ─────────────
+        // Tightened from 20k → 12k upper bound — catches more parcel
+        // polygons that OSM occasionally returns instead of buildings
+        // (e.g. Oak Park's 77k-sqft "building" was already caught at
+        // 20k, but the 12k limit catches subtler half-lot mis-tags too).
+        // 12k still admits the largest realistic FL residential
+        // (mansion + attached garages + lanai = ~11k sqft footprint).
+        const gisIsResidential = gisSqft >= 600 && gisSqft <= 12_000;
+
+        // Centroid proximity check — the OSM polygon's centroid must
+        // be within 25m of the address. Catches OSM's "wrong building"
+        // failure mode where a neighbor's larger polygon overlaps the
+        // address bbox and gets returned by Overpass. 25m is generous
+        // (covers most setbacks + side-yard offsets) but rejects
+        // polygons centered on adjacent parcels.
+        const cosLat = Math.cos((opts.address.lat * Math.PI) / 180);
+        const gisCentroidLat =
+          gis.polygon.reduce((s, p) => s + p.lat, 0) / gis.polygon.length;
+        const gisCentroidLng =
+          gis.polygon.reduce((s, p) => s + p.lng, 0) / gis.polygon.length;
+        const dLatM = (gisCentroidLat - opts.address.lat) * 111_320;
+        const dLngM = (gisCentroidLng - opts.address.lng) * 111_320 * cosLat;
+        const gisCentroidOffsetM = Math.hypot(dLatM, dLngM);
+        const gisCentroidNearAddress = gisCentroidOffsetM <= 25;
+
+        const solarUndercounting = ratio < 0.6;
+
+        // If GIS looks wrong, log a clear "needs review" warning and
+        // bail out without applying correction. Customer gets Solar's
+        // uncorrected number (same behavior as if undercount correction
+        // never fired) — never a wrong correction.
+        if (!gisIsResidential || !gisCentroidNearAddress) {
+          primary.diagnostics.warnings.push(
+            `gis_rejected: ${gis.source} returned ${Math.round(gisSqft)} sqft polygon ` +
+              `${gisCentroidOffsetM.toFixed(0)}m from address — ` +
+              `${!gisIsResidential ? `outside residential bounds [600, 12000] sqft` : `centroid >25m from address`}. ` +
+              `Solar's uncorrected ${primary.totals.totalRoofAreaSqft} sqft used; manual review recommended.`,
+          );
+          primary.diagnostics.needsReview.push({
+            kind: "facet",
+            id: "all",
+            reason: "gis_polygon_invalid",
+          });
+          console.warn(
+            `[roof-pipeline] gis_rejected gis=${gis.source} sqft=${Math.round(gisSqft)} ` +
+              `offset_m=${gisCentroidOffsetM.toFixed(0)} solar_undercount_skipped`,
+          );
+        } else if (gisIsResidential && solarUndercounting) {
+          const slopeFactor =
+            primary.totals.totalRoofAreaSqft / solarFootprint;
+          const correctedSloped = Math.round(gisSqft * slopeFactor);
+          const oldSloped = primary.totals.totalRoofAreaSqft;
+          const oldFootprint = primary.totals.totalFootprintSqft;
+          primary.totals.totalRoofAreaSqft = correctedSloped;
+          primary.totals.totalFootprintSqft = Math.round(gisSqft);
+          // Recompute totalSquares to match new area
+          primary.totals.totalSquares =
+            Math.ceil((correctedSloped / 100) * 3) / 3;
+          // Re-derive footprint-dependent EagleView fields. Attic is a
+          // 9% deduction off footprint; stories heuristic depends on
+          // both footprint and avg pitch. Without this re-derivation,
+          // attic would still reflect Solar's undercounted footprint.
+          primary.totals.estimatedAtticSqft = Math.round(gisSqft * 0.91);
+          primary.totals.stories =
+            primary.totals.averagePitchDegrees >= 26.6 &&
+            primary.totals.totalFootprintSqft <= 2000
+              ? 2
+              : 1;
+          primary.diagnostics.warnings.push(
+            `solar_undercount_corrected: Solar ${oldFootprint}→${primary.totals.totalFootprintSqft} sqft footprint ` +
+              `(${gis.source} GIS), ${oldSloped}→${correctedSloped} sqft sloped ` +
+              `(slope factor ${slopeFactor.toFixed(3)})`,
+          );
+          console.log(
+            `[roof-pipeline] solar_undercount_corrected ` +
+              `gis=${gis.source} gis_sqft=${Math.round(gisSqft)} ` +
+              `solar_footprint=${oldFootprint} ratio=${ratio.toFixed(2)} ` +
+              `slope_factor=${slopeFactor.toFixed(3)} ` +
+              `final_sqft=${correctedSloped}`,
+          );
+        }
+      }
+    } catch (err) {
+      // GIS fetch failure must not blow up the pipeline — the customer
+      // gets Solar's uncorrected number, same as before this block.
+      console.warn(
+        "[roof-pipeline] solar_undercount_check_failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  // Phase 2 — attach SAM2 surfaces (or [] when SAM2 didn't run / failed).
+  // Awaited here so cache write below includes them. Adds at most the
+  // sam2 fetch's remaining wall-clock — usually 0 because SAM2 finishes
+  // before Solar's downstream geometry work.
+  try {
+    primary.surfaces = await sam2Promise;
+  } catch {
+    primary.surfaces = [];
+  }
+
   const latencyMs = Date.now() - startedAt;
   console.log("[roof-pipeline] pipeline_source_picked", {
     source: primary.source,
     latencyMs,
+    surfaceCount: primary.surfaces?.length ?? 0,
     address: opts.address.formatted,
   });
 
@@ -371,7 +600,7 @@ export async function runRoofPipeline(opts: {
   });
 
   // Cache successful results only, for 1 hour.
-  await setCached("roof-data", opts.address.lat, opts.address.lng, primary, 60 * 60);
+  await setCached("roof-data-v3-compare-undercount-fix", opts.address.lat, opts.address.lng, primary, 60 * 60);
   return primary;
 }
 
@@ -436,6 +665,19 @@ export async function runRoofPipelineCompare(opts: {
   const finalParcelPolygon = pickerResult.polygon;
   const imageryDate = solarHint?.imageryDate ?? null;
 
+  // Phase 2 — fan out SAM2 in parallel with Solar (same rationale as
+  // runRoofPipeline above). Skipped when SAM3 didn't win the picker.
+  const sam2Promise: Promise<SurfacePolygon[]> =
+    pickerResult.pickerSource === "sam3" &&
+    pickerResult.polygon &&
+    pickerResult.polygon.length >= 3
+      ? fetchSam2Surfaces(
+          opts.address.lat,
+          opts.address.lng,
+          pickerResult.polygon,
+        )
+      : Promise.resolve([]);
+
   // Post-Tier-A-retirement: this is now a Solar-only run with
   // Vision as the fallback. The function name + return shape are
   // preserved so existing callers (/api/roof-pipeline?compare=1
@@ -485,6 +727,112 @@ export async function runRoofPipelineCompare(opts: {
     primary = makeDegradedRoofData({ address: opts.address, attempts });
   }
 
+  // Attach Phase 2 surfaces to whichever source won. Same soft-fail
+  // semantics as the serial pipeline — empty array on any error.
+  try {
+    primary.surfaces = await sam2Promise;
+  } catch {
+    primary.surfaces = [];
+  }
+
+  // ─── Solar low-confidence sanity check (mirrors runRoofPipeline) ─────
+  // The compare path is what the customer-facing UI actually hits
+  // (/api/roof-pipeline?compare=1 → app/(internal)/page.tsx line 707).
+  // Mirroring the exact correction block from runRoofPipeline keeps the
+  // two callers in lockstep — without this, the serial path returned
+  // 3,561 sqft on Jupiter while the compare path silently kept 1,721,
+  // which is what the rep / customer would actually see. See the
+  // matching block earlier in this file for full rationale.
+  if (
+    primary.source === "tier-c-solar" &&
+    primary.confidence < 0.85 &&
+    primary.totals.totalFootprintSqft > 0 &&
+    primary.totals.totalRoofAreaSqft > 0
+  ) {
+    try {
+      const hn = opts.address.formatted.match(/^\s*(\d+[A-Za-z]?)\b/)?.[1];
+      const gis = await fetchGisFootprint(
+        opts.address.lat,
+        opts.address.lng,
+        hn,
+      );
+      if (gis) {
+        const gisSqft = polygonAreaSqft(gis.polygon);
+        const solarFootprint = primary.totals.totalFootprintSqft;
+        const ratio = solarFootprint / gisSqft;
+
+        // ─── Track K validation (compare path mirror) ─────────────────
+        // Same as the serial pipeline above — tightened residential
+        // bounds (12k upper) + centroid proximity check vs the address.
+        const gisIsResidential = gisSqft >= 600 && gisSqft <= 12_000;
+        const cosLat = Math.cos((opts.address.lat * Math.PI) / 180);
+        const gisCentroidLat =
+          gis.polygon.reduce((s, p) => s + p.lat, 0) / gis.polygon.length;
+        const gisCentroidLng =
+          gis.polygon.reduce((s, p) => s + p.lng, 0) / gis.polygon.length;
+        const dLatM = (gisCentroidLat - opts.address.lat) * 111_320;
+        const dLngM = (gisCentroidLng - opts.address.lng) * 111_320 * cosLat;
+        const gisCentroidOffsetM = Math.hypot(dLatM, dLngM);
+        const gisCentroidNearAddress = gisCentroidOffsetM <= 25;
+        const solarUndercounting = ratio < 0.6;
+
+        if (!gisIsResidential || !gisCentroidNearAddress) {
+          primary.diagnostics.warnings.push(
+            `gis_rejected: ${gis.source} returned ${Math.round(gisSqft)} sqft polygon ` +
+              `${gisCentroidOffsetM.toFixed(0)}m from address — ` +
+              `${!gisIsResidential ? `outside residential bounds [600, 12000] sqft` : `centroid >25m from address`}. ` +
+              `Solar's uncorrected ${primary.totals.totalRoofAreaSqft} sqft used; manual review recommended.`,
+          );
+          primary.diagnostics.needsReview.push({
+            kind: "facet",
+            id: "all",
+            reason: "gis_polygon_invalid",
+          });
+          console.warn(
+            `[roof-pipeline] gis_rejected (compare) gis=${gis.source} sqft=${Math.round(gisSqft)} ` +
+              `offset_m=${gisCentroidOffsetM.toFixed(0)} solar_undercount_skipped`,
+          );
+        } else if (gisIsResidential && solarUndercounting) {
+          const slopeFactor =
+            primary.totals.totalRoofAreaSqft / solarFootprint;
+          const correctedSloped = Math.round(gisSqft * slopeFactor);
+          const oldSloped = primary.totals.totalRoofAreaSqft;
+          const oldFootprint = primary.totals.totalFootprintSqft;
+          primary.totals.totalRoofAreaSqft = correctedSloped;
+          primary.totals.totalFootprintSqft = Math.round(gisSqft);
+          primary.totals.totalSquares =
+            Math.ceil((correctedSloped / 100) * 3) / 3;
+          // See parallel block at line ~490: re-derive footprint-dependent
+          // EagleView fields after GIS correction so the compare path
+          // matches the serial path's behavior.
+          primary.totals.estimatedAtticSqft = Math.round(gisSqft * 0.91);
+          primary.totals.stories =
+            primary.totals.averagePitchDegrees >= 26.6 &&
+            primary.totals.totalFootprintSqft <= 2000
+              ? 2
+              : 1;
+          primary.diagnostics.warnings.push(
+            `solar_undercount_corrected: Solar ${oldFootprint}→${primary.totals.totalFootprintSqft} sqft footprint ` +
+              `(${gis.source} GIS), ${oldSloped}→${correctedSloped} sqft sloped ` +
+              `(slope factor ${slopeFactor.toFixed(3)})`,
+          );
+          console.log(
+            `[roof-pipeline] solar_undercount_corrected (compare) ` +
+              `gis=${gis.source} gis_sqft=${Math.round(gisSqft)} ` +
+              `solar_footprint=${oldFootprint} ratio=${ratio.toFixed(2)} ` +
+              `slope_factor=${slopeFactor.toFixed(3)} ` +
+              `final_sqft=${correctedSloped}`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        "[roof-pipeline] solar_undercount_check_failed (compare)",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   // crossSourceBaseline intentionally left untouched on `primary` —
   // the field stays on RoofData for future re-introduction of a
   // verification tier (likely SAM2-derived areas vs Solar plane
@@ -516,7 +864,7 @@ export async function runRoofPipelineCompare(opts: {
   // each time cross-compare runs (cheap with hint reuse).
   if (primary.source !== "none") {
     await setCached(
-      "roof-data",
+      "roof-data-v3-compare-undercount-fix",
       opts.address.lat,
       opts.address.lng,
       primary,

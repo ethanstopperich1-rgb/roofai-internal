@@ -139,6 +139,42 @@ export interface SolarSummary {
   } | null;
 }
 
+/** Surface classes that the Phase 2 SAM2 segmenter (running INSIDE the
+ *  SAM3 outline polygon) can emit per detected sub-polygon. These are
+ *  the things downstream pricing + the rep tool care to distinguish on
+ *  a typical Florida residential roof: the main shingle field, flat-
+ *  membrane sections, screened lanai cages (NOT roof area — must be
+ *  subtracted), garages (sometimes a different material), skylights /
+ *  solar panels (penetration math), and non-roof yard features that
+ *  occasionally bleed into the bbox (pool deck, driveway, lawn) and
+ *  need to be classified specifically so the customer-facing number
+ *  doesn't count them. "unknown" is the catch-all so we never crash
+ *  on a class string the workflow returns that isn't in this enum. */
+export type SurfaceClass =
+  | "main_shingle"
+  | "flat_roof"
+  | "lanai_screen"
+  | "garage"
+  | "skylight"
+  | "solar_panel"
+  | "pool"
+  | "driveway"
+  | "lawn"
+  | "unknown";
+
+/** One sub-polygon emitted by the SAM2 surface segmenter — a single
+ *  classified region inside the SAM3 outline. Lat/lng vertices so the
+ *  rep tool can overlay it directly on the satellite map without any
+ *  pixel ↔ geo re-projection. areaSqft is computed server-side using
+ *  the SAME polygonAreaSqft helper that drives the Solar / SAM3
+ *  reconciliation math, so units are consistent across the pipeline. */
+export interface SurfacePolygon {
+  class: SurfaceClass;
+  polygon: Array<{ lat: number; lng: number }>;
+  areaSqft: number;
+  confidence: number;
+}
+
 export type LineItemUnit = "SQ" | "LF" | "EA" | "SF" | "%";
 export type LineItemCategory =
   | "tearoff"

@@ -91,6 +91,30 @@ export interface RoofTotals {
   averagePitchDegrees: number;
   /** 7 | 11 | 14 in Tier C (simple/moderate/complex). */
   wastePct: number;
+  /** EagleView-equivalent edge length totals (linear feet, rounded).
+   *  Summed from `edges[]` by `Edge.type`. Optional + additive so older
+   *  payloads / degraded results / fixtures that don't compute edges
+   *  still validate. Null when no edges of that kind exist or when the
+   *  classifier didn't run; consumers should soft-fail to "—". */
+  totalRidgesHipsLf?: number | null;
+  totalValleysLf?: number | null;
+  totalRakesLf?: number | null;
+  totalEavesLf?: number | null;
+  /** Penetration totals derived from `objects[]` (Roboflow vision tier).
+   *  Perimeter / area approximated from dimensionsFt (treated as bbox).
+   *  Optional + additive — null when no vision detections were available
+   *  (Solar-only path with vision empty, or vision call failed). */
+  totalPenetrations?: number | null;
+  totalPenetrationPerimeterFt?: number | null;
+  totalPenetrationAreaSqft?: number | null;
+  /** Estimated attic sqft ~ footprint × 0.91 (chimney/utility chase
+   *  allowance). Conservative; not the same as EagleView's surveyed
+   *  attic but close enough for the rep + customer overview. */
+  estimatedAtticSqft?: number | null;
+  /** Story count heuristic (Tier C — no real building-height signal).
+   *  Derived from average pitch + footprint: steep + compact ⇒ 2,
+   *  shallow + sprawling ⇒ 1. Best-effort; null when inputs missing. */
+  stories?: number | null;
   /** Inferred complexity tier — intentional schema extension beyond the
    *  kickoff doc (kickoff had wastePct but not complexity). Kept on
    *  totals so the rep-side waste-table UI can highlight the suggested row
@@ -142,6 +166,17 @@ export interface RoofData {
    *  type so older fixtures + the v1 estimate-loader shim don't have to
    *  set it — the field is strictly additive. */
   outlinePolygon?: Array<{ lat: number; lng: number }> | null;
+  /** Phase 2 — SAM2 surface segmentation. Each entry is one classified
+   *  sub-region INSIDE the SAM3 outline polygon (main shingle field,
+   *  flat-membrane patch, screened lanai, skylight, solar panel, etc.).
+   *  Produced by /api/sam2-surfaces and fanned out in parallel with
+   *  Solar in lib/roof-pipeline. Strictly additive / optional — null /
+   *  absent when SAM2 isn't configured, the workflow failed, or the
+   *  SAM3 polygon was missing. Solar still owns the customer-facing
+   *  sqft number; these polygons are used for visualization and for
+   *  future per-surface pricing (subtracting lanai screen from shingle
+   *  area, calling out skylights as separate line items, etc.). */
+  surfaces?: import("./estimate").SurfacePolygon[] | null;
   /** Cross-source measurement baseline. When the winning source is Tier A
    *  (LiDAR), we still capture what Tier C Solar said about the same roof
    *  so the UI can show an "X agrees with Y" trust signal. Populated by

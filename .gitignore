@@ -63,3 +63,6 @@ step*-fixed.*
 # file from microsoft.com — output goes in public/data/ which IS committed)
 .cache/
 .env*.local
+
+# Production env with secrets — never commit
+.env.production

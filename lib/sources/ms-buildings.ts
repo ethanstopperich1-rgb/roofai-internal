@@ -20,17 +20,17 @@
  *     Value: { buildings: BuildingRecord[], fetchedAt: ISO }
  *     TTL: 7 days
  *
- *   Cold (per-quadkey-9, Modal volume)
- *     Path: /cache/prewarmed_metros/{quadkey9}.geojsonl.gz
- *     Populated by scripts/prewarm_ms_buildings.py at deploy time for
- *     metros listed in config/prewarmed_metros.json. CI check enforces
- *     that every metro's quadkeys appear in the volume manifest before
- *     a PR can merge — see scripts/check-prewarm-manifest.ts.
+ *   Cold (per-quadkey-16, Vercel Blob)
+ *     URL: {MS_BUILDINGS_BLOB_URL}/ms-buildings/v1/{quadkey16}.json
+ *     Populated once by scripts/prep-ms-buildings-fl.ts which downloads
+ *     Microsoft's Florida.geojson.zip release, buckets every polygon by
+ *     quadkey-16, and uploads one JSON file per tile to Vercel Blob with
+ *     `access: 'public'`. The runtime reads the static object — no Modal,
+ *     no on-demand Azure proxy.
  *
  * This module runs in Next.js Function (Node.js runtime). The cold tier
- * lookup goes through an HTTP endpoint exposed by the Modal service
- * (services/roof-lidar/), since Next.js doesn't have direct filesystem
- * access to the Modal volume.
+ * is a static-asset fetch from Vercel Blob, so no auth header is needed
+ * at read time.
  *
  * Phase 1 NOTE: this module replaces lib/microsoft-buildings.ts (the
  * Nashville-scoped TSV implementation). The legacy file is deleted in
@@ -296,55 +296,69 @@ function selectFromTile(
   return { record: best, contained: false };
 }
 
-// ─── Cold tier: HTTP call to Modal service ───────────────────────────
+// ─── Cold tier: Vercel Blob fetch ────────────────────────────────────
 //
-// The Modal service holds the prewarmed quadkey-9 tiles on its volume
-// AND has the Azure fetch path when a quadkey-9 misses. The Next.js
-// side calls it once; the service decides whether to read the prewarmed
-// file or proxy to Azure. This keeps Azure credentials + the parquet
-// parsing in Python (where geopandas / shapely are already deps).
+// FL coverage is pre-computed once by scripts/prep-ms-buildings-fl.ts
+// and uploaded to Vercel Blob as one JSON object per quadkey-16 tile at:
+//   {MS_BUILDINGS_BLOB_URL}/ms-buildings/v1/{quadkey16}.json
 //
-// When the service isn't reachable, return null and the orchestrator
-// caches an empty sentinel with the short Azure-failure TTL.
+// The previous implementation called a Modal HTTP service that proxied
+// Azure on-demand; Modal isn't set up, so we replaced that with a
+// static-asset fetch. The orchestrator behavior is unchanged: on null
+// return, the empty sentinel is cached with the short failure TTL so
+// transient Blob outages self-heal within an hour.
+//
+// 404 = tile genuinely has no buildings (rural / open water). We return
+// an empty `buildings` array so the orchestrator caches the empty
+// sentinel via writeHotCache + the warm-tier writeback, which is cheaper
+// than retrying every request.
+//
+// 5xx / network error = transient — return null without caching at the
+// warm tier; the hot tier picks up the short-TTL empty sentinel.
 
 const TILE_FETCH_TIMEOUT_MS = 12_000;
 
 async function fetchTileFromLidarService(
   quadkey16: string,
 ): Promise<{ buildings: BuildingRecord[] } | null> {
-  const baseUrl = process.env.MS_BUILDINGS_SERVICE_URL;
+  const baseUrl = process.env.MS_BUILDINGS_BLOB_URL;
   if (!baseUrl) {
-    // No service configured — Phase 1 deploys can run without it; the
-    // hot+warm caches still work, just no cold-tier resolution. Log
-    // once-per-process so an unconfigured production deploy is visible.
-    logServiceUnconfiguredOnce();
+    // No Blob URL configured — hot+warm caches still work, but cold
+    // misses go to negative cache. Log once-per-process so an
+    // unconfigured production deploy is visible in logs.
+    logBlobUnconfiguredOnce();
     return null;
   }
-  const url = `${baseUrl.replace(/\/$/, "")}/ms-buildings-tile?quadkey16=${encodeURIComponent(quadkey16)}`;
-  const resp = await fetch(url, {
-    signal: AbortSignal.timeout(TILE_FETCH_TIMEOUT_MS),
-    cache: "no-store",
-  });
-  if (resp.status === 404) return { buildings: [] }; // tile genuinely empty
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    console.warn(
-      "[ms-buildings] cold fetch non-ok",
-      resp.status,
-      body.slice(0, 300),
-    );
+  const url = `${baseUrl.replace(/\/$/, "")}/ms-buildings/v1/${encodeURIComponent(quadkey16)}.json`;
+  try {
+    const resp = await fetch(url, {
+      signal: AbortSignal.timeout(TILE_FETCH_TIMEOUT_MS),
+      cache: "no-store",
+    });
+    if (resp.status === 404) return { buildings: [] }; // tile genuinely empty
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      console.warn(
+        "[ms-buildings] blob fetch non-ok",
+        resp.status,
+        body.slice(0, 300),
+      );
+      return null;
+    }
+    const data = (await resp.json()) as { buildings: BuildingRecord[] };
+    return data;
+  } catch (err) {
+    console.warn("[ms-buildings] blob fetch error:", err);
     return null;
   }
-  const data = (await resp.json()) as { buildings: BuildingRecord[] };
-  return data;
 }
 
-let _serviceUnconfiguredLogged = false;
-function logServiceUnconfiguredOnce(): void {
-  if (_serviceUnconfiguredLogged) return;
-  _serviceUnconfiguredLogged = true;
+let _blobUnconfiguredLogged = false;
+function logBlobUnconfiguredOnce(): void {
+  if (_blobUnconfiguredLogged) return;
+  _blobUnconfiguredLogged = true;
   console.log(
-    "[ms-buildings] MS_BUILDINGS_SERVICE_URL not set — cold tier disabled. " +
+    "[ms-buildings] MS_BUILDINGS_BLOB_URL not set — cold tier disabled. " +
       "Hot + warm caches still work; tile misses go to negative cache.",
   );
 }

@@ -107,6 +107,17 @@ export async function tierCSolarSource(opts: {
     solar.buildingFootprintSqft > 0
   ) {
     totals.totalFootprintSqft = solar.buildingFootprintSqft;
+    // Re-derive footprint-dependent fields after the wholeRoof override.
+    // computeTotals saw the summed-bbox footprint; we just replaced it
+    // with the authoritative Solar value, so attic + stories need a
+    // refresh to match. Without this, estimatedAtticSqft would still
+    // reflect the looser per-facet bbox sum.
+    totals.estimatedAtticSqft = Math.round(solar.buildingFootprintSqft * 0.91);
+    totals.stories =
+      totals.averagePitchDegrees >= 26.6 &&
+      totals.totalFootprintSqft <= 2000
+        ? 2
+        : 1;
   }
 
   const confidence =

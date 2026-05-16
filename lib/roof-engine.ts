@@ -229,6 +229,78 @@ export function computeTotals(
     }
   }
 
+  // ── EagleView-equivalent measurements ────────────────────────────────
+  // Sum edge linear feet by classification. Ridges + hips are
+  // intentionally combined to match EagleView's "Ridges/Hips" line
+  // (carrier estimates / EagleView reports group them, and Tier C's
+  // classifier doesn't have the dihedral-angle signal to reliably
+  // separate them anyway — confidence is 0.4). Tier B/A can split this
+  // back out by emitting separate fields if/when their classifier
+  // overrides land.
+  // Soft-fail to null (not 0) when no edges of a given kind exist —
+  // null reads as "no data, hide the chip"; 0 misleadingly reads as
+  // "we measured zero feet of valleys" in the UI.
+  let ridgesHipsLf = 0;
+  let valleysLf = 0;
+  let rakesLf = 0;
+  let eavesLf = 0;
+  let hasRidgeHip = false;
+  let hasValley = false;
+  let hasRake = false;
+  let hasEave = false;
+  for (const e of edges) {
+    if (e.type === "ridge" || e.type === "hip") {
+      ridgesHipsLf += e.lengthFt;
+      hasRidgeHip = true;
+    } else if (e.type === "valley") {
+      valleysLf += e.lengthFt;
+      hasValley = true;
+    } else if (e.type === "rake") {
+      rakesLf += e.lengthFt;
+      hasRake = true;
+    } else if (e.type === "eave") {
+      eavesLf += e.lengthFt;
+      hasEave = true;
+    }
+  }
+
+  // Penetration totals — derived from objects[] (Roboflow vision).
+  // dimensionsFt is the bbox; perimeter = 2(w+l), area = w*l. Tier C
+  // doesn't have actual roof-hole geometry so this is a bbox-area
+  // approximation; close enough for the customer-facing chip.
+  let penPerimeter = 0;
+  let penArea = 0;
+  for (const o of objects) {
+    const w = o.dimensionsFt?.width ?? 0;
+    const l = o.dimensionsFt?.length ?? 0;
+    penPerimeter += 2 * (w + l);
+    penArea += w * l;
+  }
+  const hasObjects = objects.length > 0;
+
+  // Estimated attic sqft — 9% deduction for chimney chases / utility
+  // pass-throughs / non-ceiling roof area. Conservative approximation
+  // of EagleView's surveyed "Estimated Attic" line; the exact number
+  // would require interior floor-plan data we don't have.
+  const estimatedAtticSqft =
+    totalFootprintSqft > 0 ? Math.round(totalFootprintSqft * 0.91) : null;
+
+  // Story heuristic — no building-height signal in Solar/vision Tier C,
+  // so this is a pitch+footprint inference. Compact + steep ⇒ likely 2
+  // stories; sprawling + shallow ⇒ 1. Florida ranches are the common
+  // 1-story case; 2-story colonials/coastals trip the steep+compact
+  // branch. Skipped (null) when inputs aren't trustworthy.
+  let stories: number | null = null;
+  if (totalFootprintSqft > 0 && facets.length > 0) {
+    const pitchDeg = averagePitchDegrees;
+    const fp = totalFootprintSqft;
+    // ~26.6° = 6/12 pitch. Steeper than that + footprint <= 2000 sqft
+    // is the 2-story signal. Larger footprints are almost always
+    // single-story FL ranches regardless of pitch.
+    if (pitchDeg >= 26.6 && fp <= 2000) stories = 2;
+    else stories = 1;
+  }
+
   return {
     facetsCount: facets.length,
     edgesCount: edges.length,
@@ -240,6 +312,16 @@ export function computeTotals(
     wastePct,
     complexity,
     predominantMaterial,
+    totalRidgesHipsLf: hasRidgeHip ? Math.round(ridgesHipsLf) : null,
+    totalValleysLf: hasValley ? Math.round(valleysLf) : null,
+    totalRakesLf: hasRake ? Math.round(rakesLf) : null,
+    totalEavesLf: hasEave ? Math.round(eavesLf) : null,
+    totalPenetrations: hasObjects ? objects.length : null,
+    totalPenetrationPerimeterFt: hasObjects ? Math.round(penPerimeter) : null,
+    totalPenetrationAreaSqft:
+      hasObjects ? Math.round(penArea * 10) / 10 : null,
+    estimatedAtticSqft,
+    stories,
   };
 }
 

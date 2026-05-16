@@ -68,7 +68,7 @@ import { DEFAULT_ADDONS, computeBase, computeTotal } from "@/lib/pricing";
 import {
   buildWasteTable,
   inferComplexityFromPolygons,
-} from "@/lib/roof-geometry";
+} from "@/lib/roof-waste";
 import {
   orthogonalizePolygon,
   mergeNearbyVertices,

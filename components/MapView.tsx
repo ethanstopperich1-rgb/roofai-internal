@@ -35,8 +35,25 @@ interface Props {
   ) => void;
   /** Average roof pitch in degrees (from Solar API). When provided, the
    *  floating sqft labels project footprint → slope area using cos(pitch)
-   *  instead of the hardcoded 6/12 default. */
+   *  instead of the hardcoded 6/12 default.
+   *
+   *  Only used as a fallback path when `totalSloppedSqft` is NOT provided.
+   *  When `totalSloppedSqft` is set, the label uses that value directly so
+   *  the on-map number always matches the API-corrected total surfaced in
+   *  `roofData.totals.totalRoofAreaSqft`. */
   pitchDegrees?: number | null;
+  /** API-canonical total roof area (sloped sqft) from the pipeline. When
+   *  provided AND there is exactly one polygon being drawn (typical SAM3
+   *  outline + Solar-undercount-correction case), the floating map label
+   *  displays this value verbatim instead of recomputing
+   *  `polygonAreaPx * slopeFactor`. Required to keep the on-map number in
+   *  lockstep with the customer-facing sqft (which can be GIS-corrected
+   *  when Solar imagery is MEDIUM/LOW — see lib/roof-pipeline.ts solar
+   *  undercount correction block).
+   *
+   *  When omitted OR when multiple polygons are being drawn (per-facet
+   *  mode), the legacy geometry-derived label kicks in. */
+  totalSloppedSqft?: number | null;
   /** When true, the next single click on the map fires onPickBuilding
    *  with the clicked lat/lng instead of any default behavior. Used to
    *  let the rep override auto-detected building when SAM3 picks the
@@ -80,6 +97,7 @@ export default function MapView({
   editable = false,
   onPolygonsChanged,
   pitchDegrees,
+  totalSloppedSqft,
   pickingBuilding = false,
   onPickBuilding,
 }: Props) {
@@ -448,9 +466,23 @@ export default function MapView({
           // Floating sqft label at polygon centroid (after animation finishes).
           // Uses the shared `buildLabelIcon` + `slopeMult` defined above so
           // initial render and live edits stay visually identical.
+          //
+          // SOURCE-OF-TRUTH: when `totalSloppedSqft` is provided AND we are
+          // rendering exactly one polygon (the canonical SAM3 outline case
+          // post-Solar-undercount-correction), use the API total verbatim
+          // so the on-map number is identical to the customer-facing sqft
+          // in `roofData.totals.totalRoofAreaSqft`. Geometry-derived
+          // recompute only runs in per-facet mode (segments.length > 1)
+          // or when the API total isn't known yet (initial render race).
           if (g.maps.geometry?.spherical) {
+            const useApiTotal =
+              typeof totalSloppedSqft === "number" &&
+              totalSloppedSqft > 0 &&
+              segments.length === 1;
             const areaM2 = g.maps.geometry.spherical.computeArea(path);
-            const sqft = Math.round(areaM2 * 10.7639 * slopeMult);
+            const sqft = useApiTotal
+              ? totalSloppedSqft!
+              : Math.round(areaM2 * 10.7639 * slopeMult);
             if (sqft >= 200) {
               let cLat = 0, cLng = 0;
               for (const v of path) { cLat += v.lat; cLng += v.lng; }

@@ -23,7 +23,6 @@
 
 import {
   polygonAreaSqft,
-  polygonIntersection,
   polygonIoU,
   polygonIsNearAddress,
 } from "./polygon";
@@ -159,7 +158,7 @@ interface ReconcileInput {
   houseNumber?: string;
 }
 
-async function fetchGisFootprint(
+export async function fetchGisFootprint(
   lat: number,
   lng: number,
   houseNumber?: string,
@@ -383,79 +382,47 @@ export async function reconcileRoofPolygon(
       },
     };
   }
+  // SAM3 over-trace handling — REWRITTEN 2026-05-15 after rep feedback
+  // ("this is what I want bro, like this style" w/ a clean roof-hugging
+  // SAM3 polygon on a different property). Previously we clipped SAM3
+  // ∩ OSM whenever SAM3 over-traced ≥2× the GIS footprint, which on
+  // properties where OSM's `building` polygon is a coarse rectangle that
+  // includes the driveway (e.g. Winter Garden 16538 Broadwater) produced
+  // a polygon that itself included the driveway. The clip "worked" by
+  // area but destroyed SAM3's beautiful roof-edge fidelity.
+  //
+  // New policy: TRUST SAM3 AS-IS even when it's >2× GIS — the rep can
+  // edit the polygon if it visibly grabs yard. Only fall back to GIS
+  // when SAM3 is CATASTROPHICALLY wrong (5× or worse), and even then
+  // we keep SAM3 itself — never substitute the GIS rectangle. The visual
+  // mandate is "SAM3 every time" and the rep correction tooling
+  // (DRAW FRESH + per-vertex drag) handles the edge cases that used to
+  // need the clip.
   if (!iouTrusted && areaRatio > SAM3_AREA_RATIO_MAX) {
-    // Option A — geometric clip. When SAM3 over-traces (likely included
-    // yard/driveway/pool deck) but GIS has a plausible residential
-    // building outline (800-20k sqft) AND SAM3 overlaps it meaningfully
-    // (iou ≥ MIN_CLIP_IOU), intersect the two polygons. SAM3 ∩ GIS
-    // keeps SAM3's vertex resolution where it agrees with GIS and
-    // trims the over-trace creep. Result is labeled source:"sam3"
-    // so the picker accepts it.
-    //
-    // Jupiter case: SAM3 = 15,950 sqft (yard included), OSM = 4,021
-    // sqft (correct building), IoU = 0.25, areaRatio = 3.97. The
-    // intersection produces ~4,021 sqft with SAM3's edge fidelity.
-    //
-    // Skip when gisLooksLikeLot already fired (Oak Park) — that path
-    // returned earlier with the raw SAM3 polygon.
-    const MIN_CLIP_IOU = 0.10;
-    const GIS_TRUSTABLE_MIN_SQFT = 800;
-    const GIS_TRUSTABLE_MAX_SQFT = 20_000;
-    const SAM3_OVERTRACE_RATIO = 2.0;
-    const overtraceClippable =
-      areaRatio > SAM3_OVERTRACE_RATIO &&
-      iou >= MIN_CLIP_IOU &&
-      gisSqft >= GIS_TRUSTABLE_MIN_SQFT &&
-      gisSqft <= GIS_TRUSTABLE_MAX_SQFT;
-    if (overtraceClippable) {
-      const clipped = polygonIntersection(sam3Polygon!, gis.polygon);
-      if (clipped && clipped.length >= 3) {
-        const clippedSqft = polygonAreaSqft(clipped);
-        if (
-          clippedSqft >= GIS_TRUSTABLE_MIN_SQFT &&
-          clippedSqft <= GIS_TRUSTABLE_MAX_SQFT
-        ) {
-          console.log(
-            "reconcile: over-trace clipped — SAM3 ∩ GIS produced bounded polygon",
-            {
-              sam3Sqft: Math.round(sam3Sqft),
-              gisSqft: Math.round(gisSqft),
-              clippedSqft: Math.round(clippedSqft),
-              iou: iou.toFixed(2),
-              gisSource: gis.source,
-            },
-          );
-          return {
-            polygon: clipped,
-            footprintSqft: Math.round(clippedSqft),
-            source: "sam3",
-            reason: `SAM3 over-traced ${(areaRatio * 100).toFixed(0)}% of footprint; clipped to GIS intersection (${Math.round(clippedSqft)} sqft from ${Math.round(sam3Sqft)})`,
-            diagnostics: {
-              sam3Sqft,
-              gisSqft,
-              areaRatio,
-              iou,
-              gisSource: gis.source,
-              sam3CentroidNearAddress,
-            },
-          };
-        }
-      }
+    const CATASTROPHIC_OVERTRACE = 5.0;
+    if (areaRatio > CATASTROPHIC_OVERTRACE && iou < 0.10) {
+      // SAM3 is so wildly off and overlaps GIS so little that it almost
+      // certainly grabbed the entire dark vegetation region instead of
+      // the actual building. Surface "footprint-occluded" so the picker
+      // rejects it (per parcel-polygon.ts REJECTED_SOURCES) and the
+      // pipeline emits synthetic_fallback — the rep then draws fresh.
+      return {
+        polygon: gis.polygon,
+        footprintSqft: Math.round(gisSqft * EAVE_OVERHANG_FACTOR),
+        source: "footprint-occluded",
+        reason: `SAM3 catastrophically over-traced (${(areaRatio * 100).toFixed(0)}% of GIS, IoU ${iou.toFixed(2)}); rep should redraw`,
+        diagnostics: {
+          sam3Sqft,
+          gisSqft,
+          areaRatio,
+          iou,
+          gisSource: gis.source,
+          sam3CentroidNearAddress,
+        },
+      };
     }
-    return {
-      polygon: gis.polygon,
-      footprintSqft: Math.round(gisSqft * EAVE_OVERHANG_FACTOR),
-      source: "footprint-occluded",
-      reason: `SAM3 was ${(areaRatio * 100).toFixed(0)}% of footprint and IoU ${iou.toFixed(2)} (likely yard/neighbor over-trace); using GIS footprint × ${EAVE_OVERHANG_FACTOR}`,
-      diagnostics: {
-        sam3Sqft,
-        gisSqft,
-        areaRatio,
-        iou,
-        gisSource: gis.source,
-        sam3CentroidNearAddress,
-      },
-    };
+    // Otherwise: keep SAM3 raw. Falls through to the trust-SAM3
+    // return below.
   }
 
   // SAM3 passes all checks — use it. SAM3 traces roof eaves directly

@@ -49,7 +49,11 @@ export default function InternalHeader() {
     // the surface unauthenticated-clean (no 401 traps from clicking
     // ESTIMATOR / HISTORY / ADMIN tabs).
     pathname === "/estimate" ||
-    pathname.startsWith("/estimate/");
+    pathname.startsWith("/estimate/") ||
+    // /estimate-v2 is the V3 pin-confirmed Gemini-painted flow.
+    // Same public-unauthenticated semantics as /estimate.
+    pathname === "/estimate-v2" ||
+    pathname.startsWith("/estimate-v2/");
   if (isCustomerRoute || isDashboardRoute || isLegalOrPublicMarketingRoute) return null;
 
   return (

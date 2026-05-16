@@ -93,7 +93,7 @@ import MeasurementVerification from "@/components/roof/MeasurementVerification";
 import { FacetList } from "@/components/roof/FacetList";
 import { saveEstimateV2 } from "@/lib/storage";
 import { DEFAULT_ADDONS, computeBase, computeTotal } from "@/lib/pricing";
-import { buildWasteTable, inferComplexityFromPolygons } from "@/lib/roof-geometry";
+import { buildWasteTable, inferComplexityFromPolygons } from "@/lib/roof-waste";
 import { BRAND_CONFIG } from "@/lib/branding";
 import { estimateAge, estimateRoofSize } from "@/lib/utils";
 import { newId } from "@/lib/storage";
@@ -216,6 +216,15 @@ function HomePageInner() {
   // Without this signal the gate's area + vertex checks miss the case
   // where SAM3 silently fell through to GIS footprint × 1.06.
   const [sam3Source, setSam3Source] = useState<string | null>(null);
+  // Phase 2 — SAM2 surface segmentation result, plumbed through from
+  // RoofData.surfaces. Stored as separate state so consumers that
+  // care about the surfaces specifically (future overlay renderer) can
+  // subscribe without re-rendering on every RoofData change. Reset on
+  // every new address. Empty array when SAM2 isn't configured or the
+  // fetch failed — never null after first pipeline call completes.
+  const [sam2Surfaces, setSam2Surfaces] = useState<
+    import("@/types/estimate").SurfacePolygon[]
+  >([]);
   // Tracked via ref so late-arriving SAM doesn't stomp in-progress edits
   // (the sam-refine fetch resolves ~5-10s after OSM, by which point the rep
   // may have already moved vertices on the OSM polygon).
@@ -364,6 +373,13 @@ function HomePageInner() {
     const hasMask =
       roofData?.outlinePolygon && roofData.outlinePolygon.length >= 3;
 
+    // Note: an earlier "prefer Solar mask on HIGH-confidence" short-
+    // circuit lived here. Removed per architecture mandate — SAM3 is
+    // the ONLY allowed visual outline source. When SAM3's clipped
+    // polygon looks wrong (e.g. driveway included), the fix is to make
+    // the clip target better (MS Buildings via direct Azure fetch
+    // instead of OSM), NOT to fall back to Solar mask.
+
     if (hasSam3) {
       // Quality gate: SAM3 is suspect when ANY of:
       //   - area >30% off from Solar findClosest footprint
@@ -395,7 +411,7 @@ function HomePageInner() {
         return [sam3Polygon];
       }
       // SAM3 is suspect — fall through to the mask if available.
-      if (hasMask) return [roofData.outlinePolygon!];
+      if (hasMask) return [roofData!.outlinePolygon!];
       // No mask either — SAM3 is still better than nothing.
       return [sam3Polygon];
     }
@@ -716,6 +732,11 @@ function HomePageInner() {
       };
       if (fetchGenRef.current !== myGen) return; // stale — newer fetch won
       setRoofData(compare.primary);
+      // Phase 2 — surfaces ride along on RoofData. Pulled into separate
+      // state for downstream consumers that subscribe specifically to
+      // surfaces (overlay renderer, surface-class chips, etc.). Empty
+      // array when SAM2 didn't run / wasn't configured.
+      setSam2Surfaces(compare.primary.surfaces ?? []);
       setRoofCompare({
         lidar: compare.lidar,
         solar: compare.solar,
@@ -835,6 +856,7 @@ function HomePageInner() {
     setRoofData(null);
     setSam3Polygon(null);
     setSam3Source(null);
+    setSam2Surfaces([]);
     setPipelineError(null);
     setInspectorStatus("idle");
     inspectorRanForKeyRef.current = null;
@@ -1302,6 +1324,20 @@ function HomePageInner() {
               pitchDegrees={
                 roofData && roofData.source !== "none"
                   ? roofData.totals.averagePitchDegrees
+                  : null
+              }
+              // SOURCE-OF-TRUTH: hand the API-canonical total (which may
+              // have been GIS-corrected by lib/roof-pipeline's
+              // solar_undercount block on MEDIUM/LOW imagery) directly to
+              // the map label so the on-map sqft always matches the
+              // customer-facing number. Without this, MapView computes
+              // `polygon_area_px × slopeFactor` from the Solar facet
+              // union, which on undercounted properties displays e.g.
+              // 1,714 sqft while the API says 3,561 — a discrepancy the
+              // rep would never explain to a customer.
+              totalSloppedSqft={
+                roofData && roofData.source !== "none"
+                  ? roofData.totals.totalRoofAreaSqft
                   : null
               }
               // Pin-override / pickingBuilding intentionally dropped —
