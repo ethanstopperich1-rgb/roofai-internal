@@ -133,6 +133,60 @@ function unauthorizedResponse(): NextResponse {
 }
 
 /**
+ * Pages get a redirect to the styled /login page instead of a 401
+ * Basic Auth challenge — that's what surfaces the browser's native
+ * (and ugly) "Sign in" dialog. APIs still get the 401 + WWW-
+ * Authenticate header so scripts / curl callers keep working.
+ *
+ * `next` carries the original path so post-login lands the user
+ * exactly where they tried to go.
+ */
+function redirectToLogin(req: NextRequest): NextResponse {
+  const dest = new URL("/login", req.url);
+  const fullPath = req.nextUrl.pathname + req.nextUrl.search;
+  // Don't bounce back to /login (creates a redirect loop) and don't
+  // round-trip the root — the marketing redirect already handles that.
+  if (fullPath !== "/" && !fullPath.startsWith("/login")) {
+    dest.searchParams.set("next", fullPath);
+  }
+  return NextResponse.redirect(dest, 307);
+}
+
+function isApiPath(pathname: string): boolean {
+  return pathname.startsWith("/api/");
+}
+
+/**
+ * Decode and validate the `voxaris-staff` cookie (base64-encoded
+ * `user:pass`, same shape as an HTTP Basic header so one decode path
+ * covers both transports). Returns true on a constant-time match
+ * against STAFF_AUTH_USER / STAFF_AUTH_PASS.
+ */
+function hasStaffCookie(req: NextRequest, user: string, pass: string): boolean {
+  const raw = req.cookies.get("voxaris-staff")?.value;
+  if (!raw) return false;
+  let decoded: string;
+  try {
+    decoded = atob(raw);
+  } catch {
+    return false;
+  }
+  const idx = decoded.indexOf(":");
+  if (idx < 0) return false;
+  const u = decoded.slice(0, idx);
+  const p = decoded.slice(idx + 1);
+  if (u.length !== user.length || p.length !== pass.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < u.length; i++) {
+    mismatch |= u.charCodeAt(i) ^ user.charCodeAt(i);
+  }
+  for (let i = 0; i < p.length; i++) {
+    mismatch |= p.charCodeAt(i) ^ pass.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+/**
  * Detect a valid Supabase Auth session by sniffing the cookies. The
  * actual cookie name is `sb-<project_ref>-auth-token` — we match the
  * pattern rather than the literal so the middleware doesn't need to
@@ -199,9 +253,12 @@ export function middleware(req: NextRequest): NextResponse {
     if (hasSupabaseSession(req)) {
       return NextResponse.next();
     }
-    if (req.headers.get("authorization")?.startsWith("Basic ")) {
-      // Let Basic-Auth-armed staff through to the internal estimator;
-      // the protected-route logic below handles credential validation.
+    // Staff cookie OR Basic header → let through to the internal
+    // estimator (the protected-route block below still validates).
+    if (
+      req.cookies.get("voxaris-staff")?.value ||
+      req.headers.get("authorization")?.startsWith("Basic ")
+    ) {
       return NextResponse.next();
     }
     const dest = new URL("/quote", req.url);
@@ -213,9 +270,8 @@ export function middleware(req: NextRequest): NextResponse {
   }
 
   // Supabase session — preferred path once auth migration is rolled
-  // out. When the user has a valid session cookie, skip Basic Auth
-  // entirely. Lets reps move to magic-link login without removing the
-  // Basic Auth fallback (yet).
+  // out. When the user has a valid session cookie, skip the staff
+  // password check entirely.
   if (hasSupabaseSession(req)) {
     return NextResponse.next();
   }
@@ -236,27 +292,45 @@ export function middleware(req: NextRequest): NextResponse {
     return NextResponse.next();
   }
 
+  // Cookie path — set by /api/auth/staff-login when the user submits
+  // the styled /login form. This is the primary signal for browsers.
+  if (hasStaffCookie(req, user, pass)) {
+    return NextResponse.next();
+  }
+
+  // Authorization header path — preserved for scripts / curl callers
+  // that prefer HTTP Basic. Any time the browser delivers a request
+  // WITHOUT a cookie and WITHOUT a header, we route it to the styled
+  // /login page instead of returning a 401-Basic challenge that the
+  // browser renders as its native dialog.
   const auth = req.headers.get("authorization");
   if (!auth || !auth.startsWith("Basic ")) {
-    return unauthorizedResponse();
+    return isApiPath(pathname)
+      ? unauthorizedResponse()
+      : redirectToLogin(req);
   }
 
   let decoded: string;
   try {
     decoded = atob(auth.slice(6).trim());
   } catch {
-    return unauthorizedResponse();
+    return isApiPath(pathname)
+      ? unauthorizedResponse()
+      : redirectToLogin(req);
   }
-  // Username may contain ':' is not standard — split on FIRST colon only.
   const idx = decoded.indexOf(":");
-  if (idx < 0) return unauthorizedResponse();
+  if (idx < 0) {
+    return isApiPath(pathname)
+      ? unauthorizedResponse()
+      : redirectToLogin(req);
+  }
   const reqUser = decoded.slice(0, idx);
   const reqPass = decoded.slice(idx + 1);
 
-  // Constant-time compare to defend against timing oracles. Length check
-  // first since timingSafeEqual requires equal-length buffers.
   if (reqUser.length !== user.length || reqPass.length !== pass.length) {
-    return unauthorizedResponse();
+    return isApiPath(pathname)
+      ? unauthorizedResponse()
+      : redirectToLogin(req);
   }
   let mismatch = 0;
   for (let i = 0; i < reqUser.length; i++) {
@@ -266,7 +340,9 @@ export function middleware(req: NextRequest): NextResponse {
     mismatch |= reqPass.charCodeAt(i) ^ pass.charCodeAt(i);
   }
   if (mismatch !== 0) {
-    return unauthorizedResponse();
+    return isApiPath(pathname)
+      ? unauthorizedResponse()
+      : redirectToLogin(req);
   }
 
   return NextResponse.next();
