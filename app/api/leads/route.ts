@@ -62,6 +62,15 @@ interface LeadPayload {
    *  types/estimate.ts and is broad — we validate the few fields we
    *  need (id, baseLow/High) at write time, store the rest as-is. */
   estimate?: unknown;
+  /** Gemini V3 roof analysis from /estimate-v2. Optional. When present,
+   *  the server uploads `paintedImageBase64` to Supabase Storage
+   *  (`painted-roofs` bucket, public read) and persists the remainder as
+   *  `roof_v3_json` on the lead row, with `painted_url` injected so the
+   *  dashboard can render the painted tile without a signed URL. */
+  roofV3?: {
+    paintedImageBase64?: string | null;
+    [key: string]: unknown;
+  };
 }
 
 /** TCPA disclosure text — the exact wording the customer agrees to.
@@ -212,6 +221,47 @@ export async function POST(req: Request) {
         console.warn(`[leads] no active office for slug='${officeSlug}'`);
       } else {
         const supabase = createServiceRoleClient();
+
+        // ─── V3 painted-image upload ───────────────────────────────
+        // If the caller (today: /estimate-v2) sent a Gemini V3 roof
+        // payload, peel the base64 PNG off, upload it to the public
+        // `painted-roofs` bucket, and replace it with a CDN URL in the
+        // JSON we persist on the row. Keeps the lead row small (jsonb
+        // pages poorly when it holds ~700 KB of base64) and lets the
+        // dashboard <img src="..."> straight from Storage.
+        // Use the Supabase `Json` type so the inferred shape on `row`
+        // stays compatible with the leads Insert/Update generics.
+        let roofV3Json:
+          | import("@/types/supabase").Json
+          | null = null;
+        if (body.roofV3 && typeof body.roofV3 === "object") {
+          const { paintedImageBase64, ...rest } = body.roofV3;
+          let paintedUrl: string | null = null;
+          if (typeof paintedImageBase64 === "string" && paintedImageBase64.length > 0) {
+            try {
+              const bytes = Buffer.from(paintedImageBase64, "base64");
+              const objectKey = `${leadId}.png`;
+              const up = await supabase.storage
+                .from("painted-roofs")
+                .upload(objectKey, bytes, {
+                  contentType: "image/png",
+                  upsert: true,
+                });
+              if (up.error) {
+                console.error("[leads] painted upload failed:", up.error.message);
+              } else {
+                const { data: pub } = supabase.storage
+                  .from("painted-roofs")
+                  .getPublicUrl(objectKey);
+                paintedUrl = pub.publicUrl;
+              }
+            } catch (e) {
+              console.error("[leads] painted upload threw:", e);
+            }
+          }
+          roofV3Json = { ...rest, painted_url: paintedUrl };
+        }
+
         const row = {
           name: body.name.trim(),
           email: emailNorm,
@@ -230,6 +280,7 @@ export async function POST(req: Request) {
           tcpa_consent: true,
           tcpa_consent_at: submittedAt,
           tcpa_consent_text: TCPA_CONSENT_TEXT,
+          ...(roofV3Json ? { roof_v3_json: roofV3Json } : {}),
         };
 
         if (isLeadUpdate) {

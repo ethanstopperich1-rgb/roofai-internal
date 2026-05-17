@@ -141,6 +141,7 @@ export function fmtLeadSource(raw: string | null | undefined): string {
     "quote-wizard-confirmed": "Web · confirmed quote",
     "quote_form": "Web · quote form",
     "embed": "Embed widget",
+    "estimate-v2": "Web · V3 estimator",
     "sydney_inbound": "Sydney · inbound call",
     "sydney_outbound": "Sydney · outbound call",
   };

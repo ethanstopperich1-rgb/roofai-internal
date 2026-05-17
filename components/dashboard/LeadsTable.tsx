@@ -184,7 +184,19 @@ export default function LeadsTable({
                   <td className="px-4 py-3 text-white/85 font-mono tabular text-[12.5px] whitespace-nowrap">
                     {fmtDate(l.created_at)}
                   </td>
-                  <td className="px-4 py-3 text-white/90">{l.name}</td>
+                  <td className="px-4 py-3 text-white/90">
+                    <span className="inline-flex items-center gap-1.5">
+                      {l.name}
+                      {l.roof_v3_json ? (
+                        <span
+                          title="Has Gemini V3 roof analysis (painted overlay + edges + material)"
+                          className="text-[9px] uppercase tracking-[0.18em] px-1.5 py-0.5 rounded border border-[#38C5EE]/40 text-[#38C5EE]"
+                        >
+                          V3
+                        </span>
+                      ) : null}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-white/65 text-[12.5px] hidden md:table-cell max-w-xs truncate">
                     {l.address}
                   </td>
@@ -363,6 +375,67 @@ function LeadDrawer({
             />
           </dl>
         </section>
+
+        {/* V3 painted-roof block — present only when the lead came from
+            /estimate-v2. roof_v3_json carries the full Gemini V3 payload
+            with painted_url (Supabase Storage), edges, material,
+            condition hints, and per-facet breakdown. */}
+        {(() => {
+          const v3 = lead.roof_v3_json as Record<string, unknown> | null;
+          if (!v3 || typeof v3 !== "object") return null;
+          const paintedUrl = typeof v3.painted_url === "string" ? v3.painted_url : null;
+          const ga = (v3.geminiAnalysis ?? {}) as Record<string, unknown>;
+          const mat = (ga.roofMaterial ?? null) as { type?: string } | null;
+          const hints = Array.isArray(ga.conditionHints)
+            ? (ga.conditionHints as Array<{ hint: string }>)
+            : [];
+          const edges = (v3.geminiEdges ?? null) as
+            | { ridgesHipsLf?: number; valleysLf?: number; rakesLf?: number; eavesLf?: number; linesCount?: number }
+            | null;
+          const facetCount = ((v3.facets as unknown[] | undefined) ?? []).length;
+          return (
+            <section className="glass-panel p-4">
+              <div className="flex items-baseline justify-between mb-3 gap-2">
+                <div className="text-[10.5px] uppercase tracking-wider text-white/45">
+                  Roof V3 analysis
+                </div>
+                <span className="text-[10px] uppercase tracking-[0.18em] px-1.5 py-0.5 rounded border border-[#38C5EE]/40 text-[#38C5EE]">
+                  V3
+                </span>
+              </div>
+              {paintedUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={paintedUrl}
+                  alt={`Painted roof for ${lead.address}`}
+                  className="w-full h-auto rounded-lg border border-white/[0.06] mb-3"
+                />
+              ) : null}
+              <dl className="grid grid-cols-1 gap-y-2 text-[12.5px]">
+                <Row label="Material" value={mat?.type?.replace(/_/g, " ") ?? "—"} />
+                <Row label="Facets" value={String(facetCount || "—")} mono />
+                {edges ? (
+                  <Row
+                    label="Edges (Gemini)"
+                    mono
+                    value={
+                      `R+H ${edges.ridgesHipsLf ?? 0}ft · ` +
+                      `V ${edges.valleysLf ?? 0}ft · ` +
+                      `Rk ${edges.rakesLf ?? 0}ft · ` +
+                      `E ${edges.eavesLf ?? 0}ft`
+                    }
+                  />
+                ) : null}
+                {hints.length > 0 ? (
+                  <Row
+                    label="Condition"
+                    value={hints.map((h) => h.hint?.replace(/_/g, " ")).join(", ")}
+                  />
+                ) : null}
+              </dl>
+            </section>
+          );
+        })()}
 
         {lead.notes && (
           <section className="glass-panel p-4">

@@ -132,6 +132,22 @@ export default function EstimateV2Page() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loadingElapsedSec, setLoadingElapsedSec] = useState(0);
 
+  // ─── Contact-capture state ─────────────────────────────────────────
+  // After the V3 result renders, the customer fills in name/email/
+  // phone + TCPA consent. On submit we POST to /api/leads with the
+  // contact info AND the full V3 payload, which the server uploads
+  // the painted PNG to Storage and persists the rest as
+  // roof_v3_json on the lead row. Dashboard /leads picks it up.
+  const [contactName, setContactName] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [tcpaConsent, setTcpaConsent] = useState(false);
+  const [submitState, setSubmitState] = useState<
+    "idle" | "submitting" | "done" | "error"
+  >("idle");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submittedLeadId, setSubmittedLeadId] = useState<string | null>(null);
+
   // ─── Address autocomplete (Google Places) ──────────────────────────
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -252,10 +268,80 @@ export default function EstimateV2Page() {
     setPinLng(null);
     setResult(null);
     setErrorMsg(null);
+    setContactName("");
+    setContactEmail("");
+    setContactPhone("");
+    setTcpaConsent(false);
+    setSubmitState("idle");
+    setSubmitError(null);
+    setSubmittedLeadId(null);
   }
   function rePin(): void {
     setResult(null);
     setStep("pin-drag");
+    setSubmitState("idle");
+    setSubmitError(null);
+    setSubmittedLeadId(null);
+  }
+
+  // ─── Submit contact form → POST /api/leads ─────────────────────────
+  async function submitContact(): Promise<void> {
+    if (!result || !resolved) return;
+    if (!contactName.trim() || !contactEmail.trim() || !tcpaConsent) return;
+    setSubmitState("submitting");
+    setSubmitError(null);
+    try {
+      // Strip the heaviest field for the JSON body but keep base64 so
+      // the server can upload it to Storage. Server peels it off before
+      // persisting to roof_v3_json.
+      const roofV3 = {
+        paintedImageBase64: result.paintedImageBase64,
+        solar: result.solar,
+        correction: result.correction,
+        tile: result.tile,
+        objects: result.objects,
+        penetrationTotals: result.penetrationTotals,
+        edges: result.edges,
+        geminiEdges: result.geminiEdges,
+        facets: result.facets,
+        derived: result.derived,
+        solarPotential: result.solarPotential,
+        geminiAnalysis: result.geminiAnalysis,
+        modelVersion: result.modelVersion,
+        computedAt: result.computedAt,
+      };
+
+      const r = await fetch("/api/leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: contactName.trim(),
+          email: contactEmail.trim(),
+          phone: contactPhone.trim() || undefined,
+          address: resolved.formatted,
+          lat: resolved.lat,
+          lng: resolved.lng,
+          estimatedSqft: result.solar.sqft ?? undefined,
+          material:
+            result.geminiAnalysis.roofMaterial?.type
+              ?.replace(/_/g, " ")
+              .replace(/\b\w/g, (c) => c.toUpperCase()) ?? undefined,
+          source: "estimate-v2",
+          tcpaConsent: true,
+          roofV3,
+        }),
+      });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "");
+        throw new Error(`HTTP ${r.status}: ${txt.slice(0, 200)}`);
+      }
+      const data = (await r.json()) as { leadId?: string };
+      setSubmittedLeadId(data.leadId ?? null);
+      setSubmitState("done");
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+      setSubmitState("error");
+    }
   }
 
   const loadingMessage =
@@ -482,6 +568,146 @@ export default function EstimateV2Page() {
               </div>
             )}
           </div>
+
+          {/* Contact capture — send this analysis to the dashboard.
+              On submit we POST to /api/leads with the full V3 payload;
+              the server uploads the painted PNG to Storage and persists
+              the rest as roof_v3_json. The dashboard /leads tab picks
+              up the new lead with a V3 badge + the painted preview. */}
+          {submitState !== "done" ? (
+            <div className="bg-ink-900/80 border border-[#38C5EE]/40 rounded-2xl p-5 sm:p-6">
+              <div className="flex items-baseline justify-between mb-4 gap-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[#38C5EE]">
+                  Send this analysis to your contractor
+                </p>
+                <p className="text-[9px] uppercase tracking-[0.18em] text-slate-500">
+                  Free · No obligation
+                </p>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed mb-4">
+                Get this roof report sent to a licensed roofer in your area
+                for a no-pressure quote. We&apos;ll save your measurements,
+                material, and the painted overlay above.
+              </p>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void submitContact();
+                }}
+                className="space-y-3"
+              >
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">
+                      Full name
+                    </span>
+                    <input
+                      type="text"
+                      required
+                      autoComplete="name"
+                      value={contactName}
+                      onChange={(e) => setContactName(e.target.value)}
+                      className="mt-1 w-full bg-ink-800 border border-ink-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#38C5EE] focus:ring-1 focus:ring-[#38C5EE]/40"
+                      placeholder="Jane Smith"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">
+                      Email
+                    </span>
+                    <input
+                      type="email"
+                      required
+                      autoComplete="email"
+                      value={contactEmail}
+                      onChange={(e) => setContactEmail(e.target.value)}
+                      className="mt-1 w-full bg-ink-800 border border-ink-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#38C5EE] focus:ring-1 focus:ring-[#38C5EE]/40"
+                      placeholder="jane@example.com"
+                    />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">
+                    Phone (optional, for fastest response)
+                  </span>
+                  <input
+                    type="tel"
+                    autoComplete="tel"
+                    value={contactPhone}
+                    onChange={(e) => setContactPhone(e.target.value)}
+                    className="mt-1 w-full bg-ink-800 border border-ink-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#38C5EE] focus:ring-1 focus:ring-[#38C5EE]/40"
+                    placeholder="(555) 555-0123"
+                  />
+                </label>
+
+                <label className="flex items-start gap-2 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    required
+                    checked={tcpaConsent}
+                    onChange={(e) => setTcpaConsent(e.target.checked)}
+                    className="mt-0.5 accent-[#38C5EE]"
+                  />
+                  <span className="text-[11px] text-slate-400 leading-relaxed">
+                    By checking this box and submitting, I consent to receive
+                    automated marketing calls, texts, and emails from Voxaris
+                    and its partner contractors at the phone number and email
+                    above. Consent is not required to make a purchase.
+                    Message frequency varies; message/data rates may apply.
+                    Reply STOP to opt out. See our{" "}
+                    <a href="/privacy" className="underline text-slate-300 hover:text-slate-100">
+                      Privacy Policy
+                    </a>{" "}
+                    and{" "}
+                    <a href="/terms" className="underline text-slate-300 hover:text-slate-100">
+                      Terms
+                    </a>
+                    .
+                  </span>
+                </label>
+
+                {submitError && (
+                  <p className="text-xs text-rose-400 font-mono">
+                    {submitError}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={
+                    submitState === "submitting" ||
+                    !contactName.trim() ||
+                    !contactEmail.trim() ||
+                    !tcpaConsent
+                  }
+                  className="w-full sm:w-auto bg-[#38C5EE] text-ink-950 font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-[#38C5EE]/90 transition-colors disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed"
+                >
+                  {submitState === "submitting"
+                    ? "Sending…"
+                    : "Send this roof report"}
+                </button>
+              </form>
+            </div>
+          ) : (
+            <div className="bg-emerald-500/5 border border-emerald-500/30 rounded-2xl p-5 sm:p-6">
+              <div className="flex items-start gap-3">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgb(16,185,129)] mt-1.5 flex-shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-emerald-300 mb-1">
+                    Sent to the dashboard
+                  </p>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    A licensed roofer will be in touch shortly. Your lead ID
+                    is{" "}
+                    <span className="font-mono text-slate-100">
+                      {submittedLeadId ?? "—"}
+                    </span>
+                    .
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* GIS correction badge — only shown when fix actually fired */}
           {result.correction?.applied && (
