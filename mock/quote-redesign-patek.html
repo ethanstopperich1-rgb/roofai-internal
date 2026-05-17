@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#FBF7EE" />
+<meta name="description" content="What will it cost to replace your roof? Measured from satellite imagery and priced in thirty seconds. Free, no obligation, no calls until you ask." />
+<meta property="og:title" content="Voxaris Pitch — Instant Roof Estimate" />
+<meta property="og:description" content="A real roof estimate, measured from above. Free, in thirty seconds." />
+<title>Voxaris Pitch — Free Roof Estimate in 30 Seconds</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400;1,500&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          paper: { 50:'#FBF7EE', 100:'#F6EFDF', 200:'#F1E7CE', 300:'#EADDB8' },
+          ink:   { 50:'#E7E9F0', 100:'#C7CBDB', 300:'#5F6A8C', 500:'#1F2A4D', 700:'#142039', 900:'#0B1430' },
+          brass: { 300:'#C9B07A', 400:'#B7975A', 500:'#A48A52', 600:'#8A7340' },
+          hair:  { DEFAULT:'#1F2A4D14', strong:'#1F2A4D33' },
+        },
+        fontFamily: {
+          serif: ['"Cormorant Garamond"', 'Georgia', 'serif'],
+          sans:  ['"Hanken Grotesk"', 'system-ui', 'sans-serif'],
+        },
+      },
+    },
+  }
+</script>
+
+<style>
+  /* ── Foundations ──────────────────────────────────────────────── */
+  *,*::before,*::after { box-sizing:border-box; }
+  html { scroll-behavior:smooth; -webkit-text-size-adjust:100%; }
+  body {
+    background:#FBF7EE; color:#0B1430;
+    font-family:'Hanken Grotesk', system-ui, sans-serif;
+    font-weight:400; line-height:1.55;
+    text-rendering:optimizeLegibility;
+    -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+    font-feature-settings: "ss01", "kern";
+  }
+  .font-serif { font-family:'Cormorant Garamond', Georgia, serif; }
+  .tabular { font-variant-numeric: tabular-nums lining-nums; }
+
+  /* ── Atmosphere: paper grain + warm ambient light + topo ─────── */
+  body::before {
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3'/><feColorMatrix values='0 0 0 0 0.12  0 0 0 0 0.14  0 0 0 0 0.22  0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity:.5; mix-blend-mode:multiply;
+  }
+  /* Warm radial — light from above, framing the hero as a crescent halo */
+  .ambient {
+    position:absolute; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(ellipse 70% 55% at 50% -8%, rgba(201,176,122,.28), transparent 62%),
+      radial-gradient(ellipse 90% 70% at 50% 100%, rgba(31,42,77,.08), transparent 70%);
+  }
+
+  /* Crescent — engraved brass arc above the hero, sweeping further down */
+  .crescent {
+    position:absolute; left:50%; top:-180px;
+    transform: translateX(-50%);
+    width:1900px; max-width:170%;
+    pointer-events:none; z-index:0; opacity:.68;
+  }
+
+  /* Skyline — direct port of the original cyan rooftop silhouette, retinted to ink-on-cream */
+  .skyline {
+    position:absolute; left:0; right:0; bottom:0;
+    width:100%; height:120px;
+    pointer-events:none; z-index:1;
+  }
+  @media (min-width:640px) { .skyline { height:180px; } }
+
+  /* ── Hairlines & ornaments ──────────────────────────────────── */
+  hr.hair        { border:0; border-top:1px solid rgba(31,42,77,.14); margin:0; }
+  hr.hair-strong { border:0; border-top:1px solid rgba(31,42,77,.28); margin:0; }
+  .hairline-strong { box-shadow: inset 0 0 0 1px rgba(31,42,77,.28); }
+  .marker     { width:6px; height:6px; background:#A48A52; transform:rotate(45deg); display:inline-block; }
+  .marker-ink { width:5px; height:5px; background:#0B1430; transform:rotate(45deg); display:inline-block; }
+
+  /* ── Editorial type tokens ──────────────────────────────────── */
+  .eyebrow {
+    font-size:10.5px; letter-spacing:.22em; text-transform:uppercase;
+    color:#A48A52; font-weight:500;
+  }
+  .field-label {
+    font-size:10px; letter-spacing:.20em; text-transform:uppercase;
+    color:#5F6A8C; font-weight:500;
+  }
+
+  /* ── Pill nav ───────────────────────────────────────────────── */
+  .pill {
+    display:inline-flex; align-items:center;
+    border:1px solid rgba(31,42,77,.28);
+    background:#FBF7EE;
+    padding:0 6px; height:40px;
+    border-radius:9999px;
+  }
+  .pill a {
+    padding:0 18px; height:100%; display:inline-flex; align-items:center;
+    font-size:11px; letter-spacing:.18em; text-transform:uppercase;
+    color:#1F2A4D; font-weight:500;
+    border-radius:9999px;
+    transition: background .15s ease, color .15s ease;
+  }
+  .pill a:hover { color:#0B1430; background:rgba(31,42,77,.05); }
+
+  .badge {
+    display:inline-flex; align-items:center; gap:8px;
+    border:1px solid rgba(31,42,77,.28);
+    background:#FBF7EE;
+    padding:0 16px; height:36px;
+    border-radius:9999px;
+    font-size:10.5px; letter-spacing:.20em; text-transform:uppercase;
+    color:#1F2A4D; font-weight:500;
+  }
+  .badge .dot { width:6px; height:6px; background:#A48A52; border-radius:50%; box-shadow:0 0 0 3px rgba(164,138,82,.18); }
+
+  /* ── Search-bar form (the distinctive piece) ────────────────── */
+  .search-card {
+    background:#FBF7EE;
+    border:1px solid rgba(31,42,77,.28);
+    box-shadow: 0 1px 0 rgba(31,42,77,.04), 0 24px 60px -28px rgba(11,20,48,.18);
+    width:100%;
+  }
+
+  /* Address row — taller, search-affordance */
+  .addr-row {
+    display:grid; grid-template-columns: 40px 1fr auto;
+    align-items:center; gap:14px;
+    padding:18px 22px;
+    border-bottom:1px solid rgba(31,42,77,.14);
+  }
+  .addr-input {
+    background:transparent; border:0; outline:0; width:100%;
+    font:500 22px/1.2 'Cormorant Garamond', Georgia, serif;
+    color:#0B1430; padding:6px 0;
+  }
+  .addr-input::placeholder { color:#5F6A8C; font-style:italic; }
+  .addr-row .ic {
+    width:22px; height:22px; color:#1F2A4D; opacity:.6;
+  }
+
+  /* Slim 3-cell row: name | email | phone */
+  .slim-row {
+    display:grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-bottom:1px solid rgba(31,42,77,.14);
+  }
+  .slim-cell {
+    padding:14px 22px;
+    border-left:1px solid rgba(31,42,77,.10);
+  }
+  .slim-cell:first-child { border-left:0; }
+  .slim-input {
+    background:transparent; border:0; outline:0; width:100%;
+    font:400 15.5px/1.4 'Hanken Grotesk', system-ui, sans-serif;
+    color:#0B1430; padding:4px 0;
+  }
+  .slim-input::placeholder { color:#5F6A8C; }
+
+  /* Footer row: consent + CTA */
+  .foot-row {
+    display:grid; grid-template-columns: 1fr auto;
+    align-items:center; gap:24px;
+    padding:18px 22px;
+  }
+
+  /* Mobile: collapse slim row to 1 column */
+  @media (max-width: 720px) {
+    .slim-row { grid-template-columns: 1fr; }
+    .slim-cell { border-left:0; border-top:1px solid rgba(31,42,77,.10); }
+    .slim-cell:first-child { border-top:0; }
+    .foot-row { grid-template-columns: 1fr; gap:14px; }
+    .addr-input { font-size:18px; }
+  }
+
+  /* ── Checkbox (custom) ──────────────────────────────────────── */
+  .checkbox {
+    width:16px; height:16px; flex-shrink:0; margin-top:2px;
+    appearance:none; -webkit-appearance:none;
+    border:1px solid rgba(31,42,77,.32); background:#FBF7EE;
+    display:inline-grid; place-content:center; cursor:pointer;
+    transition: background .15s ease, border-color .15s ease;
+  }
+  .checkbox:hover  { border-color:#0B1430; }
+  .checkbox:checked { background:#0B1430; border-color:#0B1430; }
+  .checkbox:checked::before {
+    content:""; width:8px; height:4px;
+    border-left:1.5px solid #FBF7EE; border-bottom:1.5px solid #FBF7EE;
+    transform: rotate(-45deg) translate(1px,-1px);
+  }
+
+  /* ── CTA ────────────────────────────────────────────────────── */
+  .btn-ink {
+    background:#0B1430; color:#FBF7EE;
+    padding:14px 26px;
+    font:500 17px/1 'Cormorant Garamond', Georgia, serif;
+    letter-spacing:.02em;
+    transition: background .18s ease, transform .18s ease;
+    display:inline-flex; align-items:center; justify-content:center; gap:10px;
+    cursor:pointer; border:1px solid #0B1430; white-space:nowrap;
+  }
+  .btn-ink:hover  { background:#142039; }
+  .btn-ink:active { transform:translateY(1px); }
+  .btn-ink:focus-visible { outline:2px solid #A48A52; outline-offset:3px; }
+  .btn-ink .arrow { transition: transform .25s ease; }
+  .btn-ink:hover .arrow { transform: translateX(4px); }
+
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline:2px solid #A48A52; outline-offset:3px; border-radius:1px;
+  }
+
+  /* ── Decorative ornament behind headline ────────────────────── */
+  .ornament {
+    position:absolute; left:50%; top:50%;
+    transform: translate(-50%, -52%);
+    width:520px; height:520px;
+    pointer-events:none; z-index:-1;
+    opacity:.06;
+  }
+
+  /* ── Hero load animation ────────────────────────────────────── */
+  @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+  .rise { opacity:0; animation: rise .9s cubic-bezier(.2,.7,.2,1) forwards; }
+  .rise[data-d="1"] { animation-delay:.05s; }
+  .rise[data-d="2"] { animation-delay:.18s; }
+  .rise[data-d="3"] { animation-delay:.32s; }
+  .rise[data-d="4"] { animation-delay:.46s; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior:auto; }
+    .rise, .rise[data-d] { opacity:1; animation:none; }
+    .btn-ink, .btn-ink .arrow { transition:none; }
+  }
+
+  /* ── Skip link & misc ───────────────────────────────────────── */
+  .skip-link {
+    position:absolute; left:-9999px; top:0; z-index:100;
+    background:#0B1430; color:#FBF7EE; padding:12px 18px;
+    font:500 13px/1 'Hanken Grotesk', sans-serif; letter-spacing:.14em; text-transform:uppercase;
+  }
+  .skip-link:focus { left:16px; top:16px; }
+  ::selection { background:#0B1430; color:#FBF7EE; }
+</style>
+</head>
+
+<body class="relative min-h-screen flex flex-col">
+
+<a class="skip-link" href="#main">Skip to estimator</a>
+
+<!-- ─── HERO (centered, with header overlaid) ─────────────────────── -->
+<section class="relative overflow-hidden">
+  <div class="ambient"></div>
+
+  <!-- Brass crescent arc framing the hero from above (watch-bezel inspired) -->
+  <svg class="crescent" viewBox="0 0 1600 800" aria-hidden="true" focusable="false" preserveAspectRatio="xMidYMin meet">
+    <defs>
+      <linearGradient id="crescOuter" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%"  stop-color="#A48A52" stop-opacity="0"/>
+        <stop offset="50%" stop-color="#A48A52" stop-opacity=".95"/>
+        <stop offset="100%" stop-color="#A48A52" stop-opacity="0"/>
+      </linearGradient>
+      <linearGradient id="crescMid" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%"  stop-color="#B7975A" stop-opacity="0"/>
+        <stop offset="55%" stop-color="#B7975A" stop-opacity=".75"/>
+        <stop offset="100%" stop-color="#B7975A" stop-opacity="0"/>
+      </linearGradient>
+      <linearGradient id="crescInner" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%"  stop-color="#A48A52" stop-opacity="0"/>
+        <stop offset="60%" stop-color="#A48A52" stop-opacity=".55"/>
+        <stop offset="100%" stop-color="#A48A52" stop-opacity="0"/>
+      </linearGradient>
+      <radialGradient id="crescGlow" cx="50%" cy="40%" r="50%">
+        <stop offset="0%"  stop-color="#C9B07A" stop-opacity=".18"/>
+        <stop offset="70%" stop-color="#C9B07A" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+
+    <!-- Soft glow inside the crescent -->
+    <ellipse cx="800" cy="380" rx="720" ry="320" fill="url(#crescGlow)"/>
+
+    <!-- Outer engraved arc (boldest line) -->
+    <path d="M 40 440 A 780 780 0 0 1 1560 440"
+          fill="none" stroke="url(#crescOuter)" stroke-width="2"/>
+    <!-- Mid arc -->
+    <path d="M 130 480 A 700 700 0 0 1 1470 480"
+          fill="none" stroke="url(#crescMid)" stroke-width="1.3"/>
+    <!-- Inner arc — extends lower -->
+    <path d="M 240 530 A 600 600 0 0 1 1360 530"
+          fill="none" stroke="url(#crescInner)" stroke-width="0.9"/>
+    <!-- Deep inner arc — sweeps further down into the hero -->
+    <path d="M 360 600 A 500 500 0 0 1 1240 600"
+          fill="none" stroke="#A48A52" stroke-width="0.7" stroke-opacity=".38"/>
+    <!-- Whisper arc — softest, almost off-page low -->
+    <path d="M 480 680 A 400 400 0 0 1 1120 680"
+          fill="none" stroke="#A48A52" stroke-width="0.6" stroke-opacity=".22"/>
+
+    <!-- Watch-face tick marks along the outer arc -->
+    <g stroke="#A48A52" stroke-opacity=".75">
+      <line x1="800"  y1="60"  x2="800"  y2="92"  stroke-width="1.5"/>
+      <line x1="670"  y1="78"  x2="676"  y2="106" stroke-width="1"/>
+      <line x1="930"  y1="78"  x2="924"  y2="106" stroke-width="1"/>
+      <line x1="540"  y1="115" x2="552"  y2="142" stroke-width="1"/>
+      <line x1="1060" y1="115" x2="1048" y2="142" stroke-width="1"/>
+      <line x1="410"  y1="170" x2="428"  y2="195" stroke-width="1"/>
+      <line x1="1190" y1="170" x2="1172" y2="195" stroke-width="1"/>
+      <line x1="290"  y1="245" x2="312"  y2="266" stroke-width="1"/>
+      <line x1="1310" y1="245" x2="1288" y2="266" stroke-width="1"/>
+      <line x1="180"  y1="340" x2="206"  y2="356" stroke-width="1"/>
+      <line x1="1420" y1="340" x2="1394" y2="356" stroke-width="1"/>
+    </g>
+
+    <!-- Center ornament dot at apex -->
+    <circle cx="800" cy="40" r="3" fill="#A48A52"/>
+  </svg>
+
+  <!-- Top bar: centered wordmark + pill nav; badge top-right -->
+  <header class="relative z-20 pt-7 lg:pt-10">
+    <div class="max-w-7xl mx-auto px-6 lg:px-10 relative">
+      <div class="flex flex-col items-center gap-5">
+        <a href="#" class="flex items-baseline gap-3" aria-label="Voxaris Pitch — home">
+          <span class="marker" aria-hidden="true"></span>
+          <span class="font-serif text-[26px] lg:text-[28px] tracking-tight leading-none">Voxaris Pitch</span>
+        </a>
+        <nav class="pill" aria-label="Primary">
+          <a href="#how">How it works</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+      </div>
+      <span class="badge hidden lg:inline-flex absolute right-10 top-2">
+        <span class="dot" aria-hidden="true"></span>
+        Free · No-obligation
+      </span>
+    </div>
+  </header>
+
+  <!-- Centered hero -->
+  <div class="relative z-10 max-w-5xl mx-auto px-6 lg:px-10 pt-20 lg:pt-28 pb-16 lg:pb-20 text-center">
+
+    <!-- Decorative ornament — Calatrava-style cross + ring -->
+    <svg class="ornament" viewBox="0 0 520 520" aria-hidden="true" focusable="false">
+      <circle cx="260" cy="260" r="240" fill="none" stroke="#A48A52" stroke-width="1"/>
+      <circle cx="260" cy="260" r="180" fill="none" stroke="#A48A52" stroke-width="1"/>
+      <g stroke="#A48A52" stroke-width="1.5" fill="none">
+        <path d="M260,80 L280,200 L260,220 L240,200 Z"/>
+        <path d="M260,440 L280,320 L260,300 L240,320 Z"/>
+        <path d="M80,260 L200,280 L220,260 L200,240 Z"/>
+        <path d="M440,260 L320,280 L300,260 L320,240 Z"/>
+      </g>
+    </svg>
+
+    <div class="rise inline-flex items-center gap-3 mb-10" data-d="1">
+      <span class="marker" aria-hidden="true"></span>
+      <span class="eyebrow">Thirty seconds · No calls until you ask</span>
+      <span class="marker" aria-hidden="true"></span>
+    </div>
+
+    <h1 class="rise font-serif tracking-tight text-ink-900 mx-auto max-w-[14ch]"
+        data-d="2"
+        style="font-size:clamp(54px,8.2vw,120px); line-height:.96; font-weight:500;">
+      What will it cost
+      <span class="block italic font-light text-ink-700">to replace your roof?</span>
+    </h1>
+
+    <p class="rise mt-10 max-w-[60ch] mx-auto text-[18px] lg:text-[19px] leading-[1.6] text-ink-500 font-light"
+       data-d="3">
+      We measure your roof from satellite imagery and price it in thirty seconds.
+      Proprietary model. A real number.
+      <span class="font-serif italic text-ink-900">No calls until you ask.</span>
+    </p>
+  </div>
+
+  <!-- Search-bar form (centered, slim) -->
+  <div class="relative z-10 max-w-4xl mx-auto px-6 lg:px-10 pb-24 lg:pb-32">
+    <form class="rise search-card relative" data-d="4" aria-labelledby="form-heading" novalidate>
+      <!-- Calatrava-inspired brass corner markers -->
+      <span class="marker absolute -top-[3px] -left-[3px]" aria-hidden="true"></span>
+      <span class="marker absolute -top-[3px] -right-[3px]" aria-hidden="true"></span>
+      <span class="marker absolute -bottom-[3px] -left-[3px]" aria-hidden="true"></span>
+      <span class="marker absolute -bottom-[3px] -right-[3px]" aria-hidden="true"></span>
+
+      <h2 id="form-heading" class="sr-only">Begin your estimate</h2>
+
+      <!-- Address row -->
+      <div class="addr-row">
+        <span class="flex items-center justify-center" aria-hidden="true">
+          <!-- Search icon -->
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>
+          </svg>
+        </span>
+        <input id="addr" name="address"
+               class="addr-input"
+               placeholder="Begin typing your address…"
+               autocomplete="street-address" required />
+        <span class="text-[10.5px] tracking-[0.20em] uppercase text-ink-300 tabular hidden md:inline">≈ 30 sec</span>
+      </div>
+
+      <!-- Slim 3-cell row -->
+      <div class="slim-row">
+        <div class="slim-cell">
+          <label for="nm" class="field-label">Full name</label>
+          <input id="nm" name="full_name" class="slim-input" placeholder="Eleanor Whitaker"
+                 autocomplete="name" required />
+        </div>
+        <div class="slim-cell">
+          <label for="em" class="field-label">Email address</label>
+          <input id="em" name="email" type="email" class="slim-input" placeholder="eleanor@whitaker.co"
+                 autocomplete="email" required />
+        </div>
+        <div class="slim-cell">
+          <label for="ph" class="field-label">Phone number</label>
+          <input id="ph" name="phone" class="slim-input tabular" placeholder="(239) 555-0117"
+                 inputmode="tel" autocomplete="tel" required />
+        </div>
+      </div>
+
+      <!-- Consent row -->
+      <div class="px-[22px] py-5 border-b border-hair">
+        <label class="flex items-start gap-3 cursor-pointer">
+          <input type="checkbox" class="checkbox" required />
+          <span class="text-[12px] text-ink-500 leading-[1.6]">
+            I agree that <span class="text-ink-900 font-medium">Voxaris Pitch</span>
+            may email and text me my roof estimate. No follow-up calls unless I request one.
+            Reply <span class="font-medium text-ink-900">STOP</span> to opt out. See our
+            <a href="/privacy" class="underline decoration-brass-500 underline-offset-2 hover:text-ink-900">Privacy Policy</a>
+            and
+            <a href="/terms" class="underline decoration-brass-500 underline-offset-2 hover:text-ink-900">Terms</a>.
+          </span>
+        </label>
+      </div>
+
+      <!-- Footer bar: provenance left, CTA right -->
+      <div class="foot-row">
+        <div class="flex items-center gap-3 text-[10.5px] tracking-[0.20em] uppercase text-ink-300">
+          <span class="marker" aria-hidden="true"></span>
+          <span>Non-binding estimate · We never sell your info</span>
+        </div>
+        <button type="submit" class="btn-ink">
+          See my estimate
+          <span class="arrow" aria-hidden="true">→</span>
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Skyline — verbatim port of the original rooftop silhouette, retinted to ink-on-cream -->
+  <svg class="skyline" viewBox="0 0 1600 180" aria-hidden="true" focusable="false" preserveAspectRatio="none">
+    <defs>
+      <linearGradient id="rooftop-fade" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%"   stop-color="#0B1430" stop-opacity="0"/>
+        <stop offset="65%"  stop-color="#0B1430" stop-opacity="0.10"/>
+        <stop offset="100%" stop-color="#0B1430" stop-opacity="0.22"/>
+      </linearGradient>
+    </defs>
+    <path d="M0 180 L0 130 L80 80 L160 130 L240 95 L320 130 L400 70 L480 130 L560 110 L640 130 L720 60 L800 130 L880 90 L960 130 L1040 50 L1120 130 L1200 100 L1280 130 L1360 75 L1440 130 L1520 95 L1600 130 L1600 180 Z"
+          fill="url(#rooftop-fade)"
+          stroke="rgba(11,20,48,0.22)"
+          stroke-width="1"/>
+  </svg>
+
+  <hr class="hair-strong" />
+</section>
+
+<!-- Centered brass ornament between hero and How it works -->
+<div class="flex justify-center py-8 bg-paper-50">
+  <span class="inline-flex items-center gap-3" aria-hidden="true">
+    <span class="block w-12 h-px bg-brass-400/50"></span>
+    <span class="marker"></span>
+    <span class="block w-12 h-px bg-brass-400/50"></span>
+  </span>
+</div>
+
+<main id="main" class="relative z-10">
+
+  <!-- ─── HOW IT WORKS ─────────────────────────────────────────────── -->
+  <section id="how" class="bg-paper-100 scroll-mt-20" aria-labelledby="how-heading">
+    <div class="max-w-5xl mx-auto px-6 lg:px-10 py-24 lg:py-32">
+      <div class="text-center max-w-2xl mx-auto">
+        <div class="eyebrow">How it works</div>
+        <h2 id="how-heading"
+            class="font-serif text-[40px] lg:text-[56px] leading-[1.04] tracking-tight text-ink-900 font-medium mt-4">
+          Three steps.
+          <span class="italic font-light">About thirty seconds.</span>
+        </h2>
+        <p class="mt-5 text-[16px] text-ink-500 font-light leading-relaxed max-w-xl mx-auto">
+          No measuring tape. No salesperson at your door.
+        </p>
+      </div>
+
+      <ol class="mt-20 relative">
+        <span aria-hidden="true"
+              class="absolute left-[44px] top-6 bottom-6 w-px bg-gradient-to-b from-transparent via-brass-400/40 to-transparent"></span>
+
+        <li class="relative grid grid-cols-[88px_1fr] gap-10 py-12 first:pt-0">
+          <div class="flex items-start justify-center">
+            <span class="font-serif tabular text-ink-900 font-light"
+                  style="font-size:64px; line-height:1; letter-spacing:-.04em;">01</span>
+          </div>
+          <div>
+            <h3 class="font-serif text-[26px] lg:text-[28px] font-medium text-ink-900 leading-tight">
+              Enter your address
+            </h3>
+            <p class="mt-3 text-[16px] text-ink-500 font-light max-w-[58ch] leading-[1.75]">
+              Just your street address. We instantly pull your roof from satellite imagery the moment you submit.
+            </p>
+          </div>
+        </li>
+
+        <li class="relative grid grid-cols-[88px_1fr] gap-10 py-12">
+          <div class="flex items-start justify-center">
+            <span class="font-serif tabular text-ink-900 font-light"
+                  style="font-size:64px; line-height:1; letter-spacing:-.04em;">02</span>
+          </div>
+          <div>
+            <h3 class="font-serif text-[26px] lg:text-[28px] font-medium text-ink-900 leading-tight">
+              AI measures your roof
+            </h3>
+            <p class="mt-3 text-[16px] text-ink-500 font-light max-w-[58ch] leading-[1.75]">
+              Our proprietary segmentation model calculates square footage, pitch, and roof complexity in seconds.
+            </p>
+          </div>
+        </li>
+
+        <li class="relative grid grid-cols-[88px_1fr] gap-10 py-12 last:pb-0">
+          <div class="flex items-start justify-center">
+            <span class="font-serif tabular text-ink-900 font-light"
+                  style="font-size:64px; line-height:1; letter-spacing:-.04em;">03</span>
+          </div>
+          <div>
+            <h3 class="font-serif text-[26px] lg:text-[28px] font-medium text-ink-900 leading-tight">
+              Your estimate appears
+            </h3>
+            <p class="mt-3 text-[16px] text-ink-500 font-light max-w-[58ch] leading-[1.75]">
+              Choose your preferred material and see your price range — in writing, in seconds. No follow-up unless you ask.
+            </p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <hr class="hair-strong" />
+
+  <!-- ─── HONEST FAQ ───────────────────────────────────────────────── -->
+  <section id="faq" class="scroll-mt-20" aria-labelledby="faq-heading">
+    <div class="max-w-3xl mx-auto px-6 lg:px-10 py-24 lg:py-32">
+      <div class="text-center mb-14">
+        <div class="eyebrow">Honestly answered</div>
+        <h2 id="faq-heading"
+            class="font-serif text-[36px] lg:text-[48px] leading-[1.05] tracking-tight text-ink-900 font-medium mt-4">
+          What you'd reasonably want to know.
+        </h2>
+      </div>
+
+      <div class="border-t border-hair-strong">
+        <details class="border-b border-hair group" open>
+          <summary class="flex items-center justify-between gap-8 py-7 cursor-pointer list-none">
+            <span class="font-serif text-[20px] lg:text-[22px] text-ink-900 leading-tight">
+              How accurate is the number?
+            </span>
+            <span class="text-brass-500 text-2xl font-light leading-none group-open:rotate-45 transition-transform" aria-hidden="true">+</span>
+          </summary>
+          <p class="pb-7 -mt-1 text-[15.5px] text-ink-500 font-light leading-[1.75] max-w-[68ch]">
+            The estimate is a satellite-measured starting point — typically within a 10–15% band of an on-site quote on standard residential roofs, wider on complex or large properties. A binding contract still requires a master roofer on the property.
+          </p>
+        </details>
+
+        <details class="border-b border-hair group">
+          <summary class="flex items-center justify-between gap-8 py-7 cursor-pointer list-none">
+            <span class="font-serif text-[20px] lg:text-[22px] text-ink-900 leading-tight">
+              Is this truly free?
+            </span>
+            <span class="text-brass-500 text-2xl font-light leading-none group-open:rotate-45 transition-transform" aria-hidden="true">+</span>
+          </summary>
+          <p class="pb-7 -mt-1 text-[15.5px] text-ink-500 font-light leading-[1.75] max-w-[68ch]">
+            Yes. The estimate is complimentary. There is no fee, deposit, or obligation, and you are never charged for the on-site visit if you choose to request one.
+          </p>
+        </details>
+
+        <details class="border-b border-hair group">
+          <summary class="flex items-center justify-between gap-8 py-7 cursor-pointer list-none">
+            <span class="font-serif text-[20px] lg:text-[22px] text-ink-900 leading-tight">
+              Will I be spammed or cold-called?
+            </span>
+            <span class="text-brass-500 text-2xl font-light leading-none group-open:rotate-45 transition-transform" aria-hidden="true">+</span>
+          </summary>
+          <p class="pb-7 -mt-1 text-[15.5px] text-ink-500 font-light leading-[1.75] max-w-[68ch]">
+            No. Your details are never sold, never syndicated. No one follows up unless you ask, and a single reply of <span class="font-medium text-ink-900">STOP</span> ends contact immediately.
+          </p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- Centered brass ornament closing the editorial column -->
+  <div class="flex justify-center pt-2 pb-12">
+    <span class="inline-flex items-center gap-3" aria-hidden="true">
+      <span class="block w-12 h-px bg-brass-400/50"></span>
+      <span class="marker"></span>
+      <span class="block w-12 h-px bg-brass-400/50"></span>
+    </span>
+  </div>
+
+  <hr class="hair-strong" />
+</main>
+
+<!-- ─── FOOTER ──────────────────────────────────────────────────────── -->
+<footer class="relative z-10 bg-ink-900 text-paper-200">
+  <div class="max-w-7xl mx-auto px-6 lg:px-10 py-16 lg:py-20">
+    <div class="grid lg:grid-cols-12 gap-12 items-start">
+      <div class="lg:col-span-6">
+        <div class="flex items-baseline gap-3 mb-5">
+          <span class="marker" aria-hidden="true"></span>
+          <span class="font-serif text-[26px] text-paper-50 leading-none">Voxaris Pitch</span>
+        </div>
+        <p class="font-serif italic text-paper-200/80 text-[17px] leading-relaxed max-w-md">
+          A real roof estimate, measured from above. Free, in thirty seconds.
+        </p>
+      </div>
+      <div class="lg:col-span-3">
+        <div class="eyebrow mb-5" style="color:#C9B07A">Correspondence</div>
+        <ul class="space-y-2.5 text-[14px] text-paper-200/80 font-light">
+          <li><a href="mailto:hello@voxaris.com" class="hover:text-paper-50 transition-colors">hello@voxaris.com</a></li>
+          <li class="tabular"><a href="tel:+12395550117" class="hover:text-paper-50 transition-colors">+1 (239) 555 · 0117</a></li>
+        </ul>
+      </div>
+      <div class="lg:col-span-3">
+        <div class="eyebrow mb-5" style="color:#C9B07A">Particulars</div>
+        <ul class="space-y-2.5 text-[14px] text-paper-200/80 font-light">
+          <li>Licensed &amp; insured · FL CCC1234567</li>
+          <li>
+            <a href="/privacy" class="hover:text-paper-50 transition-colors">Privacy</a>
+            <span class="mx-1.5 text-paper-200/40">·</span>
+            <a href="/terms" class="hover:text-paper-50 transition-colors">Terms</a>
+          </li>
+        </ul>
+      </div>
+    </div>
+    <hr class="border-t border-paper-50/10 mt-14 mb-6" />
+    <div class="flex flex-wrap justify-between items-center gap-4 text-[10.5px] tracking-[0.18em] uppercase text-paper-200/50">
+      <span>© MMXXVI Voxaris, Inc.</span>
+      <span class="font-serif italic normal-case tracking-normal text-[13px] text-paper-200/70">Crafted in Florida</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
